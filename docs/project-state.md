@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-12T22:43:18Z
+**Generated:** 2026-08-12T22:48:09Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 6 live (1 in progress, 1 done) · 15 archived
+**Issues:** 7 live (1 in progress, 1 done) · 15 archived
 
 ## Project documents
 
@@ -36,6 +36,7 @@
 |---|---|---|---|---|---|
 | [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-define-linear-workflow-states-approvals-and-agent-handoffs) | [Spike] Define Linear workflow states, approvals, and agent handoffs | Backlog | Spike | `krukovden/ide-71-spike-define-linear-workflow-states-approvals-and-agent` | blocks IDE-72, blocks IDE-69, related IDE-68 |
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-design-the-project-memory-contract) | [Spike] Design the Project Memory contract | Backlog | Spike | `krukovden/ide-76-spike-design-the-project-memory-contract` | related IDE-68, related IDE-71 |
+| [IDE-77](https://linear.app/krukov-idea-hub/issue/IDE-77/spike-survey-agent-prior-art-and-make-reuse-review-a-standing-rule) | [Spike] Survey agent prior art and make reuse review a standing rule | Backlog | Spike | `krukovden/ide-77-spike-survey-agent-prior-art-and-make-reuse-review-a` | related IDE-76, related IDE-68 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/establish-the-linked-linear-and-github-project-foundation) | Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-establish-the-linked-linear-and-github-project-foundation` | related IDE-76 |
 | [IDE-6](https://linear.app/krukov-idea-hub/issue/IDE-6/define-the-platform-domain-model-and-terminology) | Define the platform domain model and terminology | Canceled · archived | — | `krukovden/ide-6-define-the-platform-domain-model-and-terminology` | — |
 | [IDE-7](https://linear.app/krukov-idea-hub/issue/IDE-7/define-versioned-artifact-contracts-and-validation) | Define versioned artifact contracts and validation | Canceled · archived | — | `krukovden/ide-7-define-versioned-artifact-contracts-and-validation` | — |
