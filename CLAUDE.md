@@ -128,7 +128,7 @@ Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently 
 
 Nothing in the platform itself has been implemented yet — the repository holds this file, a README, and the Linear state sync script.
 
-Five live issues, fifteen archived. **The archived ones were cancelled, not delivered**: an earlier task-level decomposition (IDE-6 … IDE-20) was replaced by the current Spike-first approach, where each capability is designed and approved before implementation issues exist. Read them as rejected history, not as completed work.
+Five live issues, fifteen archived. **The archived ones were cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason — see *Tried & Rejected* on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927). Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
 The first design (IDE-68, Feature Discovery) is written and awaiting Product Owner approval. Implementation issues are created **only after** the Product Owner approves a Spike design — that ordering is a completion criterion on the Spikes themselves, not a preference.
 
