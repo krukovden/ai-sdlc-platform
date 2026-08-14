@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-14T17:40:59Z
+**Generated:** 2026-08-14T17:44:53Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 18 live (2 in progress, 2 done) · 15 archived
@@ -17,7 +17,7 @@
 
 ## Milestones
 
-### 2. Исследование фичи
+### 2. Research Skill for PO
 
 Создать локальный skill, который исследует идею, координирует независимую проверку LLM, формирует утверждённые артефакты Feature и публикует их в Linear.
 
