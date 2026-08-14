@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-14T17:56:11Z
+**Generated:** 2026-08-14T18:36:20Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 19 live (2 in progress, 2 done) · 15 archived
@@ -66,9 +66,20 @@
 | [IDE-19](https://linear.app/krukov-idea-hub/issue/IDE-19/run-the-end-to-end-pilot-on-private-ai-knowledge-platform-mvp) | Run the end-to-end pilot on Private AI Knowledge Platform MVP | Canceled · archived | — | `krukovden/ide-19-run-the-end-to-end-pilot-on-private-ai-knowledge-platform` | — |
 | [IDE-20](https://linear.app/krukov-idea-hub/issue/IDE-20/evaluate-the-pilot-and-complete-ai-sdlc-platform-v1) | Evaluate the pilot and complete AI SDLC Platform v1 | Canceled · archived | — | `krukovden/ide-20-evaluate-the-pilot-and-complete-ai-sdlc-platform-v1` | — |
 
-### 4. Реализация и поставка
+### 4. Development
 
-Обеспечить ручную передачу в реализацию, интеграцию с репозиторием, тестирование и процесс pull request.
+Поток разработки: от передачи утверждённого плана в реализацию до доказательства, что сделанное соответствует утверждённому.
+
+Здесь решаются все подпункты цикла разработки:
+
+* **Ручная передача в реализацию** — разработчик запускает работу явной командой, локально или в облаке, любым совместимым агентом.
+* **Интеграция с репозиторием** — ветки, коммиты и pull requests, связанные с задачей идентификатором.
+* **Review артефакт** — проверка не качества кода, а верности модели: соответствует ли реализация утверждённой Feature, дизайну и доменным договорённостям. Результат бинарный: Pass или Block.
+* **QA Evidence** — матрица, где каждый критерий приёмки получает статус PASS, FAIL или BLOCKED вместе с доказательством. Не «тесты прошли», а «вот критерий, вот чем он подтверждён».
+* **Completion Metadata** — итог ревью, итог QA и дифф документации, записанные в одном месте вместе с задачей, а не разбросанные по системе.
+* **Follow-up Ledger** — журнал хвостов: что нашли по дороге и решили не делать сейчас. Хвост остаётся привязанным к задаче, которая его породила, вместе с её контекстом, и не улетает в общий бэклог, где через месяц никто не вспомнит, откуда он взялся.
+
+Последние четыре пункта заимствованы из Artifact-Driven-Development, где они лежат в одном документе на задачу — приём, который там называется trace co-location: связанные артефакты держатся вместе, потому что так трасса читается.
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
