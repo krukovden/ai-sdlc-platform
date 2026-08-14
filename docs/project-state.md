@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-14T19:31:39Z
+**Generated:** 2026-08-14T19:39:27Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 21 live (2 in progress, 2 done) · 15 archived
+**Issues:** 21 live (2 in progress, 3 done) · 15 archived
 
 ## Project documents
 
@@ -49,10 +49,10 @@
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-ide-79-design-the-project-memory-contract) | [Spike · IDE-79] Design the Project Memory contract | Backlog | Spike | `krukovden/ide-76-spike-ide-79-design-the-project-memory-contract` | child of IDE-79, blocks IDE-89, related IDE-68, related IDE-71 |
 | [IDE-78](https://linear.app/krukov-idea-hub/issue/IDE-78/spike-ide-79-define-the-artifact-and-issue-authoring-standard) | [Spike · IDE-79] Define the artifact and issue authoring standard | Backlog | Spike | `krukovden/ide-78-spike-ide-79-define-the-artifact-and-issue-authoring` | child of IDE-79, blocks IDE-89, related IDE-71, related IDE-76, related IDE-68 |
 | [IDE-89](https://linear.app/krukov-idea-hub/issue/IDE-89/work-item-ide-79-consolidate-the-contracts-into-project-documentation) | [Work Item · IDE-79] Consolidate the contracts into project documentation | Backlog | — | `krukovden/ide-89-work-item-ide-79-consolidate-the-contracts-into-project` | child of IDE-79 |
-| [IDE-90](https://linear.app/krukov-idea-hub/issue/IDE-90/spike-ide-79-define-platform-elements-phases-and-how-each-phase-is) | [Spike · IDE-79] Define platform elements, phases and how each phase is triggered | Todo | Spike | `krukovden/ide-90-spike-ide-79-define-platform-elements-phases-and-how-each` | child of IDE-79, related IDE-78, related IDE-77, blocks IDE-89, blocks IDE-71, related IDE-76 |
-| [IDE-77](https://linear.app/krukov-idea-hub/issue/IDE-77/spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a-standing) | [Spike · IDE-79] Survey agent prior art and make reuse review a standing rule | In Progress | Spike | `krukovden/ide-77-spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a` | child of IDE-79, blocks IDE-89, blocks IDE-78, related IDE-76, related IDE-68 |
 | [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | In Progress | Feature | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
+| [IDE-90](https://linear.app/krukov-idea-hub/issue/IDE-90/spike-ide-79-define-platform-elements-phases-and-how-each-phase-is) | [Spike · IDE-79] Define platform elements, phases and how each phase is triggered | In Progress | Spike | `krukovden/ide-90-spike-ide-79-define-platform-elements-phases-and-how-each` | child of IDE-79, related IDE-78, related IDE-77, blocks IDE-89, blocks IDE-71, related IDE-76 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
+| [IDE-77](https://linear.app/krukov-idea-hub/issue/IDE-77/spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a-standing) | [Spike · IDE-79] Survey agent prior art and make reuse review a standing rule | Done | Spike | `krukovden/ide-77-spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a` | child of IDE-79, blocks IDE-89, blocks IDE-78, related IDE-76, related IDE-68 |
 | [IDE-6](https://linear.app/krukov-idea-hub/issue/IDE-6/define-the-platform-domain-model-and-terminology) | Define the platform domain model and terminology | Canceled · archived | — | `krukovden/ide-6-define-the-platform-domain-model-and-terminology` | — |
 | [IDE-7](https://linear.app/krukov-idea-hub/issue/IDE-7/define-versioned-artifact-contracts-and-validation) | Define versioned artifact contracts and validation | Canceled · archived | — | `krukovden/ide-7-define-versioned-artifact-contracts-and-validation` | — |
 | [IDE-8](https://linear.app/krukov-idea-hub/issue/IDE-8/define-the-project-profile-configuration-contract) | Define the Project Profile configuration contract | Canceled · archived | — | `krukovden/ide-8-define-the-project-profile-configuration-contract` | — |
