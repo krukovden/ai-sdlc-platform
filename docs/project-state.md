@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-14T18:36:20Z
+**Generated:** 2026-08-14T18:41:15Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 19 live (2 in progress, 2 done) · 15 archived
