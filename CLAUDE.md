@@ -7,7 +7,7 @@ A reusable AI platform that accompanies the whole software development lifecycle
 Before doing anything on this project, open **[00 · HUB — read this before any work](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927)** in Linear. It is the entry point and it carries the working protocol. In short:
 
 1. **Search the HUB for the capability you are about to build.** Found it — start from its issue, not from zero. Found it under Removed — read why before proposing it again. Not found — nothing exists, build it.
-2. **Check that the design Spike is approved** before implementing any platform capability. Implementation ahead of an approved design is a process violation here, not a shortcut.
+2. **Check that the ADR is approved** before implementing any platform capability. Implementation ahead of an approved design is a process violation here, not a shortcut.
 3. **After anything ships, register it on the HUB** — one line, with its issue. An unregistered capability is invisible to the next session and will be rebuilt.
 4. **After anything is removed, record why and what replaced it.** A removal without a reason invites its own reintroduction.
 5. **Name the branch from Linear and put `IDE-nn` in every commit message.** That identifier is the only link between the HUB and the code.
@@ -29,7 +29,7 @@ Workspace `krukov-idea-hub`, team **IdeaHub** (issue prefix `IDE`).
 
 - [00 · HUB — read this before any work](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927) — the entry point: working protocol, capability registry, rejected history, document map.
 - [Конституция и видение проекта](https://linear.app/krukov-idea-hub/document/konstituciya-i-videnie-proekta-7f92af685fc1) — mission, the ten working principles, project boundaries, the definition of done.
-- [Референсная архитектура](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59) — system context, the eight logical capabilities, the seven core artifacts, automation boundaries.
+- [Референсная архитектура](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59) — system context, the nine logical capabilities, the core artifacts, automation boundaries.
 - [IDE-68 — Feature Discovery Skill: Design and Requirements](https://linear.app/krukov-idea-hub/document/ide-68-feature-discovery-skill-design-and-requirements-a247a37100ce) — the approved-pending design for the first component, including artifact schemas, the determinism boundary and the CLI contract.
 
 Existing Linear documents are written in Russian. New artifacts produced by the platform are written in English.
@@ -41,8 +41,8 @@ This file explains the project. It deliberately does **not** copy the issues, th
 **For orientation and offline work**, read [`docs/project-state.md`](docs/project-state.md). It is a generated mirror of Linear: milestones, every issue with status, labels, relations and branch name, plus a generation timestamp. Never edit it by hand; regenerate it:
 
 ```bash
-python3 scripts/sync_linear_state.py          # rewrites docs/project-state.md
-python3 scripts/sync_linear_state.py --stdout # print without writing
+python3 scripts/board.py sync            # rewrites docs/project-state.md
+python3 scripts/board.py sync --stdout   # print without writing
 ```
 
 Commit the regenerated file. Its git history is the record of how the shape of the work changed over time, which Linear alone does not give you in a diffable form.
@@ -67,10 +67,11 @@ Note that `project.issues` excludes archived issues by default. Pass `includeArc
 Product Owner
    │  /sdlc-discovery
    ▼  grilling · evidence · independent second-model review
-ADR (approved locally, before publication)          ← GATE 1
+Feature card, created by the Product Owner          ← GATE 1 (implicit: creating it approves it)
    │  /sdlc-design
-   ▼  design agent (subphases: architect, critic, alternative, best practice)
-Technical design Spike                              ← GATE 2: Design Review
+   ▼  architect (subphases: architect, critic, alternative, best practice)
+ADR — how we build it and what it costs             ← GATE 2: Design Review
+   │  the approved ADR is attached to the feature as a file
    │  /sdlc-planning
    ▼  planner: PBIs + the feature branch
 Implementation PBIs
@@ -88,13 +89,15 @@ Global PR into main                                 ← GATE 3: PR Review
 
 Branch chain: `PBI → feature branch → main`, two levels of pull request, the human approves the second.
 
-Three routes by kind of work: **feature** — three gates, **small feature** — two (the design phase drops out), **bug** — one, with the design agent issuing a verdict instead of a document. Any chain participant can stop work with `Blocked · Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
+Three routes by kind of work: **feature** — three gates, **small feature** — two (no ADR is written), **bug** — one, with the architect issuing a verdict instead of an ADR. Any chain participant can stop work with `Blocked · Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
 
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
 Nine logical capabilities, fourteen participants: Feature Discovery · Technical Design · Planning · Development Execution · Documentation · Profile Resolution · Work Tracking Adapter · Project Memory · State Resolution.
 
-Core artifacts: Project Profile · Feature Specification · Decision Trace · Spike Technical Design · Implementation Plan · Pull Request Summary · Documentation Change Set.
+Core artifacts: Project Profile · Feature · ADR · Implementation Plan · Pull Request Summary · Documentation Change Set.
+
+**The artifact chain is `Feature → ADR → PBI`.** The Product Owner creates the feature; the architect picks it up and turns it into an ADR; the human approves the ADR and it is attached to the feature as a file. The word *Spike* no longer means technical design — technical design is the ADR.
 
 Six local commands in the first revision, every phase started by a human: `/sdlc-setup` → `/sdlc-discovery` → `/sdlc-design` → `/sdlc-planning` → `/sdlc-development`, plus `/sdlc-status` at any point. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
 
@@ -121,7 +124,7 @@ These come from the project constitution and are not negotiable inside this repo
 |---|---|---|
 | 1 | Фундамент и контракты | Linked Linear + GitHub foundation, platform terminology, artifact contracts, project configuration model |
 | 2 | Исследование фичи | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
-| 3 | Технический дизайн и планирование | Technical design Spike, Tech Lead approval, implementation tasks |
+| 3 | Технический дизайн и планирование | `/sdlc-design` turns a feature into an ADR, the human approves it, `/sdlc-planning` produces PBIs |
 | 4 | Реализация и поставка | Manual implementation handoff, repository integration, testing, pull requests |
 | 5 | Синхронизация документации и пилот | Documentation impact, updates, full process validated on the pilot |
 
@@ -133,7 +136,9 @@ Nothing in the platform itself has been implemented yet — the repository holds
 
 Five live issues, fifteen archived. **The archived ones were cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason — see *Tried & Rejected* on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927). Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
-The first design (IDE-68, Feature Discovery) is written and awaiting Product Owner approval. Implementation issues are created **only after** the Product Owner approves a Spike design — that ordering is a completion criterion on the Spikes themselves, not a preference.
+The first design (IDE-68, Feature Discovery) is written and awaiting Product Owner approval. Implementation issues are created **only after** the Product Owner approves the ADR — that ordering is a completion criterion, not a preference.
+
+Note on vocabulary: our own cards are still labelled *Spike*, and there the word keeps its research meaning — a question to close. It no longer names a technical design document.
 
 Planned layout once implementation starts:
 
