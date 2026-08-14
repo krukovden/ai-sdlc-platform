@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-14T17:34:56Z
+**Generated:** 2026-08-14T17:40:59Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 12 live (3 in progress, 1 done) · 15 archived
+**Issues:** 18 live (2 in progress, 2 done) · 15 archived
 
 ## Project documents
 
@@ -23,8 +23,14 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-68](https://linear.app/krukov-idea-hub/issue/IDE-68/spike-ide-80-design-the-deterministic-feature-discovery-skill) | [Spike · IDE-80] Design the deterministic Feature Discovery Skill | In Progress | Spike | `krukovden/ide-68-spike-ide-80-design-the-deterministic-feature-discovery` | child of IDE-80, blocks IDE-69 |
+| [IDE-83](https://linear.app/krukov-idea-hub/issue/IDE-83/work-item-ide-80-repository-structure-for-skills-and-schemas) | [Work Item · IDE-80] Repository structure for skills and schemas | Todo | — | `krukovden/ide-83-work-item-ide-80-repository-structure-for-skills-and-schemas` | child of IDE-80, blocks IDE-84 |
+| [IDE-84](https://linear.app/krukov-idea-hub/issue/IDE-84/work-item-ide-80-discovery-core-state-machine-slot-registry-cli) | [Work Item · IDE-80] Discovery core: state machine, slot registry, CLI | Todo | — | `krukovden/ide-84-work-item-ide-80-discovery-core-state-machine-slot-registry` | child of IDE-80, blocks IDE-88, blocks IDE-87, blocks IDE-86, blocks IDE-85 |
+| [IDE-85](https://linear.app/krukov-idea-hub/issue/IDE-85/work-item-ide-80-reviewer-integration-and-practice-research) | [Work Item · IDE-80] Reviewer integration and practice research | Todo | — | `krukovden/ide-85-work-item-ide-80-reviewer-integration-and-practice-research` | child of IDE-80 |
+| [IDE-86](https://linear.app/krukov-idea-hub/issue/IDE-86/work-item-ide-80-linear-publishing-adapter) | [Work Item · IDE-80] Linear publishing adapter | Todo | — | `krukovden/ide-86-work-item-ide-80-linear-publishing-adapter` | child of IDE-80 |
+| [IDE-87](https://linear.app/krukov-idea-hub/issue/IDE-87/work-item-ide-80-azure-devops-publishing-adapter) | [Work Item · IDE-80] Azure DevOps publishing adapter | Todo | — | `krukovden/ide-87-work-item-ide-80-azure-devops-publishing-adapter` | child of IDE-80 |
+| [IDE-88](https://linear.app/krukov-idea-hub/issue/IDE-88/work-item-ide-80-llm-evaluation-harness) | [Work Item · IDE-80] LLM evaluation harness | Todo | — | `krukovden/ide-88-work-item-ide-80-llm-evaluation-harness` | child of IDE-80 |
 | [IDE-80](https://linear.app/krukov-idea-hub/issue/IDE-80/feature-feature-discovery-skill) | [Feature] Feature Discovery Skill | In Progress | Feature | `krukovden/ide-80-feature-feature-discovery-skill` | — |
+| [IDE-68](https://linear.app/krukov-idea-hub/issue/IDE-68/spike-ide-80-design-the-deterministic-feature-discovery-skill) | [Spike · IDE-80] Design the deterministic Feature Discovery Skill | Done | Spike | `krukovden/ide-68-spike-ide-80-design-the-deterministic-feature-discovery` | child of IDE-80, blocks IDE-69 |
 | [IDE-10](https://linear.app/krukov-idea-hub/issue/IDE-10/add-grilling-research-and-independent-llm-review) | Add grilling, research, and independent LLM review | Canceled · archived | — | `krukovden/ide-10-add-grilling-research-and-independent-llm-review` | — |
 | [IDE-11](https://linear.app/krukov-idea-hub/issue/IDE-11/generate-and-publish-the-approved-feature-package) | Generate and publish the approved Feature package | Canceled · archived | — | `krukovden/ide-11-generate-and-publish-the-approved-feature-package` | — |
 | [IDE-9](https://linear.app/krukov-idea-hub/issue/IDE-9/build-the-local-feature-discovery-skill-entry-point) | Build the local Feature Discovery skill entry point | Canceled · archived | — | `krukovden/ide-9-build-the-local-feature-discovery-skill-entry-point` | — |
