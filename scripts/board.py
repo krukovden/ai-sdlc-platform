@@ -371,7 +371,7 @@ def main():
     p = sub.add_parser("finish", help="hand a card on from a phase")
     p.add_argument("id")
     p.add_argument("--phase", required=True)
-    p.add_argument("--to", default="review", help="target state: review, ready, blocked")
+    p.add_argument("--to", default="next", help="target state: next, blocked")
     p.set_defaults(func=cmd_finish)
 
     p = sub.add_parser("sync", help="regenerate the offline mirror")

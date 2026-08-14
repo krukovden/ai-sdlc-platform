@@ -60,28 +60,30 @@ STATE_ORDER = {
 #
 # `ready`  nobody has taken it, an agent may claim it
 # `active` claimed, work in progress
-# `review` waiting for a human
+# `next`   where the card goes when the phase is done — for some phases that
+#          is a human gate, for others the next phase's queue
 # ---------------------------------------------------------------------------
 
 PHASE_STATES = {
     "design": {
         "ready": "Ready for Design",
         "active": "In Design",
-        "review": "Design Review",
+        "next": "Design Review",          # a human gate
     },
     "planning": {
         "ready": "Ready for Planning",
         "active": "In Planning",
+        "next": "Ready for Development",  # no gate: straight to the next queue
     },
     "development": {
         "ready": "Ready for Development",
         "active": "In Development",
-        "review": "PR Review",
+        "next": "PR Review",              # a human gate
     },
     "pbi": {
         "ready": "Todo",
         "active": "In Progress",
-        "review": "In Review",
+        "next": "In Review",
         "blocked": "Blocked · Needs Design",
     },
 }
@@ -423,7 +425,7 @@ class Board:
         result["changed"] = True
         return result
 
-    def finish_phase(self, identifier, phase, kind="review"):
+    def finish_phase(self, identifier, phase, kind="next"):
         """Hand the card on: from `active` to whatever comes next."""
         issue = self.get_issue(identifier)
         active = self.phase_status(phase, "active")
@@ -548,12 +550,28 @@ def _render(project, generated_at):
             )
         lines.append("")
 
-    orphans = sorted(by_milestone.get(None, []), key=_issue_sort_key)
-    if orphans:
-        lines += ["## Issues without a milestone", ""]
-        for issue in orphans:
+    # Everything the milestone loop did not print. Two ways an issue lands
+    # here: it has no milestone, or its milestone fell outside the first 25
+    # the query asked for. The second case used to drop the issue from the
+    # file entirely while still counting it in the header — the mirror claimed
+    # more work than it showed, which is exactly the silent disagreement this
+    # file exists to prevent.
+    printed = {m["id"] for m in milestones}
+    leftovers = [
+        issue
+        for key, issues in by_milestone.items()
+        if key not in printed
+        for issue in issues
+    ]
+    if leftovers:
+        lines += ["## Issues not listed under a milestone above", ""]
+        for issue in sorted(leftovers, key=_issue_sort_key):
             state = (issue.get("state") or {}).get("name", "?")
-            lines.append(f"- [{issue['identifier']}]({issue['url']}) — {issue['title']} ({state})")
+            milestone = issue.get("projectMilestone")
+            suffix = f", milestone {milestone['name']}" if milestone else ""
+            lines.append(
+                f"- [{issue['identifier']}]({issue['url']}) — {issue['title']} ({state}{suffix})"
+            )
         lines.append("")
 
     lines += [
