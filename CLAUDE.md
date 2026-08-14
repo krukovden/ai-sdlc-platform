@@ -65,37 +65,40 @@ Note that `project.issues` excludes archived issues by default. Pass `includeArc
 
 ```
 Product Owner
+   │  /sdlc-discovery
+   ▼  grilling · evidence · independent second-model review
+ADR (approved locally, before publication)          ← GATE 1
+   │  /sdlc-design
+   ▼  design agent (subphases: architect, critic, alternative, best practice)
+Technical design Spike                              ← GATE 2: Design Review
+   │  /sdlc-planning
+   ▼  planner: PBIs + the feature branch
+Implementation PBIs
+   │  /sdlc-development
+   ▼  one agent per PBI, in parallel, synchronised through the board
    │
-   ▼  local Feature Discovery skill  ──── grilling · evidence · independent second-model review
-Feature Specification + Decision Trace
-   │
-   ▼  Product Owner approval
-Feature in Linear
-   │
-   ▼  Technical Design component
-Technical design Spike
-   │
-   ▼  Tech Lead approval
-Planning component
-   │
-   ▼
-Implementation issues
-   │
-   ▼  developer starts it manually
-Local or remote coding agent
-   │
-   ▼
-Code + tests + Pull Request
-   │
-   ▼
-Documentation impact review → updated documentation
+   │  a script runs the chain inside each PBI:
+   │  coder → reviewer → security → rubber duck → tester → lead
+   │  only the coder changes code; everyone else hands work back
+   │        │
+   │        ▼  lead opens the PBI PR → documenter
+   ▼  all PBIs closed
+Global PR into main                                 ← GATE 3: PR Review
 ```
+
+Branch chain: `PBI → feature branch → main`, two levels of pull request, the human approves the second.
+
+Three routes by kind of work: **feature** — three gates, **small feature** — two (the design phase drops out), **bug** — one, with the design agent issuing a verdict instead of a document. Any chain participant can stop work with `Blocked · Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
 
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
-Logical capabilities: Feature Discovery · Project Resolution · Work Tracking Adapter · Technical Design · Technical Approval Gate · Planning · Implementation Handoff · Delivery and Documentation.
+Nine logical capabilities, fourteen participants: Feature Discovery · Technical Design · Planning · Development Execution · Documentation · Profile Resolution · Work Tracking Adapter · Project Memory · State Resolution.
 
 Core artifacts: Project Profile · Feature Specification · Decision Trace · Spike Technical Design · Implementation Plan · Pull Request Summary · Documentation Change Set.
+
+Six local commands in the first revision, every phase started by a human: `/sdlc-setup` → `/sdlc-discovery` → `/sdlc-design` → `/sdlc-planning` → `/sdlc-development`, plus `/sdlc-status` at any point. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
+
+**Signal and signal delivery are different things.** The signal — "the ADR is approved" — is part of the contract and never changes. Delivery changes as the platform matures: a human today, board polling or a webhook later. The check itself lives in one shared **state resolver**, so moving to autonomy replaces the caller, not the logic.
 
 ## Principles that constrain the code
 
