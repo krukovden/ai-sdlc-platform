@@ -1,47 +1,56 @@
 #!/usr/bin/env python3
 """Push work to the board from any repository.
 
-This is the Work Tracking Adapter: the one place that knows a board by name.
-Everything else speaks in terms of issues, parents and statuses, and never
-learns whether Linear or Azure DevOps is underneath.
+This is the front door. It speaks in board-neutral terms — issue, parent,
+phase, status — and contains no knowledge of any particular tracker. The
+profile names the board, and the board name resolves to an adapter module
+that does the actual work:
 
-The board is configured per repository in .sdlc/profile.json, which is
-committed. Secrets are not: the profile records the *path* to a token, never
-the token itself.
+    "board": "linear"          ->  scripts/sync_linear_state.py
+    "board": "azure-devops"    ->  scripts/sync_azure_devops_state.py
+
+Adding a tracker means writing one adapter. Nothing here changes.
+
+The profile lives in .sdlc/profile.json and is committed. Secrets are not:
+the profile records the *path* to a token, never the token itself.
 
 Usage:
-    board.py init --team IDE --project <uuid>   create and verify a profile
+    board.py init --team IDE --project <id>     create and verify a profile
     board.py profile                            show the resolved profile
     board.py states                             list the statuses this team has
-    board.py show IDE-90                        print one issue
+    board.py show IDE-90 [--body]               print one issue
     board.py list [--parent IDE-79] [--status S]
     board.py create --title T [--parent IDE-79] [--body-file F] [--status S]
     board.py update IDE-90 [--status S] [--title T] [--body-file F]
     board.py comment IDE-90 --body-file F
     board.py doc IDE-90 --title T --file F      attach a document to an issue
-    board.py doc --project --title T --file F   attach a document to the project
+    board.py doc --title T --file F             attach a document to the project
+    board.py start IDE-90 --phase design        claim the card for a phase
+    board.py finish IDE-90 --phase design       hand it on
+    board.py sync                               regenerate docs/project-state.md
 
-Exit codes:
+Exit codes, shared by every adapter:
     0  success
     2  the board rejected us, or could not be reached
-    3  the request was malformed - bad status name, unknown issue
+    3  the request was malformed - bad status name, wrong phase, unknown issue
     6  configuration failure - no profile, no token, bad permissions
 """
 
 import argparse
+import importlib.util
 import json
 import os
-import ssl
 import stat
 import sys
-import urllib.error
-import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
-API_URL = "https://api.linear.app/graphql"
 PROFILE_DIR = ".sdlc"
 PROFILE_NAME = "profile.json"
 DEFAULT_TOKEN_PATH = "~/.feature-discovery/linear-token"
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+DEFAULT_MIRROR = REPO_ROOT / "docs" / "project-state.md"
 
 
 def fail(code, message):
@@ -49,15 +58,15 @@ def fail(code, message):
     sys.exit(code)
 
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Profile and credentials
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def find_profile(start=None):
     """Walk up from the current directory looking for .sdlc/profile.json.
 
     Walking up rather than requiring a fixed path is what makes one installed
-    copy of this script usable from every repository and from any depth
+    copy of this script usable from every repository, and from any depth
     inside one.
     """
     current = Path(start or os.getcwd()).resolve()
@@ -80,8 +89,6 @@ def load_profile():
     for field in ("board", "team_key"):
         if not profile.get(field):
             fail(6, f"{path} is missing required field '{field}'")
-    if profile["board"] != "linear":
-        fail(6, f"board '{profile['board']}' has no adapter yet; only 'linear' is implemented")
 
     profile["_path"] = str(path)
     return profile
@@ -94,130 +101,49 @@ def read_token(profile):
 
     token_path = Path(profile.get("token_path", DEFAULT_TOKEN_PATH)).expanduser()
     if not token_path.exists():
-        fail(6, f"no LINEAR_API_KEY and no token file at {token_path}")
+        fail(6, f"no token file at {token_path} and no LINEAR_API_KEY in the environment")
     mode = stat.S_IMODE(token_path.stat().st_mode)
     if mode & 0o077:
         fail(6, f"{token_path} must be mode 0600, found {oct(mode)}")
     return token_path.read_text().strip()
 
 
-def build_ssl_context():
-    """Return a verifying SSL context that also works on python.org builds.
+# ---------------------------------------------------------------------------
+# Adapter resolution
+# ---------------------------------------------------------------------------
 
-    The python.org framework build ships without a CA bundle, so the default
-    context finds nothing to verify against and every HTTPS call fails. Fall
-    back to the system bundle rather than disabling verification.
-    """
-    context = ssl.create_default_context()
-    if context.get_ca_certs():
-        return context
-    for candidate in ("/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"):
-        if os.path.exists(candidate):
-            return ssl.create_default_context(cafile=candidate)
-    fail(6, "no CA bundle found; run the Install Certificates command for your Python")
+def adapter_module_name(board_name):
+    return "sync_" + board_name.replace("-", "_") + "_state"
 
 
-# --------------------------------------------------------------------------
-# Transport
-# --------------------------------------------------------------------------
+def load_adapter(profile):
+    """Load the adapter named by the profile, or say exactly what is missing."""
+    module_name = adapter_module_name(profile["board"])
+    path = SCRIPT_DIR / f"{module_name}.py"
+    if not path.exists():
+        fail(6, f"board '{profile['board']}' has no adapter: expected scripts/{module_name}.py")
 
-def query(token, document, variables=None):
-    payload = json.dumps({"query": document, "variables": variables or {}}).encode()
-    request = urllib.request.Request(
-        API_URL,
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": token},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30, context=build_ssl_context()) as response:
-            body = json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            fail(2, "the board rejected the API key. Reissue it in Settings > Security & access.")
-        fail(2, f"the board returned HTTP {exc.code}: {exc.read().decode()[:300]}")
-    except urllib.error.URLError as exc:
-        fail(2, f"cannot reach the board: {exc.reason}")
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
 
-    if body.get("errors"):
-        message = "; ".join(e.get("message", "?") for e in body["errors"])
-        fail(3, f"the board refused the request: {message}")
-    return body["data"]
+    if not hasattr(module, "connect"):
+        fail(6, f"scripts/{module_name}.py is not an adapter: it has no connect()")
+    return module
 
 
-# --------------------------------------------------------------------------
-# Lookups
-# --------------------------------------------------------------------------
-
-TEAM_QUERY = """
-query Team($key: String!) {
-  teams(filter: { key: { eq: $key } }, first: 1) {
-    nodes { id key name states(first: 50) { nodes { id name type } } }
-  }
-}
-"""
-
-ISSUE_QUERY = """
-query Issue($id: String!) {
-  issue(id: $id) {
-    id identifier title url branchName description
-    state { name type }
-    parent { identifier }
-    project { id name }
-    labels(first: 10) { nodes { name } }
-  }
-}
-"""
-
-CHILDREN_QUERY = """
-query Children($id: String!) {
-  issue(id: $id) {
-    children(first: 100) {
-      nodes { identifier title url state { name type } }
-    }
-  }
-}
-"""
-
-PROJECT_ISSUES_QUERY = """
-query ProjectIssues($id: String!) {
-  project(id: $id) {
-    name
-    issues(first: 100) {
-      nodes { identifier title url state { name type } parent { identifier } }
-    }
-  }
-}
-"""
+def open_board():
+    profile = load_profile()
+    adapter = load_adapter(profile)
+    return profile, adapter, adapter.connect(read_token(profile), profile)
 
 
-def get_team(token, key):
-    nodes = query(token, TEAM_QUERY, {"key": key})["teams"]["nodes"]
-    if not nodes:
-        fail(3, f"no team with key '{key}' in this workspace")
-    return nodes[0]
-
-
-def resolve_state(team, name):
-    """Map a status name to its id, case-insensitively.
-
-    Refuses rather than guessing: a typo in a status name must not silently
-    leave the issue where it was.
-    """
-    if not name:
-        return None
-    wanted = name.strip().casefold()
-    for state in team["states"]["nodes"]:
-        if state["name"].casefold() == wanted:
-            return state["id"]
-    known = ", ".join(sorted(s["name"] for s in team["states"]["nodes"]))
-    fail(3, f"no status named '{name}' in team {team['key']}. Known: {known}")
-
-
-def get_issue(token, identifier):
-    issue = query(token, ISSUE_QUERY, {"id": identifier})["issue"]
-    if not issue:
-        fail(3, f"no issue {identifier}")
-    return issue
+def project_id_from(profile, override=None):
+    project_id = override or profile.get("project_id")
+    if not project_id:
+        fail(3, "no project: pass --project, or set project_id in the profile")
+    return project_id
 
 
 def read_body(args):
@@ -229,9 +155,9 @@ def read_body(args):
     return getattr(args, "body", None)
 
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Commands
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def cmd_init(args):
     target = Path(os.getcwd()) / PROFILE_DIR / PROFILE_NAME
@@ -239,7 +165,7 @@ def cmd_init(args):
         fail(6, f"{target} already exists; pass --force to overwrite")
 
     profile = {
-        "board": "linear",
+        "board": args.board,
         "team_key": args.team,
         "token_path": args.token_path or DEFAULT_TOKEN_PATH,
     }
@@ -250,23 +176,18 @@ def cmd_init(args):
 
     # Verify before writing. A profile that was never checked is a file that
     # lies, and it will lie at the least convenient moment.
-    token = read_token(profile)
-    team = get_team(token, args.team)
-    project_name = None
-    if args.project:
-        data = query(token, "query P($id: String!) { project(id: $id) { name } }",
-                     {"id": args.project})
-        if not data.get("project"):
-            fail(3, f"no project with id {args.project}")
-        project_name = data["project"]["name"]
+    adapter = load_adapter(profile)
+    handle = adapter.connect(read_token(profile), profile)
+    facts = handle.describe()
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print(f"Wrote {target}")
-    print(f"  team:    {team['key']} — {team['name']}")
-    if project_name:
-        print(f"  project: {project_name}")
+    print(f"  board:   {profile['board']} via scripts/{adapter_module_name(args.board)}.py")
+    print(f"  team:    {facts['team_key']} — {facts['team_name']}")
+    if facts.get("project_name"):
+        print(f"  project: {facts['project_name']}")
     print(f"  token:   {profile['token_path']} (path only, never the secret)")
 
 
@@ -278,23 +199,19 @@ def cmd_profile(args):
 
 
 def cmd_states(args):
-    profile = load_profile()
-    team = get_team(read_token(profile), profile["team_key"])
-    order = {"backlog": 0, "unstarted": 1, "started": 2, "completed": 3,
-             "canceled": 4, "duplicate": 5, "triage": -1}
-    for state in sorted(team["states"]["nodes"], key=lambda s: (order.get(s["type"], 9), s["name"])):
+    _, _, board = open_board()
+    for state in board.list_states():
         print(f"{state['type']:<12} {state['name']}")
 
 
 def cmd_show(args):
-    profile = load_profile()
-    issue = get_issue(read_token(profile), args.id)
-    labels = ", ".join(l["name"] for l in issue["labels"]["nodes"]) or "—"
+    _, _, board = open_board()
+    issue = board.get_issue(args.id)
     print(f"{issue['identifier']}  {issue['title']}")
-    print(f"status:  {issue['state']['name']}")
-    print(f"parent:  {issue['parent']['identifier'] if issue['parent'] else '—'}")
-    print(f"labels:  {labels}")
-    print(f"branch:  {issue['branchName']}")
+    print(f"status:  {issue['status']}")
+    print(f"parent:  {issue['parent'] or '—'}")
+    print(f"labels:  {', '.join(issue['labels']) or '—'}")
+    print(f"branch:  {issue['branch']}")
     print(f"url:     {issue['url']}")
     if args.body:
         print()
@@ -302,152 +219,97 @@ def cmd_show(args):
 
 
 def cmd_list(args):
-    profile = load_profile()
-    token = read_token(profile)
-
+    profile, _, board = open_board()
     if args.parent:
-        nodes = query(token, CHILDREN_QUERY, {"id": args.parent})["issue"]["children"]["nodes"]
+        nodes = board.list_children(args.parent)
     else:
-        project_id = args.project or profile.get("project_id")
-        if not project_id:
-            fail(3, "pass --parent or --project, or set project_id in the profile")
-        data = query(token, PROJECT_ISSUES_QUERY, {"id": project_id})
-        if not data.get("project"):
-            fail(3, f"no project with id {project_id}")
-        nodes = data["project"]["issues"]["nodes"]
+        nodes = board.list_project(project_id_from(profile, args.project))
 
     if args.status:
         wanted = args.status.casefold()
-        nodes = [n for n in nodes if n["state"]["name"].casefold() == wanted]
+        nodes = [n for n in nodes if n["status"].casefold() == wanted]
 
     for node in sorted(nodes, key=lambda n: n["identifier"]):
-        print(f"{node['identifier']:<8} {node['state']['name']:<22} {node['title']}")
+        print(f"{node['identifier']:<8} {node['status']:<24} {node['title']}")
     if not nodes:
         print("(nothing)", file=sys.stderr)
 
 
 def cmd_create(args):
-    profile = load_profile()
-    token = read_token(profile)
-    team = get_team(token, profile["team_key"])
-
-    payload = {"teamId": team["id"], "title": args.title}
-
-    body = read_body(args)
-    if body:
-        payload["description"] = body
-    if args.status:
-        payload["stateId"] = resolve_state(team, args.status)
-    if args.parent:
-        payload["parentId"] = get_issue(token, args.parent)["id"]
-
-    project_id = args.project or profile.get("project_id")
-    if project_id:
-        payload["projectId"] = project_id
-
-    mutation = """
-    mutation Create($input: IssueCreateInput!) {
-      issueCreate(input: $input) { success issue { identifier url branchName } }
-    }
-    """
-    result = query(token, mutation, {"input": payload})["issueCreate"]
-    if not result["success"]:
-        fail(3, "the board refused to create the issue")
-    issue = result["issue"]
+    profile, _, board = open_board()
+    issue = board.create_issue(
+        title=args.title,
+        body=read_body(args),
+        parent=args.parent,
+        status=args.status,
+        project_id=args.project or profile.get("project_id"),
+    )
     print(f"{issue['identifier']}  {issue['url']}")
     print(f"branch: {issue['branchName']}", file=sys.stderr)
 
 
 def cmd_update(args):
-    profile = load_profile()
-    token = read_token(profile)
-
-    payload = {}
-    if args.title:
-        payload["title"] = args.title
-    body = read_body(args)
-    if body:
-        payload["description"] = body
-    if args.status:
-        team = get_team(token, profile["team_key"])
-        payload["stateId"] = resolve_state(team, args.status)
-    if args.parent:
-        payload["parentId"] = get_issue(token, args.parent)["id"]
-    if not payload:
-        fail(3, "nothing to update: pass --status, --title, --body-file or --parent")
-
-    issue_id = get_issue(token, args.id)["id"]
-    mutation = """
-    mutation Update($id: String!, $input: IssueUpdateInput!) {
-      issueUpdate(id: $id, input: $input) {
-        success issue { identifier state { name } }
-      }
-    }
-    """
-    result = query(token, mutation, {"id": issue_id, "input": payload})["issueUpdate"]
-    if not result["success"]:
-        fail(3, "the board refused the update")
-    issue = result["issue"]
-    print(f"{issue['identifier']}  {issue['state']['name']}")
+    _, _, board = open_board()
+    result = board.update_issue(
+        args.id, title=args.title, body=read_body(args),
+        status=args.status, parent=args.parent,
+    )
+    print(f"{result['identifier']}  {result['status']}")
 
 
 def cmd_comment(args):
-    profile = load_profile()
-    token = read_token(profile)
+    _, _, board = open_board()
     body = read_body(args)
     if not body:
         fail(3, "pass --body or --body-file")
-
-    issue_id = get_issue(token, args.id)["id"]
-    mutation = """
-    mutation Comment($input: CommentCreateInput!) {
-      commentCreate(input: $input) { success comment { url } }
-    }
-    """
-    result = query(token, mutation, {"input": {"issueId": issue_id, "body": body}})["commentCreate"]
-    if not result["success"]:
-        fail(3, "the board refused the comment")
-    print(result["comment"]["url"])
+    print(board.add_comment(args.id, body))
 
 
 def cmd_doc(args):
-    profile = load_profile()
-    token = read_token(profile)
-
+    profile, _, board = open_board()
     path = Path(args.file)
     if not path.exists():
         fail(3, f"no such file: {path}")
-    payload = {"title": args.title, "content": path.read_text(encoding="utf-8")}
+    content = path.read_text(encoding="utf-8")
 
     if args.id:
-        payload["issueId"] = get_issue(token, args.id)["id"]
+        url = board.attach_document(args.title, content, identifier=args.id)
     else:
-        project_id = args.project or profile.get("project_id")
-        if not project_id:
-            fail(3, "pass an issue id, or --project, or set project_id in the profile")
-        payload["projectId"] = project_id
-
-    mutation = """
-    mutation Doc($input: DocumentCreateInput!) {
-      documentCreate(input: $input) { success document { url } }
-    }
-    """
-    result = query(token, mutation, {"input": payload})["documentCreate"]
-    if not result["success"]:
-        fail(3, "the board refused the document")
-    print(result["document"]["url"])
+        url = board.attach_document(args.title, content,
+                                    project_id=project_id_from(profile, args.project))
+    print(url)
 
 
-# --------------------------------------------------------------------------
+def cmd_start(args):
+    _, _, board = open_board()
+    result = board.start_phase(args.id, args.phase)
+    print(f"{result['identifier']}  {result['status']}")
+
+
+def cmd_finish(args):
+    _, _, board = open_board()
+    result = board.finish_phase(args.id, args.phase, args.to)
+    print(f"{result['identifier']}  {result['status']}")
+
+
+def cmd_sync(args):
+    profile, adapter, board = open_board()
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    content = board.render_mirror(project_id_from(profile, args.project), generated_at)
+    adapter.write_mirror(content, args.out, args.stdout, generated_at)
+
+
+# ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="create and verify .sdlc/profile.json")
     p.add_argument("--team", required=True, help="team key, e.g. IDE")
-    p.add_argument("--project", help="project id this repository belongs to")
+    p.add_argument("--board", default="linear", help="which board: linear, azure-devops")
+    p.add_argument("--project", help="project this repository belongs to")
     p.add_argument("--workspace", help="workspace name, for humans reading the profile")
     p.add_argument("--token-path", help=f"path to the API token (default {DEFAULT_TOKEN_PATH})")
     p.add_argument("--force", action="store_true", help="overwrite an existing profile")
@@ -500,6 +362,23 @@ def main():
     p.add_argument("--file", required=True)
     p.add_argument("--project", help="override the project from the profile")
     p.set_defaults(func=cmd_doc)
+
+    p = sub.add_parser("start", help="claim a card for a phase, or refuse and say why")
+    p.add_argument("id")
+    p.add_argument("--phase", required=True, help="design, planning, development, pbi")
+    p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("finish", help="hand a card on from a phase")
+    p.add_argument("id")
+    p.add_argument("--phase", required=True)
+    p.add_argument("--to", default="review", help="target state: review, ready, blocked")
+    p.set_defaults(func=cmd_finish)
+
+    p = sub.add_parser("sync", help="regenerate the offline mirror")
+    p.add_argument("--project", help="override the project from the profile")
+    p.add_argument("--out", default=str(DEFAULT_MIRROR))
+    p.add_argument("--stdout", action="store_true", help="print instead of writing")
+    p.set_defaults(func=cmd_sync)
 
     args = parser.parse_args()
     args.func(args)

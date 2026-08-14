@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
-"""Regenerate docs/project-state.md from Linear.
+"""The Linear adapter: everything that knows Linear by name lives here.
 
-Linear owns project state. This script mirrors it into the repository so that a
-model working here can read the current shape of the work without network
-access, and so that git history records how the work changed over time.
+`board.py` is the front door and speaks in board-neutral terms — issue,
+parent, phase, status. It loads this module because the profile says
+`"board": "linear"`. Point the profile at Azure DevOps and it loads
+`sync_azure_devops_state.py` instead, and nothing else in the platform
+changes.
 
-The generated file is never edited by hand.
+Two responsibilities:
 
-Usage:
+1. **Operations** — read and write issues, comments, documents, and move a
+   card into the status a phase requires.
+2. **The mirror** — regenerate `docs/project-state.md`, so a model working
+   offline can see the shape of the work and `git log` records how it changed.
+
+Run directly to regenerate the mirror, which is what this file did before it
+grew the rest:
+
     python3 scripts/sync_linear_state.py [--project <id>] [--out <path>] [--stdout]
 
-Exit codes:
+Exit codes are defined by board.py and shared by every adapter:
     0  success
-    2  authentication failure - human action required
-    6  configuration failure (no token, bad permissions, unknown project)
+    2  the board rejected us, or could not be reached
+    3  the request was malformed
+    6  configuration failure
 """
 
 import argparse
 import json
 import os
 import ssl
-import stat
 import sys
 import urllib.error
 import urllib.request
@@ -28,12 +37,150 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 API_URL = "https://api.linear.app/graphql"
-TOKEN_FILE = Path.home() / ".feature-discovery" / "linear-token"
 DEFAULT_PROJECT = "6d49b0dc-e8b7-4e4c-a655-86439a48775e"  # AI SDLC Platform
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "docs" / "project-state.md"
 
-QUERY = """
+STATE_ORDER = {
+    "triage": 0,
+    "backlog": 1,
+    "unstarted": 2,
+    "started": 3,
+    "completed": 4,
+    "canceled": 5,
+    "duplicate": 6,
+}
+
+# ---------------------------------------------------------------------------
+# The phase map: abstract state -> the status name this board uses.
+#
+# Phases and the three abstract states are platform-level and identical on
+# every board. Only the right-hand column is Linear's, which is precisely why
+# it lives in the adapter and not in board.py.
+#
+# `ready`  nobody has taken it, an agent may claim it
+# `active` claimed, work in progress
+# `review` waiting for a human
+# ---------------------------------------------------------------------------
+
+PHASE_STATES = {
+    "design": {
+        "ready": "Ready for Design",
+        "active": "In Design",
+        "review": "Design Review",
+    },
+    "planning": {
+        "ready": "Ready for Planning",
+        "active": "In Planning",
+    },
+    "development": {
+        "ready": "Ready for Development",
+        "active": "In Development",
+        "review": "PR Review",
+    },
+    "pbi": {
+        "ready": "Todo",
+        "active": "In Progress",
+        "review": "In Review",
+        "blocked": "Blocked · Needs Design",
+    },
+}
+
+
+def fail(code, message):
+    print(f"ERROR: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------------------
+# Transport
+# ---------------------------------------------------------------------------
+
+def build_ssl_context():
+    """Return a verifying SSL context that also works on python.org builds.
+
+    The python.org framework build ships without a CA bundle, so the default
+    context finds nothing to verify against and every HTTPS call fails. Fall
+    back to the system bundle rather than disabling verification.
+    """
+    context = ssl.create_default_context()
+    if context.get_ca_certs():
+        return context
+    for candidate in ("/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"):
+        if os.path.exists(candidate):
+            return ssl.create_default_context(cafile=candidate)
+    fail(6, "no CA bundle found; run the Install Certificates command for your Python")
+
+
+def query(token, document, variables=None):
+    payload = json.dumps({"query": document, "variables": variables or {}}).encode()
+    request = urllib.request.Request(
+        API_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": token},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=build_ssl_context()) as response:
+            body = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            fail(2, "Linear rejected the API key. Reissue it in Settings > Security & access.")
+        fail(2, f"Linear returned HTTP {exc.code}: {exc.read().decode()[:300]}")
+    except urllib.error.URLError as exc:
+        fail(2, f"cannot reach Linear: {exc.reason}")
+
+    if body.get("errors"):
+        message = "; ".join(e.get("message", "?") for e in body["errors"])
+        fail(3, f"Linear refused the request: {message}")
+    return body["data"]
+
+
+# ---------------------------------------------------------------------------
+# Queries
+# ---------------------------------------------------------------------------
+
+TEAM_QUERY = """
+query Team($key: String!) {
+  teams(filter: { key: { eq: $key } }, first: 1) {
+    nodes { id key name states(first: 50) { nodes { id name type } } }
+  }
+}
+"""
+
+ISSUE_QUERY = """
+query Issue($id: String!) {
+  issue(id: $id) {
+    id identifier title url branchName description
+    state { name type }
+    parent { identifier }
+    project { id name }
+    labels(first: 10) { nodes { name } }
+  }
+}
+"""
+
+CHILDREN_QUERY = """
+query Children($id: String!) {
+  issue(id: $id) {
+    children(first: 100) {
+      nodes { identifier title url state { name type } }
+    }
+  }
+}
+"""
+
+PROJECT_ISSUES_QUERY = """
+query ProjectIssues($id: String!) {
+  project(id: $id) {
+    name
+    issues(first: 100) {
+      nodes { identifier title url state { name type } parent { identifier } }
+    }
+  }
+}
+"""
+
+MIRROR_QUERY = """
 query ProjectState($id: String!) {
   project(id: $id) {
     id
@@ -68,81 +215,262 @@ query ProjectState($id: String!) {
 }
 """
 
-STATE_ORDER = {
-    "triage": 0,
-    "backlog": 1,
-    "unstarted": 2,
-    "started": 3,
-    "completed": 4,
-    "canceled": 5,
-    "duplicate": 6,
-}
+
+# ---------------------------------------------------------------------------
+# Adapter interface. Every board adapter implements these.
+# ---------------------------------------------------------------------------
+
+class Board:
+    """A connected board. Holds the token and the team it works against."""
+
+    def __init__(self, token, profile):
+        self.token = token
+        self.profile = profile
+        self._team = None
+
+    # -- lookups ------------------------------------------------------------
+
+    @property
+    def team(self):
+        if self._team is None:
+            key = self.profile["team_key"]
+            nodes = query(self.token, TEAM_QUERY, {"key": key})["teams"]["nodes"]
+            if not nodes:
+                fail(3, f"no team with key '{key}' in this workspace")
+            self._team = nodes[0]
+        return self._team
+
+    def describe(self):
+        """Prove the connection works. Used by `board.py init`."""
+        team = self.team
+        out = {"team_key": team["key"], "team_name": team["name"]}
+        project_id = self.profile.get("project_id")
+        if project_id:
+            data = query(self.token, "query P($id: String!) { project(id: $id) { name } }",
+                         {"id": project_id})
+            if not data.get("project"):
+                fail(3, f"no project with id {project_id}")
+            out["project_name"] = data["project"]["name"]
+        return out
+
+    def list_states(self):
+        return [
+            {"name": s["name"], "type": s["type"]}
+            for s in sorted(self.team["states"]["nodes"],
+                            key=lambda s: (STATE_ORDER.get(s["type"], 9), s["name"]))
+        ]
+
+    def resolve_state(self, name):
+        """Map a status name to its id, case-insensitively.
+
+        Refuses rather than guessing: a typo in a status name must not leave
+        the card silently where it was.
+        """
+        wanted = name.strip().casefold()
+        for state in self.team["states"]["nodes"]:
+            if state["name"].casefold() == wanted:
+                return state["id"]
+        known = ", ".join(sorted(s["name"] for s in self.team["states"]["nodes"]))
+        fail(3, f"no status named '{name}' in team {self.team['key']}. Known: {known}")
+
+    def get_issue(self, identifier):
+        issue = query(self.token, ISSUE_QUERY, {"id": identifier})["issue"]
+        if not issue:
+            fail(3, f"no issue {identifier}")
+        return {
+            "id": issue["id"],
+            "identifier": issue["identifier"],
+            "title": issue["title"],
+            "url": issue["url"],
+            "branch": issue["branchName"],
+            "description": issue["description"],
+            "status": issue["state"]["name"],
+            "status_type": issue["state"]["type"],
+            "parent": issue["parent"]["identifier"] if issue["parent"] else None,
+            "labels": [l["name"] for l in issue["labels"]["nodes"]],
+        }
+
+    def list_children(self, identifier):
+        issue = query(self.token, CHILDREN_QUERY, {"id": identifier})["issue"]
+        if not issue:
+            fail(3, f"no issue {identifier}")
+        return [_brief(n) for n in issue["children"]["nodes"]]
+
+    def list_project(self, project_id):
+        data = query(self.token, PROJECT_ISSUES_QUERY, {"id": project_id})
+        if not data.get("project"):
+            fail(3, f"no project with id {project_id}")
+        return [_brief(n) for n in data["project"]["issues"]["nodes"]]
+
+    # -- writes -------------------------------------------------------------
+
+    def create_issue(self, title, body=None, parent=None, status=None, project_id=None):
+        payload = {"teamId": self.team["id"], "title": title}
+        if body:
+            payload["description"] = body
+        if status:
+            payload["stateId"] = self.resolve_state(status)
+        if parent:
+            payload["parentId"] = self.get_issue(parent)["id"]
+        if project_id:
+            payload["projectId"] = project_id
+
+        mutation = """
+        mutation Create($input: IssueCreateInput!) {
+          issueCreate(input: $input) { success issue { identifier url branchName } }
+        }
+        """
+        result = query(self.token, mutation, {"input": payload})["issueCreate"]
+        if not result["success"]:
+            fail(3, "Linear refused to create the issue")
+        return result["issue"]
+
+    def update_issue(self, identifier, title=None, body=None, status=None, parent=None):
+        payload = {}
+        if title:
+            payload["title"] = title
+        if body:
+            payload["description"] = body
+        if status:
+            payload["stateId"] = self.resolve_state(status)
+        if parent:
+            payload["parentId"] = self.get_issue(parent)["id"]
+        if not payload:
+            fail(3, "nothing to update")
+
+        issue_id = self.get_issue(identifier)["id"]
+        mutation = """
+        mutation Update($id: String!, $input: IssueUpdateInput!) {
+          issueUpdate(id: $id, input: $input) {
+            success issue { identifier state { name } }
+          }
+        }
+        """
+        result = query(self.token, mutation, {"id": issue_id, "input": payload})["issueUpdate"]
+        if not result["success"]:
+            fail(3, "Linear refused the update")
+        return {
+            "identifier": result["issue"]["identifier"],
+            "status": result["issue"]["state"]["name"],
+        }
+
+    def add_comment(self, identifier, body):
+        issue_id = self.get_issue(identifier)["id"]
+        mutation = """
+        mutation Comment($input: CommentCreateInput!) {
+          commentCreate(input: $input) { success comment { url } }
+        }
+        """
+        result = query(self.token, mutation,
+                       {"input": {"issueId": issue_id, "body": body}})["commentCreate"]
+        if not result["success"]:
+            fail(3, "Linear refused the comment")
+        return result["comment"]["url"]
+
+    def attach_document(self, title, content, identifier=None, project_id=None):
+        payload = {"title": title, "content": content}
+        if identifier:
+            payload["issueId"] = self.get_issue(identifier)["id"]
+        elif project_id:
+            payload["projectId"] = project_id
+        else:
+            fail(3, "a document needs an issue or a project to hang from")
+
+        mutation = """
+        mutation Doc($input: DocumentCreateInput!) {
+          documentCreate(input: $input) { success document { url } }
+        }
+        """
+        result = query(self.token, mutation, {"input": payload})["documentCreate"]
+        if not result["success"]:
+            fail(3, "Linear refused the document")
+        return result["document"]["url"]
+
+    # -- phase transitions --------------------------------------------------
+
+    def phase_status(self, phase, kind):
+        """Translate an abstract state into this board's status name."""
+        if phase not in PHASE_STATES:
+            known = ", ".join(sorted(PHASE_STATES))
+            fail(3, f"unknown phase '{phase}'. Known: {known}")
+        states = PHASE_STATES[phase]
+        if kind not in states:
+            known = ", ".join(sorted(states))
+            fail(3, f"phase '{phase}' has no '{kind}' state. It has: {known}")
+        return states[kind]
+
+    def start_phase(self, identifier, phase):
+        """Claim the card for a phase, or refuse and say why.
+
+        This is the deterministic half of the signal check: a phase may only
+        start from its own `ready` status. Starting design on a card that
+        nobody approved is a process violation, not a shortcut, so the script
+        refuses instead of guessing.
+        """
+        issue = self.get_issue(identifier)
+        ready = self.phase_status(phase, "ready")
+        active = self.phase_status(phase, "active")
+
+        if issue["status"].casefold() == active.casefold():
+            print(f"{identifier} is already in '{active}'", file=sys.stderr)
+            return {"identifier": identifier, "status": issue["status"], "changed": False}
+
+        if issue["status"].casefold() != ready.casefold():
+            fail(3, f"{identifier} is in '{issue['status']}', but phase '{phase}' "
+                    f"starts from '{ready}'. Nothing was changed.")
+
+        result = self.update_issue(identifier, status=active)
+        result["changed"] = True
+        return result
+
+    def finish_phase(self, identifier, phase, kind="review"):
+        """Hand the card on: from `active` to whatever comes next."""
+        issue = self.get_issue(identifier)
+        active = self.phase_status(phase, "active")
+        target = self.phase_status(phase, kind)
+
+        if issue["status"].casefold() != active.casefold():
+            fail(3, f"{identifier} is in '{issue['status']}', but phase '{phase}' "
+                    f"finishes from '{active}'. Nothing was changed.")
+
+        result = self.update_issue(identifier, status=target)
+        result["changed"] = True
+        return result
+
+    # -- the mirror ---------------------------------------------------------
+
+    def render_mirror(self, project_id, generated_at):
+        project = query(self.token, MIRROR_QUERY, {"id": project_id}).get("project")
+        if not project:
+            fail(3, f"no project with id {project_id}")
+        return _render(project, generated_at)
 
 
-def fail(code, message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(code)
+def _brief(node):
+    return {
+        "identifier": node["identifier"],
+        "title": node["title"],
+        "url": node["url"],
+        "status": node["state"]["name"],
+        "status_type": node["state"]["type"],
+    }
 
 
-def read_token():
-    token = os.environ.get("LINEAR_API_KEY")
-    if token:
-        return token.strip()
-    if not TOKEN_FILE.exists():
-        fail(6, f"no LINEAR_API_KEY and no token file at {TOKEN_FILE}")
-    mode = stat.S_IMODE(TOKEN_FILE.stat().st_mode)
-    if mode & 0o077:
-        fail(6, f"{TOKEN_FILE} must be mode 0600, found {oct(mode)}")
-    return TOKEN_FILE.read_text().strip()
+def connect(token, profile):
+    """Entry point every adapter exposes."""
+    return Board(token, profile)
 
 
-def build_ssl_context():
-    """Return a verifying SSL context that also works on python.org builds.
+# ---------------------------------------------------------------------------
+# Mirror rendering
+# ---------------------------------------------------------------------------
 
-    The python.org framework build ships without a CA bundle, so the default
-    context verifies nothing it can find and every HTTPS call fails. Fall back
-    to the system bundle rather than disabling verification.
-    """
-    context = ssl.create_default_context()
-    if context.get_ca_certs():
-        return context
-    for candidate in ("/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"):
-        if os.path.exists(candidate):
-            return ssl.create_default_context(cafile=candidate)
-    fail(6, "no CA bundle found; run the Install Certificates command for your Python")
-
-
-def query_linear(token, project_id):
-    payload = json.dumps({"query": QUERY, "variables": {"id": project_id}}).encode()
-    request = urllib.request.Request(
-        API_URL,
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": token},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30, context=build_ssl_context()) as response:
-            body = json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            fail(2, "Linear rejected the API key. Reissue it in Settings > Security & access.")
-        fail(2, f"Linear returned HTTP {exc.code}: {exc.read().decode()[:300]}")
-    except urllib.error.URLError as exc:
-        fail(2, f"cannot reach Linear: {exc.reason}")
-
-    if body.get("errors"):
-        fail(2, f"GraphQL errors: {json.dumps(body['errors'])[:500]}")
-    project = body.get("data", {}).get("project")
-    if not project:
-        fail(6, f"project {project_id} not found")
-    return project
-
-
-def issue_sort_key(issue):
+def _issue_sort_key(issue):
     state = issue.get("state") or {}
     return (STATE_ORDER.get(state.get("type"), 9), issue["identifier"])
 
 
-def format_relations(issue):
+def _format_relations(issue):
     parts = []
     parent = issue.get("parent")
     if parent:
@@ -154,7 +482,7 @@ def format_relations(issue):
     return ", ".join(parts) or "—"
 
 
-def render(project, generated_at):
+def _render(project, generated_at):
     milestones = sorted(
         project["projectMilestones"]["nodes"], key=lambda m: m.get("sortOrder") or 0
     )
@@ -171,8 +499,8 @@ def render(project, generated_at):
 
     lines = [
         "<!-- GENERATED FILE - DO NOT EDIT.",
-        "     Regenerate with: python3 scripts/sync_linear_state.py",
-        "     Linear is the source of truth; this file is a mirror. -->",
+        "     Regenerate with: python3 scripts/board.py sync",
+        "     The board is the source of truth; this file is a mirror. -->",
         "",
         f"# {project['name']} — project state",
         "",
@@ -193,7 +521,7 @@ def render(project, generated_at):
 
     lines += ["## Milestones", ""]
     for milestone in milestones:
-        milestone_issues = sorted(by_milestone.get(milestone["id"], []), key=issue_sort_key)
+        milestone_issues = sorted(by_milestone.get(milestone["id"], []), key=_issue_sort_key)
         lines += [f"### {milestone['name']}", ""]
         if milestone.get("description"):
             lines += [milestone["description"].strip(), ""]
@@ -216,11 +544,11 @@ def render(project, generated_at):
                 f"| {state} "
                 f"| {labels} "
                 f"| `{branch}` "
-                f"| {format_relations(issue)} |"
+                f"| {_format_relations(issue)} |"
             )
         lines.append("")
 
-    orphans = sorted(by_milestone.get(None, []), key=issue_sort_key)
+    orphans = sorted(by_milestone.get(None, []), key=_issue_sort_key)
     if orphans:
         lines += ["## Issues without a milestone", ""]
         for issue in orphans:
@@ -232,37 +560,49 @@ def render(project, generated_at):
         "## How to use this file",
         "",
         "This is a snapshot. For anything that must be current — a status right now, "
-        "the full text of an issue, comments, or an approval record — query Linear "
-        "directly; see `CLAUDE.md`. Use this file for orientation, for offline work, "
-        "and to see in `git log` how the shape of the work changed over time.",
+        "the full text of an issue, comments, or an approval record — ask the board "
+        "directly: `board.py show`, `board.py list`. Use this file for orientation, "
+        "for offline work, and to see in `git log` how the shape of the work changed "
+        "over time.",
         "",
     ]
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Standalone entry point: regenerate the mirror.
+# ---------------------------------------------------------------------------
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", default=DEFAULT_PROJECT, help="Linear project id")
+    parser = argparse.ArgumentParser(description="Regenerate docs/project-state.md from Linear.")
+    parser.add_argument("--project", default=DEFAULT_PROJECT, help="project id")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="output path")
     parser.add_argument("--stdout", action="store_true", help="print instead of writing")
     args = parser.parse_args()
 
-    token = read_token()
-    project = query_linear(token, args.project)
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    content = render(project, generated_at)
+    # Imported lazily so this module stays usable as a plain library.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import board  # noqa: E402
 
-    if args.stdout:
+    profile = board.load_profile()
+    token = board.read_token(profile)
+    handle = connect(token, profile)
+
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    content = handle.render_mirror(args.project, generated_at)
+    write_mirror(content, args.out, args.stdout, generated_at)
+
+
+def write_mirror(content, out, to_stdout, generated_at):
+    if to_stdout:
         print(content)
         return
-
-    out_path = Path(args.out)
+    out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     tmp_path.write_text(content, encoding="utf-8")
     os.replace(tmp_path, out_path)
-    issue_count = len(project["issues"]["nodes"])
-    print(f"Wrote {out_path} ({issue_count} issues, generated {generated_at})")
+    print(f"Wrote {out_path} (generated {generated_at})")
 
 
 if __name__ == "__main__":

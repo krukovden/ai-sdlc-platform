@@ -1,10 +1,10 @@
 <!-- GENERATED FILE - DO NOT EDIT.
-     Regenerate with: python3 scripts/sync_linear_state.py
-     Linear is the source of truth; this file is a mirror. -->
+     Regenerate with: python3 scripts/board.py sync
+     The board is the source of truth; this file is a mirror. -->
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-14T22:01:38Z
+**Generated:** 2026-08-14T22:06:43Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 21 live (3 in progress, 4 done) · 15 archived
@@ -105,4 +105,4 @@
 
 ## How to use this file
 
-This is a snapshot. For anything that must be current — a status right now, the full text of an issue, comments, or an approval record — query Linear directly; see `CLAUDE.md`. Use this file for orientation, for offline work, and to see in `git log` how the shape of the work changed over time.
+This is a snapshot. For anything that must be current — a status right now, the full text of an issue, comments, or an approval record — ask the board directly: `board.py show`, `board.py list`. Use this file for orientation, for offline work, and to see in `git log` how the shape of the work changed over time.
