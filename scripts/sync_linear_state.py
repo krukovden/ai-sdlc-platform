@@ -130,6 +130,12 @@ def query(token, document, variables=None):
         fail(2, f"Linear returned HTTP {exc.code}: {exc.read().decode()[:300]}")
     except urllib.error.URLError as exc:
         fail(2, f"cannot reach Linear: {exc.reason}")
+    except TimeoutError:
+        # Raised bare, not wrapped in URLError, when the socket times out while
+        # the response is being read. Without this clause it escapes as a
+        # traceback and the promised exit code 2 never happens.
+        fail(2, "Linear did not answer within 30s. The request may or may not "
+                "have been applied; check the card before retrying a write.")
 
     if body.get("errors"):
         message = "; ".join(e.get("message", "?") for e in body["errors"])

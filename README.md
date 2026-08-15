@@ -22,7 +22,7 @@ python3 scripts/board.py init --team IDE --project <id>   # create and verify a 
 python3 scripts/board.py list --parent IDE-79             # what is under a feature
 python3 scripts/board.py start IDE-42 --phase design      # claim a card for a phase
 python3 scripts/board.py sync                             # regenerate the offline mirror
-python3 -m unittest discover tests                        # 73 tests, none touch the network
+python3 -m unittest discover tests                        # 77 tests, none touch the network
 ```
 
 `board.py` is the front door and knows no tracker by name; `sync_linear_state.py` is the Linear adapter. A profile that says `"board": "azure-devops"` looks for `scripts/sync_azure_devops_state.py` and refuses with a clear reason if it is missing. Adding a tracker means writing one adapter.

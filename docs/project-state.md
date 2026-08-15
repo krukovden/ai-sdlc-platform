@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-15T02:02:08Z
+**Generated:** 2026-08-15T02:10:39Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 29 live (2 in progress, 8 done) · 15 archived
+**Issues:** 30 live (0 in progress, 10 done) · 15 archived
 
 ## Project documents
 
@@ -45,17 +45,18 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
+| [IDE-100](https://linear.app/krukov-idea-hub/issue/IDE-100/work-item-ide-92-a-key-per-agent-identity-in-the-profile) | [Work Item · IDE-92] A key per agent: identity in the profile | Backlog | — | `krukovden/ide-100-work-item-ide-92-a-key-per-agent-identity-in-the-profile` | child of IDE-92, related IDE-71 |
 | [IDE-92](https://linear.app/krukov-idea-hub/issue/IDE-92/feature-skvoznye-sluzhby-platformy) | [Feature] Сквозные службы платформы | Backlog | Feature | `krukovden/ide-92-feature-skvoznie-sluzhbi-platformi` | related IDE-79, related IDE-76 |
 | [IDE-94](https://linear.app/krukov-idea-hub/issue/IDE-94/work-item-ide-92-state-resolver-and-idp-status) | [Work Item · IDE-92] State resolver and /idp-status | Backlog | — | `krukovden/ide-94-work-item-ide-92-state-resolver-and-idp-status` | child of IDE-92, related IDE-90 |
 | [IDE-95](https://linear.app/krukov-idea-hub/issue/IDE-95/work-item-ide-92-project-memory-implementation) | [Work Item · IDE-92] Project memory implementation | Backlog | — | `krukovden/ide-95-work-item-ide-92-project-memory-implementation` | child of IDE-92, related IDE-76 |
 | [IDE-99](https://linear.app/krukov-idea-hub/issue/IDE-99/work-item-ide-92-platform-installation-and-per-project-onboarding) | [Work Item · IDE-92] Platform installation and per-project onboarding | Backlog | — | `krukovden/ide-99-work-item-ide-92-platform-installation-and-per-project` | child of IDE-92, related IDE-90, related IDE-77, related IDE-71 |
-| [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | In Progress | Feature | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-93, related IDE-95, related IDE-94, related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
-| [IDE-89](https://linear.app/krukov-idea-hub/issue/IDE-89/work-item-ide-79-consolidate-the-contracts-into-project-documentation) | [Work Item · IDE-79] Consolidate the contracts into project documentation | In Progress | — | `krukovden/ide-89-work-item-ide-79-consolidate-the-contracts-into-project` | child of IDE-79 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
 | [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-ide-79-define-linear-workflow-states-approvals-and-agent) | [Spike · IDE-79] Define Linear workflow states, approvals, and agent handoffs | Done | Spike | `krukovden/ide-71-spike-ide-79-define-linear-workflow-states-approvals-and` | child of IDE-79, related IDE-77, blocks IDE-89, blocks IDE-72, blocks IDE-69, related IDE-68 |
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-ide-79-design-the-project-memory-contract) | [Spike · IDE-79] Design the Project Memory contract | Done | Spike | `krukovden/ide-76-spike-ide-79-design-the-project-memory-contract` | child of IDE-79, blocks IDE-89, related IDE-68, related IDE-71 |
 | [IDE-77](https://linear.app/krukov-idea-hub/issue/IDE-77/spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a-standing) | [Spike · IDE-79] Survey agent prior art and make reuse review a standing rule | Done | Spike | `krukovden/ide-77-spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a` | child of IDE-79, blocks IDE-89, blocks IDE-78, related IDE-76, related IDE-68 |
 | [IDE-78](https://linear.app/krukov-idea-hub/issue/IDE-78/spike-ide-79-define-the-artifact-and-issue-authoring-standard) | [Spike · IDE-79] Define the artifact and issue authoring standard | Done | Spike | `krukovden/ide-78-spike-ide-79-define-the-artifact-and-issue-authoring` | child of IDE-79, related IDE-83, blocks IDE-89, related IDE-71, related IDE-76, related IDE-68 |
+| [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | Done | Feature | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-99, related IDE-100, related IDE-93, related IDE-95, related IDE-94, related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
+| [IDE-89](https://linear.app/krukov-idea-hub/issue/IDE-89/work-item-ide-79-consolidate-the-contracts-into-project-documentation) | [Work Item · IDE-79] Consolidate the contracts into project documentation | Done | — | `krukovden/ide-89-work-item-ide-79-consolidate-the-contracts-into-project` | child of IDE-79, related IDE-94, related IDE-100 |
 | [IDE-90](https://linear.app/krukov-idea-hub/issue/IDE-90/spike-ide-79-define-platform-elements-phases-and-how-each-phase-is) | [Spike · IDE-79] Define platform elements, phases and how each phase is triggered | Done | Spike | `krukovden/ide-90-spike-ide-79-define-platform-elements-phases-and-how-each` | child of IDE-79, related IDE-78, related IDE-77, blocks IDE-89, blocks IDE-71, related IDE-76 |
 | [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) | [Work Item · IDE-92] Tracker adapter and profile resolution | Done | — | `krukovden/ide-93-work-item-ide-92-tracker-adapter-and-profile-resolution` | child of IDE-92, related IDE-76 |
 | [IDE-6](https://linear.app/krukov-idea-hub/issue/IDE-6/define-the-platform-domain-model-and-terminology) | Define the platform domain model and terminology | Canceled · archived | — | `krukovden/ide-6-define-the-platform-domain-model-and-terminology` | — |
