@@ -33,6 +33,7 @@ Usage:
     board.py version                            what is installed, and to which standard
     board.py memory core                        what exists, one line each
     board.py memory why IDE-42                  why this feature is the way it is
+    board.py memory record IDE-42 --entry T     append to the feature's history
     board.py memory check                       drift between the registry and git
     board.py memory init                        seed memory for an existing project
     board.py sync                               regenerate docs/project-state.md
@@ -70,6 +71,19 @@ def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def invoked_as():
+    """How the user actually called us — `idp` once installed, else `board.py`.
+
+    Telling someone to run `board.py init` when their command is `idp` sends
+    them looking for a file they never have to see. But argv[0] is only ours
+    when we are the entry point: under a test runner or any other wrapper it
+    names that instead, and the advice turns into nonsense. So trust it only
+    when it looks like this program.
+    """
+    name = Path(sys.argv[0] or "").name
+    return name if name == "idp" or name.endswith("board.py") else "board.py"
+
+
 # ---------------------------------------------------------------------------
 # Profile and credentials
 # ---------------------------------------------------------------------------
@@ -92,7 +106,8 @@ def find_profile(start=None):
 def load_profile():
     path = find_profile()
     if not path:
-        fail(6, f"no {PROFILE_DIR}/{PROFILE_NAME} found here or above; run: board.py init")
+        fail(6, f"no {PROFILE_DIR}/{PROFILE_NAME} found here or above; "
+                f"run: {invoked_as()} init")
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -417,6 +432,21 @@ def cmd_memory(args):
             if not args.id:
                 fail(3, "memory why needs an issue: board.py memory why IDE-42")
             print(explain(board, registry, args.id))
+        elif args.action == "record":
+            if not args.id or not args.entry:
+                fail(3, "memory record needs an issue and --entry")
+            title = memory.history_title(args.id)
+            existing = None
+            for doc in board.list_documents(project_id_from(profile, None)):
+                if doc["title"] == title:
+                    existing = board.get_document(doc["slugId"])
+                    break
+            body = memory.append_entry(existing["content"] if existing else None,
+                                       args.entry, now(), pbi=args.pbi)
+            if existing and body == existing["content"]:
+                print(f"{title}: already recorded, nothing appended")
+                return
+            print(board.attach_document(title, body, identifier=args.id))
         elif args.action == "check":
             issues = board.list_project(project_id_from(profile, None))
             findings = memory.check_drift(registry, issues, profile,
@@ -554,8 +584,10 @@ def main():
     p.set_defaults(func=cmd_version)
 
     p = sub.add_parser("memory", help="project memory: registry, why, drift")
-    p.add_argument("action", choices=["core", "why", "check", "init"])
+    p.add_argument("action", choices=["core", "why", "check", "init", "record"])
     p.add_argument("id", nargs="?", help="the issue, for `why`")
+    p.add_argument("--entry", help="what the merge changed, for `record`")
+    p.add_argument("--pbi", help="the PBI whose merge this records")
     p.add_argument("--no-fetch", action="store_true",
                    help="skip git fetch; the check then runs against a stale clone")
     p.set_defaults(func=cmd_memory)

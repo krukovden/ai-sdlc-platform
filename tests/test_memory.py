@@ -40,9 +40,10 @@ More prose after it.
 """
 
 
-def issue(identifier, parent=None, status_type="completed", title="A feature"):
+def issue(identifier, parent=None, status_type="completed", title="A feature", labels=()):
     return {"identifier": identifier, "title": title, "parent": parent,
             "status": status_type.title(), "status_type": status_type,
+            "labels": list(labels),
             "url": f"https://example.invalid/{identifier}"}
 
 
@@ -216,6 +217,91 @@ class WordBoundaryTests(ScriptTestCase):
         with mock.patch.object(memory, "run_git", fake_run):
             memory.commits_mentioning("/repo", "IDE-93")
         self.assertIn(memory.word_pattern("IDE-93"), seen["args"])
+
+
+class HistoryTests(ScriptTestCase):
+    """The feature's history is append-only, and one merge is one line."""
+
+    def test_creates_the_document_with_a_first_entry(self):
+        text = memory.append_entry(None, "wired the resolver in", "2026-08-15")
+
+        self.assertIn("# История фичи", text)
+        self.assertIn("**2026-08-15**", text)
+        self.assertIn("wired the resolver in", text)
+
+    def test_appends_after_what_is_already_there(self):
+        first = memory.append_entry(None, "first thing", "2026-08-14")
+        second = memory.append_entry(first, "second thing", "2026-08-15")
+
+        self.assertIn("first thing", second)
+        self.assertLess(second.index("first thing"), second.index("second thing"))
+
+    def test_names_the_pbi_whose_merge_it_records(self):
+        text = memory.append_entry(None, "did the thing", "2026-08-15", pbi="IDE-94")
+        self.assertIn("(IDE-94)", text)
+
+    def test_recording_the_same_merge_twice_appends_once(self):
+        first = memory.append_entry(None, "did the thing", "2026-08-15", pbi="IDE-94")
+        again = memory.append_entry(first, "did the thing", "2026-08-15", pbi="IDE-94")
+        self.assertEqual(first, again)
+
+    def test_an_empty_entry_is_refused_rather_than_recorded(self):
+        with self.assertRaises(memory.MemoryError_) as caught:
+            memory.append_entry(None, "   ", "2026-08-15")
+        self.assertIn("records nothing", str(caught.exception))
+
+    def test_the_document_title_is_derived_from_the_feature(self):
+        self.assertEqual(memory.history_title("IDE-42"), "IDE-42 — history")
+
+
+class ProcessFeatureTests(ScriptTestCase):
+    """The registry answers "what can the platform do".
+
+    A feature that produced rules rather than a capability does not belong in
+    it, and must not be reported as missing from it either — otherwise the
+    detector reports the same non-problem on every run until nobody reads it.
+    """
+
+    def setUp(self):
+        self.registry = memory.parse_registry(DOCUMENT)
+
+    def check(self, issues, profile=None):
+        with mock.patch.object(memory, "fetch"), \
+             mock.patch.object(memory, "commits_mentioning",
+                               side_effect=lambda r, i, **k: ["abc"] if i == "IDE-93" else []), \
+             mock.patch.object(memory, "identifiers_on",
+                               return_value={i["identifier"] for i in issues}):
+            return memory.check_drift(self.registry, issues,
+                                      profile or {"repositories": ["/repo"]})
+
+    def test_a_labelled_feature_is_not_reported_as_missing_from_the_registry(self):
+        issues = [issue("IDE-93"), issue("IDE-79", labels=["Feature", "Process"])]
+        findings = self.check(issues)
+
+        self.assertEqual(findings["unregistered"], [])
+        self.assertEqual(findings["process"], ["IDE-79"])
+
+    def test_the_skip_is_stated_in_the_report_rather_than_silent(self):
+        issues = [issue("IDE-93"), issue("IDE-79", labels=["Process"])]
+        text = memory.describe_drift(self.check(issues))
+
+        self.assertIn("No drift", text)
+        self.assertIn("IDE-79", text)
+        self.assertIn("not capabilities", text)
+
+    def test_the_label_name_is_matched_regardless_of_case(self):
+        issues = [issue("IDE-93"), issue("IDE-79", labels=["process"])]
+        self.assertEqual(self.check(issues)["process"], ["IDE-79"])
+
+    def test_a_foreign_team_can_name_the_label_itself(self):
+        issues = [issue("IDE-93"), issue("IDE-79", labels=["Ways of working"])]
+        findings = self.check(issues, {"repositories": ["/repo"],
+                                       "process_label": "Ways of working"})
+        self.assertEqual(findings["process"], ["IDE-79"])
+
+    def test_an_unlabelled_closed_feature_is_still_reported(self):
+        issues = [issue("IDE-93"), issue("IDE-79", labels=["Feature"])]
+        self.assertEqual(self.check(issues)["unregistered"], ["IDE-79"])
 
 
 class RepositoryTests(ScriptTestCase):

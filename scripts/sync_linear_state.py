@@ -182,7 +182,12 @@ query ProjectIssues($id: String!) {
   project(id: $id) {
     name
     issues(first: 100) {
-      nodes { identifier title url state { name type } parent { identifier } }
+      nodes {
+        identifier title url
+        state { name type }
+        parent { identifier }
+        labels(first: 10) { nodes { name } }
+      }
     }
   }
 }
@@ -523,6 +528,7 @@ def _brief(node):
         # The query already asks for it; dropping it here made every issue look
         # parentless, which made every sub-issue look like a top-level feature.
         "parent": parent["identifier"] if parent else None,
+        "labels": [l["name"] for l in (node.get("labels") or {}).get("nodes", [])],
     }
 
 

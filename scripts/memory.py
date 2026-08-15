@@ -28,6 +28,12 @@ REGISTRY_BLOCK = "idp-registry"
 SCHEMA_VERSION = "1.0"
 REQUIRED_FIELDS = ("name", "one_liner", "issue")
 
+# The registry answers "what can the platform do", so a feature that produced
+# rules rather than a capability does not belong in it — and must not be
+# reported as missing from it either. The board says which is which, by label,
+# because that is where a human can see and change the answer.
+DEFAULT_PROCESS_LABEL = "Process"
+
 ISSUE_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 
 
@@ -210,7 +216,7 @@ def check_drift(registry, issues, profile, do_fetch=True):
             fetch(repo)
 
     findings = {"unbacked": [], "unregistered": [], "unrecorded_removals": [],
-                "repositories": [str(r) for r in repos]}
+                "process": [], "repositories": [str(r) for r in repos]}
 
     for entry in registry["features"]:
         issue = entry["issue"]
@@ -222,6 +228,7 @@ def check_drift(registry, issues, profile, do_fetch=True):
 
     registered = {f["issue"] for f in registry["features"]}
     recorded_removed = {i for r in registry["removed"] for i in r.get("issues", [])}
+    process_label = profile.get("process_label", DEFAULT_PROCESS_LABEL).casefold()
 
     mentioned = set()
     for repo in repos:
@@ -239,6 +246,10 @@ def check_drift(registry, issues, profile, do_fetch=True):
         feature = by_id.get(feature_id)
         if feature is None or feature.get("parent"):
             continue                                  # not a top-level feature
+        labels = [l.casefold() for l in feature.get("labels") or []]
+        if process_label in labels:
+            findings["process"].append(feature_id)
+            continue                                  # rules, not a capability
         if feature["status_type"] == "completed" and feature_id not in registered:
             findings["unregistered"].append(feature_id)
         elif feature["status_type"] == "canceled" and feature_id not in recorded_removed:
@@ -246,6 +257,7 @@ def check_drift(registry, issues, profile, do_fetch=True):
 
     findings["unregistered"] = sorted(set(findings["unregistered"]))
     findings["unrecorded_removals"] = sorted(set(findings["unrecorded_removals"]))
+    findings["process"] = sorted(set(findings["process"]))
 
     return findings
 
@@ -267,6 +279,16 @@ def describe_drift(findings):
         for issue in findings["unrecorded_removals"]:
             lines.append(f"  {issue}")
         lines.append("  A removal without a recorded reason invites its own reintroduction.")
+    if findings["process"]:
+        # Stated, not silent. A detector that quietly drops things from its own
+        # scope is indistinguishable from one that missed them.
+        skipped = ", ".join(findings["process"])
+        note = f"Skipped as process features, not capabilities: {skipped}"
+        if not lines:
+            repos = ", ".join(findings["repositories"])
+            return f"No drift. Checked against the remote in: {repos}\n{note}"
+        lines.append(note)
+
     if not lines:
         repos = ", ".join(findings["repositories"])
         return f"No drift. Checked against the remote in: {repos}"
@@ -317,3 +339,46 @@ def seed(issues, recorded_at):
                     issue=issue["identifier"],
                     legacy=True)
     return registry
+
+
+# ---------------------------------------------------------------------------
+# The feature's own history
+# ---------------------------------------------------------------------------
+
+HISTORY_SUFFIX = "— history"
+
+
+def history_title(identifier):
+    return f"{identifier} {HISTORY_SUFFIX}"
+
+
+def append_entry(existing, entry, on_date, pbi=None):
+    """Add one line to a feature's history, newest last.
+
+    Append-only on purpose. The history answers "how did this get to be the way
+    it is", and a document that can be rewritten answers a different question:
+    "how does someone want it to look now".
+    """
+    entry = (entry or "").strip()
+    if not entry:
+        raise MemoryError_("a history entry with no text records nothing; "
+                           "say what the merge changed")
+
+    source = f" ({pbi})" if pbi else ""
+    line = f"* **{on_date}**{source} — {entry}"
+
+    if not existing:
+        return "\n".join([
+            "# История фичи",
+            "",
+            "Дописывается при мерже PBI в ветку фичи. Только дописывается: "
+            "документ отвечает на вопрос «как это стало таким», а не «как это "
+            "должно выглядеть сейчас».",
+            "",
+            line,
+            "",
+        ])
+
+    if existing.rstrip().endswith(line):
+        return existing            # the same merge recorded twice is one merge
+    return existing.rstrip() + "\n" + line + "\n"

@@ -1,0 +1,62 @@
+# Project memory is written at merge, and only at merge.
+#
+# This runs where the merge actually happens, so it works for everyone who
+# pushes rather than only for whoever remembered to install a local hook. That
+# is the whole reason it lives here and not in .git/hooks.
+#
+# Requires one repository secret: LINEAR_API_KEY, a Linear personal API key.
+# Settings -> Secrets and variables -> Actions -> New repository secret.
+# Without it the drift job says so plainly and fails, rather than passing green
+# on a check it never ran — a green tick for a check that did not happen is
+# worse than a red one.
+
+name: project memory
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  drift:
+    name: registry against git
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The detector asks git which identifiers reached main. A shallow
+          # clone answers "none" with total confidence.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Refuse to pass without a key
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          if [ -z "$LINEAR_API_KEY" ]; then
+            echo "::error::LINEAR_API_KEY is not set. The drift check cannot run."
+            echo "Add it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Check the registry against the commits
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: python3 scripts/board.py memory check
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run the suite
+        # No network, no key: the suite is deterministic by contract, and this
+        # job is what keeps that true.
+        run: python3 -m unittest discover tests

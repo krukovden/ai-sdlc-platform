@@ -70,6 +70,16 @@ class LoadProfileTests(ScriptTestCase):
                 message = self.assert_exits(6, board.load_profile)
         self.assertIn("board.py init", message)
 
+    def test_the_advice_names_the_installed_command_when_that_is_how_we_were_called(self):
+        with mock.patch.object(board.sys, "argv", ["/home/u/.local/bin/idp", "status"]):
+            self.assertEqual(board.invoked_as(), "idp")
+
+    def test_the_advice_falls_back_rather_than_naming_a_wrapper(self):
+        # Under `python3 -m unittest`, argv[0] is the runner. Printing that as
+        # the command to run is worse than printing a path the user can find.
+        with mock.patch.object(board.sys, "argv", ["/usr/lib/python3/unittest/__main__.py"]):
+            self.assertEqual(board.invoked_as(), "board.py")
+
     def test_exits_6_on_malformed_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
