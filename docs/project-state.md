@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-15T02:49:39Z
+**Generated:** 2026-08-15T03:01:06Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 30 live (1 in progress, 13 done) · 15 archived
+**Issues:** 31 live (1 in progress, 14 done) · 15 archived
 
 ## Project documents
 
@@ -23,6 +23,7 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
+| [IDE-101](https://linear.app/krukov-idea-hub/issue/IDE-101/work-item-ide-92-skill-installation-for-claude-codex-and-copilot) | [Work Item · IDE-92] Skill installation for Claude, Codex and Copilot | Backlog | — | `krukovden/ide-101-work-item-ide-92-skill-installation-for-claude-codex-and` | child of IDE-92, related IDE-99 |
 | [IDE-80](https://linear.app/krukov-idea-hub/issue/IDE-80/feature-feature-discovery-skill) | [Feature] Feature Discovery Skill | Backlog | Feature | `krukovden/ide-80-feature-feature-discovery-skill` | related IDE-71 |
 | [IDE-83](https://linear.app/krukov-idea-hub/issue/IDE-83/work-item-ide-80-repository-structure-for-skills-and-schemas) | [Work Item · IDE-80] Repository structure for skills and schemas | Todo | — | `krukovden/ide-83-work-item-ide-80-repository-structure-for-skills-and-schemas` | child of IDE-80, blocks IDE-84 |
 | [IDE-84](https://linear.app/krukov-idea-hub/issue/IDE-84/work-item-ide-80-discovery-core-state-machine-slot-registry-cli) | [Work Item · IDE-80] Discovery core: state machine, slot registry, CLI | Todo | — | `krukovden/ide-84-work-item-ide-80-discovery-core-state-machine-slot-registry` | child of IDE-80, blocks IDE-88, blocks IDE-87, blocks IDE-86, blocks IDE-85 |
@@ -45,8 +46,7 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-92](https://linear.app/krukov-idea-hub/issue/IDE-92/feature-skvoznye-sluzhby-platformy) | [Feature] Сквозные службы платформы | Backlog | Feature | `krukovden/ide-92-feature-skvoznie-sluzhbi-platformi` | related IDE-79, related IDE-76 |
-| [IDE-99](https://linear.app/krukov-idea-hub/issue/IDE-99/work-item-ide-92-platform-installation-and-per-project-onboarding) | [Work Item · IDE-92] Platform installation and per-project onboarding | In Progress | — | `krukovden/ide-99-work-item-ide-92-platform-installation-and-per-project` | child of IDE-92, related IDE-100, related IDE-90, related IDE-77, related IDE-71 |
+| [IDE-92](https://linear.app/krukov-idea-hub/issue/IDE-92/feature-skvoznye-sluzhby-platformy) | [Feature] Сквозные службы платформы | In Progress | Feature | `krukovden/ide-92-feature-skvoznie-sluzhbi-platformi` | related IDE-79, related IDE-76 |
 | [IDE-100](https://linear.app/krukov-idea-hub/issue/IDE-100/work-item-ide-92-a-key-per-agent-identity-in-the-profile) | [Work Item · IDE-92] A key per agent: identity in the profile | Done | — | `krukovden/ide-100-work-item-ide-92-a-key-per-agent-identity-in-the-profile` | child of IDE-92, related IDE-71 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
 | [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-ide-79-define-linear-workflow-states-approvals-and-agent) | [Spike · IDE-79] Define Linear workflow states, approvals, and agent handoffs | Done | Spike | `krukovden/ide-71-spike-ide-79-define-linear-workflow-states-approvals-and` | child of IDE-79, related IDE-77, blocks IDE-89, blocks IDE-72, blocks IDE-69, related IDE-68 |
@@ -59,6 +59,7 @@
 | [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) | [Work Item · IDE-92] Tracker adapter and profile resolution | Done | — | `krukovden/ide-93-work-item-ide-92-tracker-adapter-and-profile-resolution` | child of IDE-92, related IDE-76 |
 | [IDE-94](https://linear.app/krukov-idea-hub/issue/IDE-94/work-item-ide-92-state-resolver-and-idp-status) | [Work Item · IDE-92] State resolver and /idp-status | Done | — | `krukovden/ide-94-work-item-ide-92-state-resolver-and-idp-status` | child of IDE-92, related IDE-90 |
 | [IDE-95](https://linear.app/krukov-idea-hub/issue/IDE-95/work-item-ide-92-project-memory-implementation) | [Work Item · IDE-92] Project memory implementation | Done | — | `krukovden/ide-95-work-item-ide-92-project-memory-implementation` | child of IDE-92, related IDE-76 |
+| [IDE-99](https://linear.app/krukov-idea-hub/issue/IDE-99/work-item-ide-92-platform-installation-and-per-project-onboarding) | [Work Item · IDE-92] Platform installation and per-project onboarding | Done | — | `krukovden/ide-99-work-item-ide-92-platform-installation-and-per-project` | child of IDE-92, related IDE-100, related IDE-90, related IDE-77, related IDE-71 |
 | [IDE-6](https://linear.app/krukov-idea-hub/issue/IDE-6/define-the-platform-domain-model-and-terminology) | Define the platform domain model and terminology | Canceled · archived | — | `krukovden/ide-6-define-the-platform-domain-model-and-terminology` | — |
 | [IDE-7](https://linear.app/krukov-idea-hub/issue/IDE-7/define-versioned-artifact-contracts-and-validation) | Define versioned artifact contracts and validation | Canceled · archived | — | `krukovden/ide-7-define-versioned-artifact-contracts-and-validation` | — |
 | [IDE-8](https://linear.app/krukov-idea-hub/issue/IDE-8/define-the-project-profile-configuration-contract) | Define the Project Profile configuration contract | Canceled · archived | — | `krukovden/ide-8-define-the-project-profile-configuration-contract` | — |
