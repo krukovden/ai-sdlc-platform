@@ -145,7 +145,7 @@ Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently 
 
 **Milestone 1 has settled the rules and is now building the cross-cutting services.** Six design Spikes are approved and every contract has exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927). Design is finished; three implementation work items under IDE-92 remain open in this milestone — state resolver and `/idp-status` (IDE-94), project memory (IDE-95), installation and onboarding (IDE-99).
 
-**One capability has shipped:** the Work Tracking Adapter and Profile Resolution, in `scripts/board.py` and `scripts/sync_linear_state.py`, with 77 tests that never touch the network. It shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
+**One capability has shipped:** the Work Tracking Adapter and Profile Resolution, in `scripts/board.py` and `scripts/sync_linear_state.py`, with 160 tests that never touch the network. It shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
 
 Fifteen archived issues were **cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason. Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
@@ -155,6 +155,7 @@ Layout — what exists, and what is planned:
 
 ```
 scripts/       board.py (front door) + sync_<board>_state.py (one adapter per tracker)   ✅
+               state.py (the resolver), memory.py (the registry), install.py             ✅
 tests/         deterministic tests, none touch the network                                ✅
 docs/          project-state.md (generated)                                               ✅
 templates/     the four artifact templates: feature, adr, pbi, bug                        ✅
@@ -164,6 +165,12 @@ skills/        feature-discovery/ and the other five commands
 registry/      coverage slot registry, providers.json
 evals/         golden ideas and LLM evaluations
 ```
+
+The profile now carries four things beyond the board: `phases` (map our phase names onto
+this board's statuses, `null` where a status cannot exist), `agents` (one token path per
+agent, because the claim protocol reads the actor from history), `memory_doc` (the epic
+document holding the registry) and `repositories` (everything the drift detector must
+search, not just the clone you happen to be in).
 
 Skills are developed here and symlinked into `~/.claude/skills/` for local use.
 

@@ -30,6 +30,7 @@ Usage:
     board.py status IDE-90                      where the card is, what to run next
     board.py start IDE-90 --phase design        claim the card for a phase
     board.py finish IDE-90 --phase design       hand it on
+    board.py version                            what is installed, and to which standard
     board.py memory core                        what exists, one line each
     board.py memory why IDE-42                  why this feature is the way it is
     board.py memory check                       drift between the registry and git
@@ -379,6 +380,21 @@ def memory_document(profile, board):
     return slug, board.get_document(slug)
 
 
+def cmd_version(args):
+    """What is installed and which standard it implements.
+
+    Needed because one installed copy serves many projects: when a project
+    behaves oddly the first question is which build it is talking to, and
+    guessing from a symlink is not an answer.
+    """
+    installer = load_sibling("install", "idp_install")
+    print(f"idp {installer.VERSION}")
+    print(f"authoring standard: {installer.STANDARD}")
+    print(f"running from: {SCRIPT_DIR}")
+    profile_path = find_profile()
+    print(f"profile: {profile_path or 'none found here or above'}")
+
+
 def cmd_memory(args):
     profile, _, board = open_board()
     try:
@@ -533,6 +549,9 @@ def main():
     p.add_argument("--quiet", action="store_true",
                    help="exit 1 when there is nothing to run, for scripting")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("version", help="what is installed, and to which standard")
+    p.set_defaults(func=cmd_version)
 
     p = sub.add_parser("memory", help="project memory: registry, why, drift")
     p.add_argument("action", choices=["core", "why", "check", "init"])

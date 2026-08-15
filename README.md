@@ -21,9 +21,15 @@ Three gates, in three different places: the feature is approved locally, the ADR
 python3 scripts/board.py init --team IDE --project <id>   # create and verify a profile
 python3 scripts/board.py list --parent IDE-79             # what is under a feature
 python3 scripts/board.py start IDE-42 --phase design      # claim a card for a phase
+python3 scripts/board.py status IDE-42                    # where it is, what to run next
+python3 scripts/board.py memory core                      # what exists, one line each
+python3 scripts/board.py memory check                     # drift between registry and git
 python3 scripts/board.py sync                             # regenerate the offline mirror
-python3 -m unittest discover tests                        # 77 tests, none touch the network
+python3 scripts/install.py --dry-run                      # what installing would do
+python3 -m unittest discover tests                        # 160 tests, none touch the network
 ```
+
+Installing is one symlink at this checkout, never a copy: `git pull` here updates every project at once. Each project keeps only its own `.idp/profile.json`.
 
 `board.py` is the front door and knows no tracker by name; `sync_linear_state.py` is the Linear adapter. A profile that says `"board": "azure-devops"` looks for `scripts/sync_azure_devops_state.py` and refuses with a clear reason if it is missing. Adding a tracker means writing one adapter.
 

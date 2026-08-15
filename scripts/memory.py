@@ -145,9 +145,20 @@ def fetch(repository):
         raise MemoryError_(f"git fetch failed in {repository}: {err or 'unknown reason'}")
 
 
+def word_pattern(identifier):
+    """A word boundary git will actually honour.
+
+    git --grep uses POSIX ERE, which has no \\b. Writing one there does not
+    error — it simply never matches, so every registry entry looks unbacked and
+    the report cries wolf on everything until nobody reads it. The trailing
+    guard keeps IDE-93 from matching IDE-930.
+    """
+    return rf"(^|[^A-Za-z0-9-]){identifier}([^0-9]|$)"
+
+
 def commits_mentioning(repository, identifier, ref="origin/main"):
     code, out, err = run_git(
-        ["log", ref, "--grep", rf"\b{identifier}\b", "-E", "--format=%H"], repository)
+        ["log", ref, "--grep", word_pattern(identifier), "-E", "--format=%H"], repository)
     if code != 0:
         raise MemoryError_(f"git log failed in {repository}: {err or 'unknown reason'}")
     return [line for line in out.splitlines() if line]

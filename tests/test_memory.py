@@ -187,6 +187,37 @@ class DriftTests(ScriptTestCase):
         self.assertIn("Nothing was changed", memory.describe_drift(findings))
 
 
+class WordBoundaryTests(ScriptTestCase):
+    """git --grep is POSIX ERE. A pattern it silently never matches is worse
+    than a crash: the detector then reports every entry as unbacked, forever."""
+
+    def test_the_pattern_contains_no_backslash_b(self):
+        self.assertNotIn(r"\b", memory.word_pattern("IDE-93"))
+
+    def test_matches_the_identifier_wherever_it_sits_in_the_message(self):
+        import re
+        pattern = memory.word_pattern("IDE-93")
+        for message in ("IDE-93: fix the thing", "fixes IDE-93", "see IDE-93."):
+            self.assertTrue(re.search(pattern, message), message)
+
+    def test_does_not_match_a_longer_identifier_that_starts_the_same(self):
+        import re
+        self.assertIsNone(re.search(memory.word_pattern("IDE-93"), "IDE-930 unrelated"))
+
+    def test_does_not_match_an_identifier_glued_to_other_text(self):
+        import re
+        self.assertIsNone(re.search(memory.word_pattern("IDE-93"), "XIDE-93"))
+
+    def test_the_pattern_is_passed_to_git_rather_than_a_handmade_one(self):
+        seen = {}
+        def fake_run(args, cwd):
+            seen["args"] = args
+            return 0, "", ""
+        with mock.patch.object(memory, "run_git", fake_run):
+            memory.commits_mentioning("/repo", "IDE-93")
+        self.assertIn(memory.word_pattern("IDE-93"), seen["args"])
+
+
 class RepositoryTests(ScriptTestCase):
 
     def test_uses_every_repository_the_profile_lists(self):
