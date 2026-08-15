@@ -62,7 +62,7 @@ def chdir(path):
 
 
 def write_profile(directory, **fields):
-    """Create <directory>/.sdlc/profile.json and return its path."""
+    """Create <directory>/.idp/profile.json and return its path."""
     profile_dir = Path(directory) / board.PROFILE_DIR
     profile_dir.mkdir(parents=True, exist_ok=True)
     target = profile_dir / board.PROFILE_NAME

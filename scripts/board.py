@@ -11,7 +11,7 @@ that does the actual work:
 
 Adding a tracker means writing one adapter. Nothing here changes.
 
-The profile lives in .sdlc/profile.json and is committed. Secrets are not:
+The profile lives in .idp/profile.json and is committed. Secrets are not:
 the profile records the *path* to a token, never the token itself.
 
 Usage:
@@ -45,7 +45,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROFILE_DIR = ".sdlc"
+PROFILE_DIR = ".idp"
 PROFILE_NAME = "profile.json"
 DEFAULT_TOKEN_PATH = "~/.feature-discovery/linear-token"
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -63,7 +63,7 @@ def fail(code, message):
 # ---------------------------------------------------------------------------
 
 def find_profile(start=None):
-    """Walk up from the current directory looking for .sdlc/profile.json.
+    """Walk up from the current directory looking for .idp/profile.json.
 
     Walking up rather than requiring a fixed path is what makes one installed
     copy of this script usable from every repository, and from any depth
@@ -306,7 +306,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="create and verify .sdlc/profile.json")
+    p = sub.add_parser("init", help="create and verify .idp/profile.json")
     p.add_argument("--team", required=True, help="team key, e.g. IDE")
     p.add_argument("--board", default="linear", help="which board: linear, azure-devops")
     p.add_argument("--project", help="project this repository belongs to")

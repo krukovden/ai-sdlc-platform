@@ -27,7 +27,7 @@ python3 -m unittest discover tests                        # 65 tests, none touch
 
 `board.py` is the front door and knows no tracker by name; `sync_linear_state.py` is the Linear adapter. A profile that says `"board": "azure-devops"` looks for `scripts/sync_azure_devops_state.py` and refuses with a clear reason if it is missing. Adding a tracker means writing one adapter.
 
-The profile lives in `.sdlc/profile.json` and is committed. Secrets are not: it records the *path* to a token, never the token.
+The profile lives in `.idp/profile.json` and is committed. Secrets are not: it records the *path* to a token, never the token.
 
 ## What is not built yet
 

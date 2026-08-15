@@ -1,6 +1,6 @@
 """board.py: finding the profile, loading it, and reading the token.
 
-Nothing here touches the real .sdlc/profile.json or ~/.feature-discovery:
+Nothing here touches the real .idp/profile.json or ~/.feature-discovery:
 every profile and token lives in a temporary directory that is removed again.
 """
 

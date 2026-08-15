@@ -65,17 +65,17 @@ Note that `project.issues` excludes archived issues by default. Pass `includeArc
 
 ```
 Product Owner
-   │  /sdlc-discovery
+   │  /idp-discovery
    ▼  grilling · evidence · independent second-model review
 Feature card, created by the Product Owner          ← GATE 1 (implicit: creating it approves it)
-   │  /sdlc-design
+   │  /idp-design
    ▼  architect (subphases: architect, critic, alternative, best practice)
 ADR — how we build it and what it costs             ← GATE 2: Design Review
    │  the approved ADR is attached to the feature as a file
-   │  /sdlc-planning
+   │  /idp-planning
    ▼  planner: PBIs + the feature branch
 Implementation PBIs
-   │  /sdlc-development
+   │  /idp-development
    ▼  one agent per PBI, in parallel, synchronised through the board
    │
    │  a script runs the chain inside each PBI:
@@ -99,7 +99,7 @@ Core artifacts: Project Profile · Feature · ADR · Implementation Plan · Pull
 
 **The artifact chain is `Feature → ADR → PBI`.** The Product Owner creates the feature; the architect picks it up and turns it into an ADR; the human approves the ADR and it is attached to the feature as a file. The word *Spike* no longer means technical design — technical design is the ADR.
 
-Six local commands in the first revision, every phase started by a human: `/sdlc-setup` → `/sdlc-discovery` → `/sdlc-design` → `/sdlc-planning` → `/sdlc-development`, plus `/sdlc-status` at any point. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
+Six local commands in the first revision, every phase started by a human: `/idp-setup` → `/idp-discovery` → `/idp-design` → `/idp-planning` → `/idp-development`, plus `/idp-status` at any point. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
 
 **Signal and signal delivery are different things.** The signal — "the ADR is approved" — is part of the contract and never changes. Delivery changes as the platform matures: a human today, board polling or a webhook later. The check itself lives in one shared **state resolver**, so moving to autonomy replaces the caller, not the logic.
 
@@ -124,8 +124,8 @@ These come from the project constitution and are not negotiable inside this repo
 |---|---|---|
 | 1 | Фундамент и контракты | The rules of the game, plus the cross-cutting services: tracker adapter, profile resolution, state resolver, project memory |
 | 2 | Исследование фичи | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
-| 3 | Технический дизайн и планирование | `/sdlc-design` turns a feature into an ADR, the human approves it, `/sdlc-planning` produces PBIs |
-| 4 | Development | `/sdlc-development`: one agent per PBI in parallel, the chain inside each PBI, the documenter, two levels of pull request |
+| 3 | Технический дизайн и планирование | `/idp-design` turns a feature into an ADR, the human approves it, `/idp-planning` produces PBIs |
+| 4 | Development | `/idp-development`: one agent per PBI in parallel, the chain inside each PBI, the documenter, two levels of pull request |
 | 5 | Пилот | The whole process run end to end on the pilot project. Not construction — verification |
 
 Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently with zero issues). The project is done when the full process runs successfully on that pilot.
