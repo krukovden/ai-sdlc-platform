@@ -30,7 +30,7 @@ Workspace `krukov-idea-hub`, team **IdeaHub** (issue prefix `IDE`).
 - [00 · HUB — read this before any work](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927) — the entry point: working protocol, capability registry, rejected history, document map.
 - [Конституция и видение проекта](https://linear.app/krukov-idea-hub/document/konstituciya-i-videnie-proekta-7f92af685fc1) — mission, the ten working principles, project boundaries, the definition of done.
 - [Референсная архитектура](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59) — system context, the nine logical capabilities, the core artifacts, automation boundaries.
-- [IDE-68 — Feature Discovery Skill: Design and Requirements](https://linear.app/krukov-idea-hub/document/ide-68-feature-discovery-skill-design-and-requirements-a247a37100ce) — the approved-pending design for the first component, including artifact schemas, the determinism boundary and the CLI contract.
+- [IDE-68 — Feature Discovery Skill: Design and Requirements](https://linear.app/krukov-idea-hub/document/ide-68-feature-discovery-skill-design-and-requirements-a247a37100ce) — the approved design for the first component, including artifact schemas, the determinism boundary and the CLI contract.
 
 Existing Linear documents are written in Russian. New artifacts produced by the platform are written in English.
 
@@ -54,7 +54,7 @@ Commit the regenerated file. Its git history is the record of how the shape of t
 
 ```bash
 python3 scripts/board.py doc --list
-python3 scripts/board.py doc --get 00-hub-read-this-before-any-work-4d61e3161927
+python3 scripts/board.py doc --get 4d61e3161927      # the id printed by --list
 ```
 
 Raw GraphQL for anything the facade does not cover:
@@ -102,7 +102,7 @@ The architecture is organised around **capabilities and artifacts**, not around 
 
 Nine logical capabilities, fourteen participants: Feature Discovery · Technical Design · Planning · Development Execution · Documentation · Profile Resolution · Work Tracking Adapter · Project Memory · State Resolution.
 
-Core artifacts: Project Profile · Feature · ADR · Implementation Plan · Pull Request Summary · Documentation Change Set.
+Core artifacts: Project Profile · Feature · ADR · PBI · feature history · Tried & Rejected · feature registry · QA evidence · Pull Request Summary · Documentation Change Set. The full table, with who writes each and what carries it, is in the [reference architecture](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59).
 
 **The artifact chain is `Feature → ADR → PBI`.** The Product Owner creates the feature; the architect picks it up and turns it into an ADR; the human approves the ADR and it is attached to the feature as a file. The word *Spike* no longer means technical design — technical design is the ADR.
 
