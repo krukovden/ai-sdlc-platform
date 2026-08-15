@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/practice.schema.json",
+  "title": "Practice research output",
+  "description": "Looks outward, at how this is normally solved, while evidence gathering looks inward at the project. Everything here is a recommendation and never a decision: the skill shows what it found and what it would pick, and the Product Owner chooses.",
+  "type": "object",
+  "required": ["approaches"],
+  "additionalProperties": false,
+  "properties": {
+    "approaches": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "how_it_works", "cost", "where_it_breaks", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "how_it_works": {"type": "string", "minLength": 1},
+          "cost": {"type": "string", "minLength": 1},
+          "where_it_breaks": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "prior_art": {
+      "type": "object",
+      "required": ["exists"],
+      "additionalProperties": false,
+      "properties": {
+        "exists": {"type": "boolean"},
+        "known_as": {"type": "string"},
+        "source": {"type": "string"}
+      }
+    },
+    "failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["mistake", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "mistake": {"type": "string", "minLength": 1},
+          "why_it_happens": {"type": "string"},
+          "source": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "terminology": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["accepted_term", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "accepted_term": {"type": "string", "minLength": 1},
+          "instead_of": {"type": "string"},
+          "source": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "contradicts": {
+      "description": "A finding that contradicts an answer already given. This is the one case where research adds a question rather than removing one: the slot reopens as a product_decision and the interview resumes.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slot", "finding", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "slot": {"type": "string", "minLength": 1},
+          "finding": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

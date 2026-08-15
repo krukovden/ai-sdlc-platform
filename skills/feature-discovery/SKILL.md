@@ -38,7 +38,7 @@ discovery.py next --json                   # what to do, and who does it
 | --- | --- |
 | `gather_fact` | Go and look. `lookup_first` names where — project documents, the dependency manifest, `git log`, a neighbouring file. Then `answer --source source`, or `--unanswerable` if nothing had it. |
 | `ask_po` | Ask the human **one** question, with your recommended answer. Then `answer --source po`. |
-| `run_review` | Get the independent reviewer's JSON, then `review --response-file`. |
+| `run_review` | `discovery.py research` first — how is this normally solved — then `discovery.py review`. Both call the configured provider themselves; pass `--response-file` only if you already have the JSON. |
 | `run_gap_round` | Another lens pass, then `gap-round --response-file`. |
 | `validate` | `discovery.py validate`. |
 | `await_approval` | Show the whole package to the human. Do not approve on their behalf. |
@@ -62,6 +62,17 @@ faster, than one filling in a blank.
 If no source has it, say so. The slot is reclassified and reaches the human on
 the next `next`. Leaving it open instead makes the loop look busy while nothing
 moves.
+
+### Research looks outward; evidence looks inward
+
+`gather_fact` reads this project. `research` reads the world: how the problem is
+normally solved, what it is called, what teams get wrong. Every claim carries a
+source, and everything it returns is a **recommendation, never a decision** —
+show the Product Owner what you found and what you would pick.
+
+One exception, and it is the reason the phase runs before the reviewer: a
+finding that contradicts an answer already given reopens that slot as a product
+decision. Research is allowed to add a question exactly there and nowhere else.
 
 ## What you must not write
 

@@ -727,6 +727,100 @@ def cmd_evidence(args):
     print(entry["id"])
 
 
+def cmd_research(args):
+    """Look outward before the interview hardens around a worse answer.
+
+    Not the evidence gathering of the escalation rule, which looks inward at
+    project documents and prior decisions. This looks at how the problem is
+    normally solved, what it is called, and what teams get wrong — and every
+    claim carries a source.
+
+    Findings are recommendations, never decisions. The one exception is a
+    finding that contradicts an answer already given: that reopens the slot as
+    a product_decision and returns to the interview. It is the only place where
+    research is allowed to add a question rather than remove one.
+    """
+    state = load_state(args.slug)
+    package = load_package(args.slug)
+
+    response = None
+    failures = []
+    if args.response_file:
+        response = read_reviewer_response(args)
+    else:
+        reviewer = load_reviewer_module()
+        try:
+            prompt = research_prompt(package)
+            response, _, failures = reviewer.review(
+                prompt, schema_name="practice.schema.json")
+        except reviewer.ReviewerError as exc:
+            failures = [str(exc)]
+
+    if response is None:
+        # A skipped search must never read as a search that found nothing.
+        package["provenance"]["practice_research"] = "skipped"
+        journal(args.slug, {"event": "research", "mode": "skipped", "why": failures})
+        save_package(args.slug, package)
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
+        print("practice research skipped; the package says so and the Product "
+              "Owner is shown it at approval", file=sys.stderr)
+        return
+
+    package["provenance"]["practice_research"] = "done"
+    for approach in response.get("approaches", []):
+        package["evidence"].append({
+            "id": f"ev-{len(package['evidence']) + 1}",
+            "uri": approach["source"], "kind": "web", "retrieved_at": now(),
+            "quote": f"{approach['name']}: {approach['how_it_works']} "
+                     f"Стоит: {approach['cost']}. Ломается: {approach['where_it_breaks']}."})
+
+    reopened = []
+    for clash in response.get("contradicts", []):
+        slot = clash["slot"]
+        if slot not in state["slots"]:
+            continue
+        state["slots"][slot]["class"] = "product_decision"
+        package["material"][slot] = [] if isinstance(
+            package["material"].get(slot), list) else ""
+        state.get("dismissed", {}).pop(slot, None)
+        package["open_questions"].append({
+            "id": f"q-practice-{len(package['open_questions']) + 1}",
+            "text": clash["finding"],
+            "why_unresolved": f"practice research contradicts the answer given "
+                              f"({clash['source']})",
+            "risk": "high"})
+        reopened.append(slot)
+
+    if reopened:
+        transition(state, "INTERVIEWING")
+    journal(args.slug, {"event": "research", "mode": "done",
+                        "approaches": len(response.get("approaches", [])),
+                        "reopened": reopened})
+    save_state(state)
+    save_package(args.slug, package)
+    print(f"research applied: {len(response.get('approaches', []))} approaches"
+          + (f", reopened: {', '.join(reopened)}" if reopened else ""))
+    if reopened:
+        print("a finding contradicts an answer already given; those slots are "
+              "open again as product decisions", file=sys.stderr)
+
+
+def research_prompt(package):
+    material = canonical_json(package["material"])
+    return "\n\n".join([
+        "Look outward, not at this project. How is this problem normally solved?",
+        "Return two to four established approaches, each with what it costs and "
+        "where it breaks; whether what is described already exists as a known "
+        "pattern, product or standard, and under what name; what teams typically "
+        "get wrong; and the accepted vocabulary, so the specification does not "
+        "invent private words for a solved problem.",
+        "Every claim needs a source. If a finding contradicts an answer already "
+        "given in the draft, say so in `contradicts` with the slot it clashes with.",
+        "Draft:", material,
+    ])
+
+
 def cmd_review(args):
     """Apply a reviewer response. The call itself belongs to IDE-85.
 
@@ -739,17 +833,20 @@ def cmd_review(args):
     transition(state, "RESEARCHING")
     transition(state, "REVIEWING")
 
-    response = read_reviewer_response(args)
+    response, mode, failures = obtain_review(args, package, kind="review")
     if response is None:
         package["provenance"]["reviewer_mode"] = "skipped"
-        journal(args.slug, {"event": "review", "mode": "skipped"})
+        journal(args.slug, {"event": "review", "mode": "skipped",
+                            "why": failures})
         save_state(state)
         save_package(args.slug, package)
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
         print("reviewer skipped; the package cannot be approved without "
               "--force-no-review", file=sys.stderr)
         return
 
-    package["provenance"]["reviewer_mode"] = args.mode
+    package["provenance"]["reviewer_mode"] = args.mode if args.response_file else mode
     package["provenance"]["reviewer"] = args.provider
     apply_gaps(state, package, response.get("gaps", []))
     for resolution in response.get("resolved", []):
@@ -767,6 +864,34 @@ def cmd_review(args):
     save_package(args.slug, package)
     print(f"review applied: {len(response.get('gaps', []))} gaps, "
           f"{len(response.get('resolved', []))} resolutions")
+
+
+def load_reviewer_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_reviewer", Path(__file__).resolve().parent / "reviewer.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_reviewer"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def obtain_review(args, package, kind="review"):
+    """A canned response if one was handed to us, otherwise call the provider.
+
+    The file path is not a test hook bolted on: a host agent that already has
+    the reviewer's JSON — because it ran the model itself — must be able to
+    hand it over rather than have it fetched twice.
+    """
+    if args.response_file:
+        return read_reviewer_response(args), "primary", []
+
+    reviewer = load_reviewer_module()
+    try:
+        prompt = reviewer.build_prompt(package, LENSES, kind=kind)
+        return reviewer.review(prompt)
+    except reviewer.ReviewerError as exc:
+        return None, "skipped", [str(exc)]
 
 
 def read_reviewer_response(args):
@@ -821,7 +946,13 @@ def cmd_gap_round(args):
     if state["gap_rounds_run"] >= limits["max_gap_rounds"]:
         fail(4, f"the gap limit of {limits['max_gap_rounds']} rounds is already reached")
 
-    response = read_reviewer_response(args) or {"gaps": []}
+    response, _, failures = obtain_review(args, package, kind="gap-round")
+    if response is None and failures:
+        # A round that could not run is not a dry round. Counting it as one
+        # would let a broken provider end the search and look like completion.
+        fail(2, "the reviewer could not be reached; this round did not run:\n  "
+                + "\n  ".join(failures))
+    response = response or {"gaps": []}
     fresh = apply_gaps(state, package, response.get("gaps", []))
     state["gap_rounds_run"] += 1
     package["provenance"]["gap_rounds_run"] = state["gap_rounds_run"]
@@ -1050,6 +1181,11 @@ def build_parser():
     p.add_argument("--kind", default="document",
                    choices=["document", "repo", "linear", "web"])
     p.set_defaults(func=cmd_evidence)
+
+    p = sub.add_parser("research", help="look outward: how is this normally solved")
+    p.add_argument("--slug", help="override the current session")
+    p.add_argument("--response-file")
+    p.set_defaults(func=cmd_research)
 
     p = sub.add_parser("review", help="apply an independent reviewer's response")
     p.add_argument("--slug", help="override the current session")

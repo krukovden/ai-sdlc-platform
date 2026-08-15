@@ -592,6 +592,109 @@ class BoundaryTests(DiscoveryTestCase):
         self.assertEqual(self.state()["state"], "INTERVIEWING")
 
 
+PRACTICE = {
+    "approaches": [{"name": "локальный инвертированный индекс",
+                    "how_it_works": "строим индекс на устройстве",
+                    "cost": "диск и время сборки",
+                    "where_it_breaks": "на больших корпусах",
+                    "source": "https://example.invalid/a"}],
+    "prior_art": {"exists": True, "known_as": "offline-first search",
+                  "source": "https://example.invalid/b"},
+}
+
+
+class PracticeResearchTests(DiscoveryTestCase):
+    """Looks outward. Recommends, never decides — with one exception."""
+
+    def test_findings_enter_evidence_as_web_sources(self):
+        self.start()
+        self.fill_required()
+        self.run_cli("research", "--response-file", self.write_reviewer(PRACTICE, "p.json"))
+
+        evidence = self.package()["evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["kind"], "web")
+        self.assertIn("example.invalid", evidence[0]["uri"])
+
+    def test_research_is_recorded_as_done(self):
+        self.start()
+        self.fill_required()
+        self.run_cli("research", "--response-file", self.write_reviewer(PRACTICE, "p.json"))
+        self.assertEqual(self.package()["provenance"]["practice_research"], "done")
+
+    def test_a_skipped_search_is_recorded_as_skipped_not_as_empty(self):
+        # A skipped search must never read as a search that found nothing.
+        self.start()
+        self.fill_required()
+        with mock.patch.object(discovery, "load_reviewer_module") as loader:
+            loader.return_value.review.return_value = (None, "skipped", ["no provider"])
+            loader.return_value.ReviewerError = RuntimeError
+            self.run_cli("research")
+
+        self.assertEqual(self.package()["provenance"]["practice_research"], "skipped")
+
+    def test_a_finding_that_contradicts_an_answer_reopens_the_slot(self):
+        # The one case where research adds a question rather than removing one.
+        self.start()
+        self.fill_required()
+        payload = dict(PRACTICE, contradicts=[
+            {"slot": "non_goals", "finding": "офлайн-правки — общепринятая часть таких систем",
+             "source": "https://example.invalid/c"}])
+        self.run_cli("research", "--response-file", self.write_reviewer(payload, "p2.json"))
+
+        self.assertEqual(self.package()["material"]["non_goals"], [])
+        self.assertEqual(self.state()["state"], "INTERVIEWING")
+
+    def test_a_reopened_slot_becomes_a_product_decision(self):
+        self.start()
+        self.fill_required()
+        payload = dict(PRACTICE, contradicts=[
+            {"slot": "constraints", "finding": "так не делают",
+             "source": "https://example.invalid/c"}])
+        self.run_cli("research", "--response-file", self.write_reviewer(payload, "p3.json"))
+
+        self.assertEqual(self.state()["slots"]["constraints"]["class"], "product_decision")
+
+    def test_the_reopened_question_is_visible_with_its_source(self):
+        self.start()
+        self.fill_required()
+        payload = dict(PRACTICE, contradicts=[
+            {"slot": "non_goals", "finding": "так не делают",
+             "source": "https://example.invalid/c"}])
+        self.run_cli("research", "--response-file", self.write_reviewer(payload, "p4.json"))
+
+        question = self.package()["open_questions"][-1]
+        self.assertIn("example.invalid/c", question["why_unresolved"])
+        self.assertEqual(question["risk"], "high")
+
+    def test_a_contradiction_naming_an_unknown_slot_is_ignored_not_crashed_on(self):
+        self.start()
+        self.fill_required()
+        payload = dict(PRACTICE, contradicts=[
+            {"slot": "invented", "finding": "x", "source": "https://example.invalid/c"}])
+        self.run_cli("research", "--response-file", self.write_reviewer(payload, "p5.json"))
+
+        self.assertEqual(self.state()["state"], "INTERVIEWING")
+
+
+class GapRoundFailureTests(DiscoveryTestCase):
+
+    def test_a_round_the_provider_could_not_answer_is_not_counted_as_dry(self):
+        # Counting it dry would let a broken provider end the search and look
+        # like the search completed.
+        self.start()
+        self.fill_required()
+        self.run_cli("review", "--response-file", self.write_reviewer({"gaps": []}))
+        before = self.state()["dry_rounds"]
+
+        with mock.patch.object(discovery, "load_reviewer_module") as loader:
+            loader.return_value.review.return_value = (None, "skipped", ["not installed"])
+            loader.return_value.ReviewerError = RuntimeError
+            self.expect_exit(2, "gap-round")
+
+        self.assertEqual(self.state()["dry_rounds"], before)
+
+
 class RenderTests(DiscoveryTestCase):
 
     def test_the_rendered_specification_carries_the_machine_header(self):
