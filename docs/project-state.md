@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-15T02:41:22Z
+**Generated:** 2026-08-15T02:48:19Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 30 live (2 in progress, 12 done) · 15 archived
@@ -54,7 +54,7 @@
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-ide-79-design-the-project-memory-contract) | [Spike · IDE-79] Design the Project Memory contract | Done | Spike | `krukovden/ide-76-spike-ide-79-design-the-project-memory-contract` | child of IDE-79, blocks IDE-89, related IDE-68, related IDE-71 |
 | [IDE-77](https://linear.app/krukov-idea-hub/issue/IDE-77/spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a-standing) | [Spike · IDE-79] Survey agent prior art and make reuse review a standing rule | Done | Spike | `krukovden/ide-77-spike-ide-79-survey-agent-prior-art-and-make-reuse-review-a` | child of IDE-79, blocks IDE-89, blocks IDE-78, related IDE-76, related IDE-68 |
 | [IDE-78](https://linear.app/krukov-idea-hub/issue/IDE-78/spike-ide-79-define-the-artifact-and-issue-authoring-standard) | [Spike · IDE-79] Define the artifact and issue authoring standard | Done | Spike | `krukovden/ide-78-spike-ide-79-define-the-artifact-and-issue-authoring` | child of IDE-79, related IDE-83, blocks IDE-89, related IDE-71, related IDE-76, related IDE-68 |
-| [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | Done | Feature | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-99, related IDE-100, related IDE-93, related IDE-95, related IDE-94, related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
+| [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | Done | Feature, Process | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-99, related IDE-100, related IDE-93, related IDE-95, related IDE-94, related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
 | [IDE-89](https://linear.app/krukov-idea-hub/issue/IDE-89/work-item-ide-79-consolidate-the-contracts-into-project-documentation) | [Work Item · IDE-79] Consolidate the contracts into project documentation | Done | — | `krukovden/ide-89-work-item-ide-79-consolidate-the-contracts-into-project` | child of IDE-79, related IDE-94, related IDE-100 |
 | [IDE-90](https://linear.app/krukov-idea-hub/issue/IDE-90/spike-ide-79-define-platform-elements-phases-and-how-each-phase-is) | [Spike · IDE-79] Define platform elements, phases and how each phase is triggered | Done | Spike | `krukovden/ide-90-spike-ide-79-define-platform-elements-phases-and-how-each` | child of IDE-79, related IDE-78, related IDE-77, blocks IDE-89, blocks IDE-71, related IDE-76 |
 | [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) | [Work Item · IDE-92] Tracker adapter and profile resolution | Done | — | `krukovden/ide-93-work-item-ide-92-tracker-adapter-and-profile-resolution` | child of IDE-92, related IDE-76 |
