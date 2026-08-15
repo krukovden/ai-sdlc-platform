@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-15T01:11:27Z
+**Generated:** 2026-08-15T01:24:02Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 29 live (2 in progress, 8 done) · 15 archived
@@ -46,7 +46,7 @@
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-92](https://linear.app/krukov-idea-hub/issue/IDE-92/feature-skvoznye-sluzhby-platformy) | [Feature] Сквозные службы платформы | Backlog | Feature | `krukovden/ide-92-feature-skvoznie-sluzhbi-platformi` | related IDE-79, related IDE-76 |
-| [IDE-94](https://linear.app/krukov-idea-hub/issue/IDE-94/work-item-ide-92-state-resolver-and-sdlc-status) | [Work Item · IDE-92] State resolver and /sdlc-status | Backlog | — | `krukovden/ide-94-work-item-ide-92-state-resolver-and-sdlc-status` | child of IDE-92, related IDE-90 |
+| [IDE-94](https://linear.app/krukov-idea-hub/issue/IDE-94/work-item-ide-92-state-resolver-and-idp-status) | [Work Item · IDE-92] State resolver and /idp-status | Backlog | — | `krukovden/ide-94-work-item-ide-92-state-resolver-and-idp-status` | child of IDE-92, related IDE-90 |
 | [IDE-95](https://linear.app/krukov-idea-hub/issue/IDE-95/work-item-ide-92-project-memory-implementation) | [Work Item · IDE-92] Project memory implementation | Backlog | — | `krukovden/ide-95-work-item-ide-92-project-memory-implementation` | child of IDE-92, related IDE-76 |
 | [IDE-99](https://linear.app/krukov-idea-hub/issue/IDE-99/work-item-ide-92-platform-installation-and-per-project-onboarding) | [Work Item · IDE-92] Platform installation and per-project onboarding | Backlog | — | `krukovden/ide-99-work-item-ide-92-platform-installation-and-per-project` | child of IDE-92, related IDE-90, related IDE-77, related IDE-71 |
 | [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | In Progress | Feature | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-93, related IDE-95, related IDE-94, related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
@@ -95,7 +95,7 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-96](https://linear.app/krukov-idea-hub/issue/IDE-96/feature-komanda-sdlc-development-cepochka-realizacii) | [Feature] Команда /sdlc-development — цепочка реализации | Backlog | Feature | `krukovden/ide-96-feature-komanda-sdlc-development-cepochka-realizacii` | related IDE-82 |
+| [IDE-96](https://linear.app/krukov-idea-hub/issue/IDE-96/feature-komanda-idp-development-cepochka-realizacii) | [Feature] Команда /idp-development — цепочка реализации | Backlog | Feature | `krukovden/ide-96-feature-komanda-idp-development-cepochka-realizacii` | related IDE-82 |
 | [IDE-97](https://linear.app/krukov-idea-hub/issue/IDE-97/spike-ide-96-design-the-pbi-chain-contract) | [Spike · IDE-96] Design the PBI chain contract | Backlog | Spike | `krukovden/ide-97-spike-ide-96-design-the-pbi-chain-contract` | child of IDE-96, related IDE-71, related IDE-90, related IDE-72 |
 | [IDE-15](https://linear.app/krukov-idea-hub/issue/IDE-15/build-the-manual-implementation-handoff) | Build the manual implementation handoff | Canceled · archived | — | `krukovden/ide-15-build-the-manual-implementation-handoff` | — |
 | [IDE-16](https://linear.app/krukov-idea-hub/issue/IDE-16/integrate-github-branches-commits-and-pull-requests) | Integrate GitHub branches, commits, and pull requests | Canceled · archived | — | `krukovden/ide-16-integrate-github-branches-commits-and-pull-requests` | — |
@@ -103,14 +103,20 @@
 
 ### 3. Технический дизайн и планирование
 
-Создать технический дизайн Spike, провести его через утверждение Tech Lead и сформировать задачи реализации.
+Превратить фичу в ADR и утверждённый ADR — в PBI.
+
+`/idp-design` подхватывает созданную Product Owner фичу и пишет ADR: архитектура, затронутые компоненты, контракты, риски, чем платим. Человек утверждает его на доске (статус Design Review) — это второй гейт; утверждённый ADR прикрепляется файлом к фиче.
+
+`/idp-planning` разворачивает утверждённый ADR в PBI с критериями приёмки и зависимостями и создаёт ветку фичи.
+
+Слово *Spike* здесь больше не означает технический дизайн — технический дизайн это ADR.
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-69](https://linear.app/krukov-idea-hub/issue/IDE-69/spike-ide-81-design-the-sdlc-design-command) | [Spike · IDE-81] Design the /sdlc-design command | Backlog | Spike | `krukovden/ide-69-spike-ide-81-design-the-sdlc-design-command` | child of IDE-81, related IDE-90, related IDE-78, blocks IDE-72 |
-| [IDE-72](https://linear.app/krukov-idea-hub/issue/IDE-72/spike-ide-82-design-the-sdlc-planning-command) | [Spike · IDE-82] Design the /sdlc-planning command | Backlog | Spike | `krukovden/ide-72-spike-ide-82-design-the-sdlc-planning-command` | child of IDE-82, related IDE-78, related IDE-90 |
-| [IDE-81](https://linear.app/krukov-idea-hub/issue/IDE-81/feature-komanda-sdlc-design-tehnicheskij-dizajn) | [Feature] Команда /sdlc-design — технический дизайн | Backlog | Feature | `krukovden/ide-81-feature-komanda-sdlc-design-tekhnicheskii-dizain` | related IDE-82, related IDE-90 |
-| [IDE-82](https://linear.app/krukov-idea-hub/issue/IDE-82/feature-komanda-sdlc-planning-dekompoziciya-na-pbi) | [Feature] Команда /sdlc-planning — декомпозиция на PBI | Backlog | Feature | `krukovden/ide-82-feature-komanda-sdlc-planning-dekompoziciya-na-pbi` | related IDE-90, related IDE-78 |
+| [IDE-69](https://linear.app/krukov-idea-hub/issue/IDE-69/spike-ide-81-design-the-idp-design-command) | [Spike · IDE-81] Design the /idp-design command | Backlog | Spike | `krukovden/ide-69-spike-ide-81-design-the-idp-design-command` | child of IDE-81, related IDE-90, related IDE-78, blocks IDE-72 |
+| [IDE-72](https://linear.app/krukov-idea-hub/issue/IDE-72/spike-ide-82-design-the-idp-planning-command) | [Spike · IDE-82] Design the /idp-planning command | Backlog | Spike | `krukovden/ide-72-spike-ide-82-design-the-idp-planning-command` | child of IDE-82, related IDE-78, related IDE-90 |
+| [IDE-81](https://linear.app/krukov-idea-hub/issue/IDE-81/feature-komanda-idp-design-tehnicheskij-dizajn) | [Feature] Команда /idp-design — технический дизайн | Backlog | Feature | `krukovden/ide-81-feature-komanda-idp-design-tekhnicheskii-dizain` | related IDE-82, related IDE-90 |
+| [IDE-82](https://linear.app/krukov-idea-hub/issue/IDE-82/feature-komanda-idp-planning-dekompoziciya-na-pbi) | [Feature] Команда /idp-planning — декомпозиция на PBI | Backlog | Feature | `krukovden/ide-82-feature-komanda-idp-planning-dekompoziciya-na-pbi` | related IDE-90, related IDE-78 |
 | [IDE-12](https://linear.app/krukov-idea-hub/issue/IDE-12/implement-the-tech-lead-design-approval-gate) | Implement the Tech Lead design approval gate | Canceled · archived | — | `krukovden/ide-12-implement-the-tech-lead-design-approval-gate` | — |
 | [IDE-13](https://linear.app/krukov-idea-hub/issue/IDE-13/generate-implementation-tasks-from-the-approved-spike) | Generate implementation tasks from the approved Spike | Canceled · archived | — | `krukovden/ide-13-generate-implementation-tasks-from-the-approved-spike` | — |
 | [IDE-14](https://linear.app/krukov-idea-hub/issue/IDE-14/generate-the-spike-technical-design-from-an-approved-feature) | Generate the Spike technical design from an approved Feature | Canceled · archived | — | `krukovden/ide-14-generate-the-spike-technical-design-from-an-approved-feature` | — |

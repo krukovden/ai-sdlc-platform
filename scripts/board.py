@@ -23,6 +23,8 @@ Usage:
     board.py create --title T [--parent IDE-79] [--body-file F] [--status S]
     board.py update IDE-90 [--status S] [--title T] [--body-file F]
     board.py comment IDE-90 --body-file F
+    board.py doc --list                         list the project's documents
+    board.py doc --get SLUG                     print a document by its URL slug
     board.py doc IDE-90 --title T --file F      attach a document to an issue
     board.py doc --title T --file F             attach a document to the project
     board.py start IDE-90 --phase design        claim the card for a phase
@@ -267,6 +269,17 @@ def cmd_comment(args):
 
 def cmd_doc(args):
     profile, _, board = open_board()
+
+    if args.list:
+        for doc in board.list_documents(project_id_from(profile, args.project)):
+            print(f"{doc['slugId']}  {doc['title']}")
+        return
+    if args.get:
+        print(board.get_document(args.get)["content"])
+        return
+
+    if not (args.title and args.file):
+        fail(3, "attaching a document needs --title and --file")
     path = Path(args.file)
     if not path.exists():
         fail(3, f"no such file: {path}")
@@ -356,10 +369,12 @@ def main():
     p.add_argument("--body-file")
     p.set_defaults(func=cmd_comment)
 
-    p = sub.add_parser("doc", help="attach a document")
+    p = sub.add_parser("doc", help="read or attach a document")
     p.add_argument("id", nargs="?", help="issue to attach to; omit to attach to the project")
-    p.add_argument("--title", required=True)
-    p.add_argument("--file", required=True)
+    p.add_argument("--list", action="store_true", help="list the project's documents")
+    p.add_argument("--get", metavar="SLUG", help="print a document, by the slug from its URL")
+    p.add_argument("--title")
+    p.add_argument("--file")
     p.add_argument("--project", help="override the project from the profile")
     p.set_defaults(func=cmd_doc)
 

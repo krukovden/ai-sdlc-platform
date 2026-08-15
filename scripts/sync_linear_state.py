@@ -388,6 +388,33 @@ class Board:
             fail(3, "Linear refused the document")
         return result["document"]["url"]
 
+    def list_documents(self, project_id):
+        q = """
+        query D($id: String!) {
+          project(id: $id) {
+            documents(first: 50) { nodes { title slugId url updatedAt } }
+          }
+        }
+        """
+        project = query(self.token, q, {"id": project_id})["project"]
+        if not project:
+            fail(3, f"no project with id {project_id}")
+        return project["documents"]["nodes"]
+
+    def get_document(self, slug):
+        """Fetch a document by its slugId — the trailing token of its URL."""
+        q = """
+        query D($slug: String!) {
+          documents(filter: { slugId: { eq: $slug } }, first: 1) {
+            nodes { title content url updatedAt }
+          }
+        }
+        """
+        nodes = query(self.token, q, {"slug": slug})["documents"]["nodes"]
+        if not nodes:
+            fail(3, f"no document with slug '{slug}'")
+        return nodes[0]
+
     # -- phase transitions --------------------------------------------------
 
     def phase_status(self, phase, kind):

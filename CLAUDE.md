@@ -49,8 +49,15 @@ Commit the regenerated file. Its git history is the record of how the shape of t
 
 **For anything that must be current** — the full text of an issue, comments, an approval record, or a status right now — query Linear directly. Two routes:
 
-- Inside Claude Code, the Linear MCP tools (`list_issues`, `get_issue`, `get_document`, …) are available and need no token.
-- From a script or another harness, use GraphQL with the personal API key:
+- **In an interactive Claude Code session**, the Linear MCP tools (`list_issues`, `get_issue`, `get_document`, …) are available and need no token.
+- **In a headless session** (`claude -p`), in a script, or in any other harness, MCP is unavailable — it is an interactive connector that cannot run unattended. Use GraphQL with the personal API key. The three project documents are reachable that way and no other:
+
+```bash
+python3 scripts/board.py doc --list
+python3 scripts/board.py doc --get 00-hub-read-this-before-any-work-4d61e3161927
+```
+
+Raw GraphQL for anything the facade does not cover:
 
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
@@ -89,7 +96,7 @@ Global PR into main                                 ← GATE 3: PR Review
 
 Branch chain: `PBI → feature branch → main`, two levels of pull request, the human approves the second.
 
-Three routes by kind of work: **feature** — three gates, **small feature** — two (no ADR is written), **bug** — one, with the architect issuing a verdict instead of an ADR. Any chain participant can stop work with `Blocked · Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
+Three routes by kind of work: **feature** — three gates, **small feature** — two (no ADR is written), **bug** — one, with the architect issuing a verdict instead of an ADR. Any chain participant can stop work with `Blocked - Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
 
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
@@ -123,7 +130,7 @@ These come from the project constitution and are not negotiable inside this repo
 | # | Milestone | Content |
 |---|---|---|
 | 1 | Фундамент и контракты | The rules of the game, plus the cross-cutting services: tracker adapter, profile resolution, state resolver, project memory |
-| 2 | Исследование фичи | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
+| 2 | Research Skill for PO | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
 | 3 | Технический дизайн и планирование | `/idp-design` turns a feature into an ADR, the human approves it, `/idp-planning` produces PBIs |
 | 4 | Development | `/idp-development`: one agent per PBI in parallel, the chain inside each PBI, the documenter, two levels of pull request |
 | 5 | Пилот | The whole process run end to end on the pilot project. Not construction — verification |
@@ -132,9 +139,9 @@ Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently 
 
 ## Current state
 
-**Milestone 1 is closed except its final consolidation task.** Six design Spikes are approved and every contract has exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927).
+**Milestone 1 has settled the rules and is now building the cross-cutting services.** Six design Spikes are approved and every contract has exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927). Design is finished; three implementation work items under IDE-92 remain open in this milestone — state resolver and `/idp-status` (IDE-94), project memory (IDE-95), installation and onboarding (IDE-99).
 
-**One capability has shipped:** the Work Tracking Adapter and Profile Resolution, in `scripts/board.py` and `scripts/sync_linear_state.py`, with 65 tests that never touch the network. It shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
+**One capability has shipped:** the Work Tracking Adapter and Profile Resolution, in `scripts/board.py` and `scripts/sync_linear_state.py`, with 73 tests that never touch the network. It shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
 
 Fifteen archived issues were **cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason. Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
@@ -183,7 +190,7 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 
 ## Known gaps
 
-- **The eight board statuses do not exist yet.** `Ready for Design`, `In Design`, `Design Review`, `Ready for Planning`, `In Planning`, `Ready for Development`, `In Development`, `Blocked · Needs Design`. Linear has no API for creating them; they are added by hand in Settings → Teams → IdeaHub → Workflow. Until then `board.py start --phase design` refuses — correctly, but nothing moves.
+- **The nine board statuses exist** — `Ready for Design`, `In Design`, `Design Review`, `Ready for Planning`, `In Planning`, `Ready for Development`, `In Development`, `Blocked - Needs Design`, `PR Review` — created by hand in Settings → Teams → IdeaHub → Workflow, because Linear has no API for creating them. **That hand step is the gap**: a foreign team either creates the same nine or maps its existing ones in the profile's phase table, and where a status cannot exist at all the phase is recorded as a comment instead. The profile carries `null` for such a phase and the claim protocol degrades to comment order — at the cost of a board no longer readable by eye.
 - **Each agent needs its own key.** The claim protocol reads `actor` from status history; three agents sharing one token are indistinguishable and cannot agree on who claimed first. The profile currently holds a single token path.
 - **IDE-68 §8.1 is marked provisional** pending IDE-71, which is now approved. That slice must be reconciled with the nine feature statuses before milestone 2 starts.
 - `read_token` reads `LINEAR_API_KEY` regardless of the board named in the profile. Harmless while only the Linear adapter exists; wrong the moment an Azure DevOps adapter appears.
