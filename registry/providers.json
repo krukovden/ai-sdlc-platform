@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "_comment": [
+    "Which provider performs which non-deterministic pass. Data, not code:",
+    "principle 7 says any of them must be able to do the same logical job, and",
+    "that only holds if swapping one is an edit here rather than a patch.",
+    "",
+    "The reviewer is deliberately a different model from the one running the",
+    "interview. A model reviewing its own draft agrees with itself."
+  ],
+  "reviewer": {
+    "primary": {
+      "name": "codex",
+      "command": ["codex", "exec", "--output-schema", "{schema}"],
+      "reads_prompt_from": "stdin"
+    },
+    "fallback": {
+      "name": "claude-subagent",
+      "_note": "Same output schema, enforced by the script rather than by the tool."
+    }
+  },
+  "practice_research": {
+    "primary": {"name": "codex", "command": ["codex", "exec", "--output-schema", "{schema}"],
+                "reads_prompt_from": "stdin"}
+  },
+  "_absence_is_recorded": "No provider means the pass is skipped and provenance says so. A skipped search must never read as a search that found nothing."
+}

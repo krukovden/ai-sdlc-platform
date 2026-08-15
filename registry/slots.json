@@ -1,0 +1,85 @@
+{
+  "registry_version": "1.0.0",
+  "_comment": [
+    "The coverage slot registry. Data, not code: changing the wording of a",
+    "question must never mean touching a schema or a state machine.",
+    "",
+    "Question order is the topological order of depends_on, ties broken by the",
+    "order of this list. That is what makes the interview reproducible for a",
+    "given registry version, which is what the determinism tests assert.",
+    "",
+    "class decides escalation (see the rule in discovery.py, mirroring IDE-68",
+    "6.3). closable_by says who is allowed to close the slot at all.",
+    "lookup_first names the cheap sources that must be consulted before the",
+    "Product Owner's attention is spent - a refusal to ask what the repository",
+    "answers for free."
+  ],
+  "slots": [
+    {"id": "problem", "class": "product_decision", "depends_on": [],
+     "required": true, "closable_by": ["po"],
+     "closes_when": "the problem and whose it is are stated without naming a solution"},
+
+    {"id": "outcome", "class": "product_decision", "depends_on": ["problem"],
+     "required": true, "closable_by": ["po"],
+     "closes_when": "the difference in the world after this ships is stated"},
+
+    {"id": "users", "class": "fact", "depends_on": ["problem"],
+     "required": true, "closable_by": ["source", "reviewer", "po"],
+     "lookup_first": ["project_documents", "project_memory"],
+     "closes_when": "the people affected are named, not described as 'users'"},
+
+    {"id": "scope", "class": "product_decision", "depends_on": ["problem", "outcome"],
+     "required": true, "closable_by": ["po"],
+     "closes_when": "what is being built is stated as product behaviour"},
+
+    {"id": "non_goals", "class": "product_decision", "depends_on": ["scope"],
+     "required": true, "closable_by": ["po"],
+     "closes_when": "what is deliberately not being done is listed",
+     "_why_required": "An empty non-goals list is the single most common discovery defect. It is rejected, never defaulted."},
+
+    {"id": "functional_requirements", "class": "product_decision", "depends_on": ["scope"],
+     "required": true, "closable_by": ["po", "reviewer"],
+     "closes_when": "at least one FR-n exists and each is a statement about behaviour"},
+
+    {"id": "non_functional_requirements", "class": "recommendation",
+     "depends_on": ["functional_requirements"], "required": false,
+     "closable_by": ["reviewer", "po"],
+     "lookup_first": ["project_documents", "dependency_manifest"],
+     "closes_when": "stated with numbers, or dismissed on the record"},
+
+    {"id": "constraints", "class": "fact", "depends_on": ["scope"],
+     "required": false, "closable_by": ["source", "reviewer"],
+     "lookup_first": ["dependency_manifest", "project_documents", "git_log"],
+     "closes_when": "the technical and organisational limits are known"},
+
+    {"id": "assumptions", "class": "ambiguity", "depends_on": ["scope"],
+     "required": false, "closable_by": ["reviewer", "po"],
+     "closes_when": "each assumption is marked validated with evidence, or left explicit"},
+
+    {"id": "dependencies", "class": "fact", "depends_on": ["functional_requirements"],
+     "required": false, "closable_by": ["source", "reviewer"],
+     "lookup_first": ["dependency_manifest", "repository", "project_memory"],
+     "closes_when": "what this needs from elsewhere is known"},
+
+    {"id": "acceptance_criteria", "class": "product_decision",
+     "depends_on": ["functional_requirements"], "required": true,
+     "closable_by": ["po", "reviewer"],
+     "closes_when": "someone could write a test from each one without asking what was meant"},
+
+    {"id": "success_metrics", "class": "product_decision", "depends_on": ["outcome"],
+     "required": false, "closable_by": ["po"],
+     "closes_when": "a metric, its baseline and its target are stated"},
+
+    {"id": "evidence", "class": "fact", "depends_on": [],
+     "required": false, "closable_by": ["source"], "derived": false,
+     "closes_when": "never asked as a question; filled by the evidence command"},
+
+    {"id": "decision_trace", "class": "derived", "depends_on": [],
+     "required": false, "closable_by": ["script"],
+     "closes_when": "written by the script from Product Owner answers only"},
+
+    {"id": "open_questions", "class": "derived", "depends_on": [],
+     "required": false, "closable_by": ["script"],
+     "closes_when": "written by the script from what remains unresolved"}
+  ]
+}

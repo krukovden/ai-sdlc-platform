@@ -18,9 +18,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 
-def load_script(name):
-    """Import scripts/<name>.py as a module, once per process."""
-    path = SCRIPTS_DIR / f"{name}.py"
+def load_script(name, directory=None):
+    """Import <directory>/<name>.py as a module, once per process.
+
+    Defaults to scripts/; the skills live in their own directories and are
+    loaded the same way, because a skill is a script with a contract, not a
+    different kind of thing.
+    """
+    path = Path(directory or SCRIPTS_DIR) / f"{name}.py"
     existing = sys.modules.get(name)
     if existing is not None and getattr(existing, "__file__", None) == str(path):
         return existing
