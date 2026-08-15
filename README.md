@@ -26,7 +26,7 @@ python3 scripts/board.py memory core                      # what exists, one lin
 python3 scripts/board.py memory check                     # drift between registry and git
 python3 scripts/board.py sync                             # regenerate the offline mirror
 python3 scripts/install.py --dry-run                      # what installing would do
-python3 -m unittest discover tests                        # 160 tests, none touch the network
+python3 -m unittest discover tests                        # 173 tests, none touch the network
 ```
 
 Installing is one symlink at this checkout, never a copy: `git pull` here updates every project at once. Each project keeps only its own `.idp/profile.json`.
