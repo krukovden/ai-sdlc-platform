@@ -98,9 +98,13 @@ Branch chain: `PBI → feature branch → main`, two levels of pull request, the
 
 Three routes by kind of work: **feature** — three gates, **small feature** — two (no ADR is written), **bug** — one, with the architect issuing a verdict instead of an ADR. Any chain participant can stop work with `Blocked - Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
 
+**The route is proposed, not assumed.** The model reads the request and proposes a route with one clause of justification; the human confirms or overrides it in a word. Where the model is unsure it asks rather than guesses. The chosen route is written into the artifact's machine header, because it decides how many gates the state resolver has to check.
+
+**The feature's files live on the board, not in the repository.** The ADR, the feature history and the feature's Tried & Rejected are attachments on the feature card in Linear or Azure DevOps; the feature registry and the project's Tried & Rejected are attachments on the epic. There is no directory here for them and there will not be one — the board is the synchronisation point, and an agent working from another machine or inside a different product repository has to find them without git access.
+
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
-Nine logical capabilities, fourteen participants: Feature Discovery · Technical Design · Planning · Development Execution · Documentation · Profile Resolution · Work Tracking Adapter · Project Memory · State Resolution.
+Nine logical capabilities, **sixteen participants** — twelve inside the phases and four cross-cutting services: Feature Discovery (interview skill, independent reviewer) · Technical Design (design agent) · Planning (planner) · Development Execution (the leading script, coder, reviewer, security reviewer, rubber duck, tester, lead) · Documentation (documenter) · Profile Resolution · Work Tracking Adapter · Project Memory · State Resolution. The human is not counted: they do not take part in the chain, they authorise it.
 
 Core artifacts: Project Profile · Feature · ADR · PBI · feature history · Tried & Rejected · feature registry · QA evidence · Pull Request Summary · Documentation Change Set. The full table, with who writes each and what carries it, is in the [reference architecture](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59).
 
