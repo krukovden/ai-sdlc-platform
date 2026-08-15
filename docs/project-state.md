@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-15T00:16:05Z
+**Generated:** 2026-08-15T00:37:34Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 28 live (1 in progress, 7 done) · 15 archived
+**Issues:** 28 live (2 in progress, 7 done) · 15 archived
 
 ## Project documents
 
@@ -45,11 +45,11 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-ide-79-define-linear-workflow-states-approvals-and-agent) | [Spike · IDE-79] Define Linear workflow states, approvals, and agent handoffs | Backlog | Spike | `krukovden/ide-71-spike-ide-79-define-linear-workflow-states-approvals-and` | child of IDE-79, blocks IDE-89, blocks IDE-72, blocks IDE-69, related IDE-68 |
 | [IDE-89](https://linear.app/krukov-idea-hub/issue/IDE-89/work-item-ide-79-consolidate-the-contracts-into-project-documentation) | [Work Item · IDE-79] Consolidate the contracts into project documentation | Backlog | — | `krukovden/ide-89-work-item-ide-79-consolidate-the-contracts-into-project` | child of IDE-79 |
 | [IDE-92](https://linear.app/krukov-idea-hub/issue/IDE-92/feature-skvoznye-sluzhby-platformy) | [Feature] Сквозные службы платформы | Backlog | Feature | `krukovden/ide-92-feature-skvoznie-sluzhbi-platformi` | related IDE-79, related IDE-76 |
 | [IDE-94](https://linear.app/krukov-idea-hub/issue/IDE-94/work-item-ide-92-state-resolver-and-sdlc-status) | [Work Item · IDE-92] State resolver and /sdlc-status | Backlog | — | `krukovden/ide-94-work-item-ide-92-state-resolver-and-sdlc-status` | child of IDE-92, related IDE-90 |
 | [IDE-95](https://linear.app/krukov-idea-hub/issue/IDE-95/work-item-ide-92-project-memory-implementation) | [Work Item · IDE-92] Project memory implementation | Backlog | — | `krukovden/ide-95-work-item-ide-92-project-memory-implementation` | child of IDE-92, related IDE-76 |
+| [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-ide-79-define-linear-workflow-states-approvals-and-agent) | [Spike · IDE-79] Define Linear workflow states, approvals, and agent handoffs | In Progress | Spike | `krukovden/ide-71-spike-ide-79-define-linear-workflow-states-approvals-and` | child of IDE-79, related IDE-77, blocks IDE-89, blocks IDE-72, blocks IDE-69, related IDE-68 |
 | [IDE-79](https://linear.app/krukov-idea-hub/issue/IDE-79/feature-proektirovanie-platformy-i-repozitoriya) | [Feature] Проектирование платформы и репозитория | In Progress | Feature | `krukovden/ide-79-feature-proektirovanie-platformi-i-repozitoriya` | related IDE-93, related IDE-95, related IDE-94, related IDE-68, related IDE-77, blocks IDE-82, blocks IDE-81, blocks IDE-80 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-ide-79-design-the-project-memory-contract) | [Spike · IDE-79] Design the Project Memory contract | Done | Spike | `krukovden/ide-76-spike-ide-79-design-the-project-memory-contract` | child of IDE-79, blocks IDE-89, related IDE-68, related IDE-71 |
