@@ -27,6 +27,7 @@ Usage:
     board.py doc --get SLUG                     print a document by its URL slug
     board.py doc IDE-90 --title T --file F      attach a document to an issue
     board.py doc --title T --file F             attach a document to the project
+    board.py status IDE-90                      where the card is, what to run next
     board.py start IDE-90 --phase design        claim the card for a phase
     board.py finish IDE-90 --phase design       hand it on
     board.py sync                               regenerate docs/project-state.md
@@ -96,12 +97,57 @@ def load_profile():
     return profile
 
 
+def agent_name(profile):
+    """Which identity this process works under, or None for the single-agent case.
+
+    The claim protocol reads the actor out of the board's own status history,
+    so two agents sharing one token are one actor and the protocol cannot say
+    who was first. IDP_AGENT names which key to use; without it nothing about
+    the single-agent setup changes.
+    """
+    name = os.environ.get("IDP_AGENT", "").strip()
+    if not name:
+        return None
+
+    agents = profile.get("agents") or {}
+    if name not in agents:
+        known = ", ".join(sorted(agents)) or "none configured"
+        fail(6, f"IDP_AGENT='{name}' is not in the profile. Known agents: {known}")
+    return name
+
+
+def token_path_for(profile):
+    """The token file this process must use, after checking the identity map.
+
+    Duplicate paths are refused here rather than at claim time: two agents
+    behind one key look identical in history, and the corruption only shows up
+    much later as a claim nobody can reproduce.
+    """
+    agents = profile.get("agents") or {}
+    if agents:
+        seen = {}
+        for name, raw in sorted(agents.items()):
+            resolved = str(Path(raw).expanduser())
+            if resolved in seen:
+                fail(6, f"agents '{seen[resolved]}' and '{name}' share the token file "
+                        f"{resolved}; the claim protocol cannot tell them apart")
+            seen[resolved] = name
+
+    name = agent_name(profile)
+    if name:
+        return Path(agents[name]).expanduser()
+    return Path(profile.get("token_path", DEFAULT_TOKEN_PATH)).expanduser()
+
+
 def read_token(profile):
     token = os.environ.get("LINEAR_API_KEY")
     if token:
+        # Still validate the identity map, so a broken profile fails the same
+        # way whether or not the environment happens to carry a key today.
+        token_path_for(profile)
         return token.strip()
 
-    token_path = Path(profile.get("token_path", DEFAULT_TOKEN_PATH)).expanduser()
+    token_path = token_path_for(profile)
     if not token_path.exists():
         fail(6, f"no token file at {token_path} and no LINEAR_API_KEY in the environment")
     mode = stat.S_IMODE(token_path.stat().st_mode)
@@ -133,6 +179,19 @@ def load_adapter(profile):
     if not hasattr(module, "connect"):
         fail(6, f"scripts/{module_name}.py is not an adapter: it has no connect()")
     return module
+
+
+def load_state_module():
+    """The resolver is a sibling script, imported the same way an adapter is."""
+    path = SCRIPT_DIR / "state.py"
+    spec = importlib.util.spec_from_file_location("idp_state", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_state"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+state = load_state_module()
 
 
 def open_board():
@@ -293,6 +352,16 @@ def cmd_doc(args):
     print(url)
 
 
+def cmd_status(args):
+    profile, _, board = open_board()
+    answer = state.resolve(board, profile, args.id)
+    print(state.describe(answer))
+    # A card nobody can act on is not an error, but a caller that scripts this
+    # needs to tell "waiting on a human" from "run this now" without parsing.
+    if args.quiet:
+        sys.exit(0 if answer["next"] else 1)
+
+
 def cmd_start(args):
     _, _, board = open_board()
     result = board.start_phase(args.id, args.phase)
@@ -377,6 +446,12 @@ def main():
     p.add_argument("--file")
     p.add_argument("--project", help="override the project from the profile")
     p.set_defaults(func=cmd_doc)
+
+    p = sub.add_parser("status", help="where the card is and what to run next")
+    p.add_argument("id")
+    p.add_argument("--quiet", action="store_true",
+                   help="exit 1 when there is nothing to run, for scripting")
+    p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("start", help="claim a card for a phase, or refuse and say why")
     p.add_argument("id")

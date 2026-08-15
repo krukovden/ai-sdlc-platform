@@ -423,14 +423,45 @@ class Board:
 
     # -- phase transitions --------------------------------------------------
 
+    def phase_states(self):
+        """This board's phase map, after the profile has had its say.
+
+        The names below are what we created in IdeaHub. A foreign team maps
+        its own statuses in the profile instead of creating nine new ones,
+        which is why the map lives there and only defaults here. A position
+        set to null means that board cannot express the phase as a status; the
+        phase is recorded as a comment instead, and claim degrades to comment
+        order (IDE-71).
+        """
+        configured = (self.profile or {}).get("phases")
+        if not configured:
+            return PHASE_STATES
+
+        merged = {phase: dict(positions) for phase, positions in PHASE_STATES.items()}
+        for phase, positions in configured.items():
+            slot = merged.setdefault(phase, {})
+            for position, name in positions.items():
+                if name is None:
+                    slot.pop(position, None)
+                else:
+                    slot[position] = name
+        return merged
+
     def phase_status(self, phase, kind):
         """Translate an abstract state into this board's status name."""
-        if phase not in PHASE_STATES:
-            known = ", ".join(sorted(PHASE_STATES))
+        states_by_phase = self.phase_states()
+        if phase not in states_by_phase:
+            known = ", ".join(sorted(states_by_phase))
             fail(3, f"unknown phase '{phase}'. Known: {known}")
-        states = PHASE_STATES[phase]
+        states = states_by_phase[phase]
         if kind not in states:
-            known = ", ".join(sorted(states))
+            if PHASE_STATES.get(phase, {}).get(kind):
+                # The default had it and the profile removed it, so this is a
+                # configured absence, not a typo. Say which, or the reader goes
+                # looking for a bug that is actually a setting.
+                fail(3, f"this board has no status for '{phase}' · '{kind}': the profile "
+                        f"sets it to null. Record that phase as a comment instead.")
+            known = ", ".join(sorted(states)) or "none"
             fail(3, f"phase '{phase}' has no '{kind}' state. It has: {known}")
         return states[kind]
 
