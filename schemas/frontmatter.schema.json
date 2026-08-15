@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/frontmatter.schema.json",
+  "title": "Artifact frontmatter",
+  "description": "The machine header carried by every artifact of the authoring standard (IDE-78). Prose cannot be validated; this header can. Which fields are required depends on 'type'.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "description": "Which artifact this is. It selects both the required header fields and the MD043 heading list used to lint the body.",
+      "enum": ["feature", "adr", "pbi", "pbi-agent", "bug"]
+    },
+    "status": {
+      "description": "Approval state of an ADR. Only an ADR has one: a card's state lives on the board, not in its text.",
+      "enum": ["proposed", "approved", "superseded"]
+    },
+    "route": {
+      "description": "How many gates this work passes: feature — three, small-feature — two (no ADR is written), bug — one. Process metadata, not a plan, which is why it lives in the header and not in a section.",
+      "enum": ["feature", "small-feature", "bug"]
+    },
+    "standard": {
+      "description": "Version of the authoring standard this artifact was written against. A new version never invalidates older artifacts retroactively; touching an artifact pulls it up to the current version.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "examples": ["1.0"]
+    },
+    "cid": {
+      "description": "Correlation identifier tying a feature to its ADR and to the issues produced from it, across trackers. The value format is owned by the Feature Discovery package contract (IDE-68); here it is only required to be present and non-empty.",
+      "type": "string",
+      "minLength": 1
+    },
+    "parent": {
+      "description": "Identifier of the issue this artifact hangs from — the feature, for an ADR, a PBI and its agent attachment. The IDE prefix is this project's team key.",
+      "type": "string",
+      "pattern": "^IDE-[0-9]+$"
+    }
+  },
+  "required": ["type", "standard"],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "type": { "const": "feature" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["type", "route", "standard", "cid"],
+        "properties": {
+          "route": { "enum": ["feature", "small-feature"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "adr" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["type", "status", "route", "standard", "cid", "parent"],
+        "properties": {
+          "route": { "enum": ["feature", "small-feature"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "pbi" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["type", "standard", "parent"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "pbi-agent" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["type", "standard", "parent"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "bug" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["type", "route", "standard", "cid"],
+        "properties": {
+          "route": { "const": "bug" }
+        }
+      }
+    }
+  ]
+}

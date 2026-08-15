@@ -1,0 +1,24 @@
+{
+  // PBI card, written by the planner together with its agent attachment.
+  //
+  // Why five configs and not one: MD043 (required-headings) holds a single
+  // heading list per lint run, and our five artifact types have five different
+  // mandatory structures. The config is chosen per file, by the `type` field of
+  // its frontmatter — pbi -> this file.
+  "extends": "../.markdownlint.jsonc",
+
+  // The heading of a card is its title on the board.
+  "MD041": false,
+
+  // Placeholders are written in angle brackets and read as inline HTML.
+  "MD033": false,
+
+  "MD043": {
+    "headings": [
+      "## Результат",
+      "*",
+      "## Критерии приёмки",
+      "*"
+    ]
+  }
+}

@@ -48,7 +48,7 @@ class PhaseStatusTests(ScriptTestCase):
         self.assertEqual(self.board.phase_status("design", "next"), "Design Review")
         self.assertEqual(self.board.phase_status("development", "active"), "In Development")
         self.assertEqual(self.board.phase_status("pbi", "ready"), "Todo")
-        self.assertEqual(self.board.phase_status("pbi", "blocked"), "Blocked · Needs Design")
+        self.assertEqual(self.board.phase_status("pbi", "blocked"), "Blocked - Needs Design")
 
     def test_exits_3_on_an_unknown_phase_and_lists_the_known_phases(self):
         message = self.assert_exits(3, self.board.phase_status, "discovery", "ready")
@@ -152,7 +152,7 @@ class FinishPhaseTests(ScriptTestCase):
         with mock.patch.object(linear, "query", fake):
             result = board_handle.finish_phase("IDE-90", "pbi", "blocked")
 
-        self.assertEqual(result["status"], "Blocked · Needs Design")
+        self.assertEqual(result["status"], "Blocked - Needs Design")
         self.assertEqual(len(fake.mutations), 1)
 
     def test_refuses_a_card_that_is_not_active_and_changes_nothing(self):

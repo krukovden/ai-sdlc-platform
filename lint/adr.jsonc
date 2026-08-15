@@ -1,0 +1,34 @@
+{
+  // ADR — the file written by the architect and attached to the feature.
+  //
+  // Why five configs and not one: MD043 (required-headings) holds a single
+  // heading list for the whole lint run. Five artifact types have five
+  // different mandatory structures, so a shared config could only be as strict
+  // as their intersection — which is empty. The config is chosen per file, by
+  // the `type` field of its frontmatter — adr -> this file.
+  "extends": "../.markdownlint.jsonc",
+
+  // The document title is the attachment title on the feature.
+  "MD041": false,
+
+  // Placeholders are written in angle brackets and read as inline HTML.
+  "MD033": false,
+
+  // Five mandatory sections; everything else is free. The "*" wildcards are
+  // what let a rich design document (diagrams, contracts, error handling,
+  // rejected options) live inside the same five-section skeleton.
+  "MD043": {
+    "headings": [
+      "## Зачем",
+      "*",
+      "## Что строим",
+      "*",
+      "## Чем подтвердим",
+      "*",
+      "## Чего этот документ не решает",
+      "*",
+      "## Чем платим",
+      "*"
+    ]
+  }
+}

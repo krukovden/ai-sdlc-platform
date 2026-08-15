@@ -107,7 +107,7 @@ Six local commands in the first revision, every phase started by a human: `/sdlc
 
 These come from the project constitution and are not negotiable inside this repository:
 
-1. **Humans own the decisions that matter.** AI prepares material and recommends; the PO approves product intent, the Tech Lead approves technical design.
+1. **Humans own the decisions that matter.** AI prepares material and recommends; a human decides. Three gates: the feature, the ADR, the global pull request. Who approves is a list in the Project Profile, not a role baked into the platform.
 2. **Only ask a human when necessary.** Models and tools resolve facts and low-risk questions before escalating.
 3. **Structured artifacts over raw conversations.** Approved specifications and compact Decision Traces are the record — never chat transcripts.
 4. **Stable contracts, swappable executors.** Skills, models, agents, scripts and services may change while artifact contracts stay stable.
@@ -122,36 +122,36 @@ These come from the project constitution and are not negotiable inside this repo
 
 | # | Milestone | Content |
 |---|---|---|
-| 1 | Фундамент и контракты | Linked Linear + GitHub foundation, platform terminology, artifact contracts, project configuration model |
+| 1 | Фундамент и контракты | The rules of the game, plus the cross-cutting services: tracker adapter, profile resolution, state resolver, project memory |
 | 2 | Исследование фичи | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
 | 3 | Технический дизайн и планирование | `/sdlc-design` turns a feature into an ADR, the human approves it, `/sdlc-planning` produces PBIs |
-| 4 | Реализация и поставка | Manual implementation handoff, repository integration, testing, pull requests |
-| 5 | Синхронизация документации и пилот | Documentation impact, updates, full process validated on the pilot |
+| 4 | Development | `/sdlc-development`: one agent per PBI in parallel, the chain inside each PBI, the documenter, two levels of pull request |
+| 5 | Пилот | The whole process run end to end on the pilot project. Not construction — verification |
 
 Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently with zero issues). The project is done when the full process runs successfully on that pilot.
 
 ## Current state
 
-Nothing in the platform itself has been implemented yet — the repository holds this file, a README, and the Linear state sync script.
+**Milestone 1 is closed except its final consolidation task.** Six design Spikes are approved and every contract has exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927).
 
-Five live issues, fifteen archived. **The archived ones were cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason — see *Tried & Rejected* on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927). Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
+**One capability has shipped:** the Work Tracking Adapter and Profile Resolution, in `scripts/board.py` and `scripts/sync_linear_state.py`, with 65 tests that never touch the network. It shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
 
-The first design (IDE-68, Feature Discovery) is written and awaiting Product Owner approval. Implementation issues are created **only after** the Product Owner approves the ADR — that ordering is a completion criterion, not a preference.
+Fifteen archived issues were **cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason. Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
-Note on vocabulary: our own cards are still labelled *Spike*, and there the word keeps its research meaning — a question to close. It no longer names a technical design document.
+Note on vocabulary: our own cards are still labelled *Spike*, and there the word keeps its research meaning — a question to close. It no longer names a technical design document; technical design is the ADR.
 
-Planned layout once implementation starts:
+Layout — what exists, and what is planned:
 
 ```
-skills/
-  feature-discovery/     SKILL.md + scripts/discovery.py   (the core; process lives here)
-  publish-feature/       SKILL.md + scripts/publish_linear.py, publish_ado.py
-schemas/                 feature-package, project-profile, reviewer-output
-registry/                coverage slot registry, providers.json
-scripts/                 sync_linear_state.py and other repository tooling
-docs/                    project-state.md (generated) and design notes
-tests/                   deterministic core tests, no LLM required
-evals/                   golden ideas and LLM evaluations
+scripts/       board.py (front door) + sync_<board>_state.py (one adapter per tracker)   ✅
+tests/         deterministic tests, none touch the network                                ✅
+docs/          project-state.md (generated)                                               ✅
+templates/     the four artifact templates: feature, adr, pbi, bug                        ✅
+schemas/       frontmatter.schema.json; feature-package and profile schemas to come
+lint/          one markdownlint config per artifact type (MD043 required-headings)        ✅
+skills/        feature-discovery/ and the other five commands
+registry/      coverage slot registry, providers.json
+evals/         golden ideas and LLM evaluations
 ```
 
 Skills are developed here and symlinked into `~/.claude/skills/` for local use.
@@ -164,9 +164,11 @@ Principle 10 requires features, decisions, designs, tasks, pull requests and doc
 2. **Every commit message contains the issue identifier** in the form `IDE-nn`, so that `git log --grep 'IDE-68'` reconstructs all work done for an issue years later.
 3. **Every pull request links its issue.** On GitHub, put `IDE-nn` and the issue URL in the PR body; Linear picks up the branch name and shows the PR on the issue.
 
-The deeper spine is the `correlation_id` defined in the IDE-68 design: it ties a Feature package to its technical design and to the implementation issues produced from it, across trackers. Code-level traceability above and artifact-level traceability there must not diverge.
+The deeper spine is the `correlation_id` defined in the IDE-68 design: it ties a feature to its ADR and to the PBIs produced from it, across trackers. Code-level traceability above and artifact-level traceability there must not diverge.
 
-Reconstructing past work therefore uses three sources together: **Linear** for what and when (`completedAt`, `stateHistory`, archived issues), the **Decision Trace** artifact for why and what was rejected, and **git** for the actual change.
+A fourth thread runs through the board itself: **status history**. Every transition carries a server timestamp, a source state, a target state and an actor — which is how parallel agents agree on who claimed what without talking to each other, and how a human override is distinguishable from an agent's move.
+
+Reconstructing past work therefore uses three sources together: **the board** for what and when, the **feature's own files** — its ADR, its history, its Tried & Rejected — for why and what was rejected, and **git** for the actual change.
 
 ## Conventions
 
@@ -181,6 +183,8 @@ Reconstructing past work therefore uses three sources together: **Linear** for w
 
 ## Known gaps
 
-- `README.md` does not yet link back to Linear, which is still an open acceptance criterion on IDE-5.
-- Linear labels `feature-package`, `stage:ready-for-design` and `stage:design-in-progress` do not exist yet in the IdeaHub team.
-- IDE-71 (the canonical workflow, approval and handoff contract) is still in Backlog. IDE-68's design defines a minimal slice of it marked *provisional*; if IDE-71 rules differently, that slice changes.
+- **The eight board statuses do not exist yet.** `Ready for Design`, `In Design`, `Design Review`, `Ready for Planning`, `In Planning`, `Ready for Development`, `In Development`, `Blocked · Needs Design`. Linear has no API for creating them; they are added by hand in Settings → Teams → IdeaHub → Workflow. Until then `board.py start --phase design` refuses — correctly, but nothing moves.
+- **Each agent needs its own key.** The claim protocol reads `actor` from status history; three agents sharing one token are indistinguishable and cannot agree on who claimed first. The profile currently holds a single token path.
+- **IDE-68 §8.1 is marked provisional** pending IDE-71, which is now approved. That slice must be reconciled with the nine feature statuses before milestone 2 starts.
+- `read_token` reads `LINEAR_API_KEY` regardless of the board named in the profile. Harmless while only the Linear adapter exists; wrong the moment an Azure DevOps adapter appears.
+- **The content validator is not written.** Templates, frontmatter schema and lint configs exist; the grep layer that checks `Evidence:` lines, resolvable links and the absence of `TODO`/`N/A` is a separate implementation task.

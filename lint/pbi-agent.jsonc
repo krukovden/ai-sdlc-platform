@@ -1,0 +1,25 @@
+{
+  // pbi.agent.md — the attachment read by the agent. One section, and the
+  // single "*" after it is deliberately the only freedom this type gets: the
+  // whole point of the file is that it answers "where and how" and nothing
+  // else. Acceptance criteria and restated goals belong to the card.
+  //
+  // Why five configs and not one: MD043 (required-headings) holds a single
+  // heading list per lint run, and our five artifact types have five different
+  // mandatory structures. The config is chosen per file, by the `type` field of
+  // its frontmatter — pbi-agent -> this file.
+  "extends": "../.markdownlint.jsonc",
+
+  // The attachment carries no title of its own; it is named by the PBI.
+  "MD041": false,
+
+  // Placeholders are written in angle brackets and read as inline HTML.
+  "MD033": false,
+
+  "MD043": {
+    "headings": [
+      "## Где искать",
+      "*"
+    ]
+  }
+}

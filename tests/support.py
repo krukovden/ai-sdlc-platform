@@ -90,7 +90,7 @@ TEAM = {
         {"id": "st-todo", "name": "Todo", "type": "unstarted"},
         {"id": "st-in-progress", "name": "In Progress", "type": "started"},
         {"id": "st-in-review", "name": "In Review", "type": "started"},
-        {"id": "st-blocked", "name": "Blocked · Needs Design", "type": "unstarted"},
+        {"id": "st-blocked", "name": "Blocked - Needs Design", "type": "unstarted"},
         {"id": "st-done", "name": "Done", "type": "completed"},
     ]},
 }

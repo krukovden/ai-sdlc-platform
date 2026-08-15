@@ -84,7 +84,7 @@ PHASE_STATES = {
         "ready": "Todo",
         "active": "In Progress",
         "next": "In Review",
-        "blocked": "Blocked · Needs Design",
+        "blocked": "Blocked - Needs Design",
     },
 }
 

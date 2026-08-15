@@ -1,0 +1,23 @@
+{
+  // Baseline for every markdown file in the repository: README, docs/, notes.
+  // Artifacts of the authoring standard (IDE-78) are linted with the per-type
+  // configs in lint/, which extend this file and switch MD043 back on.
+  "default": true,
+
+  // Prose here is Russian and often long; wrapping it to a column would make
+  // diffs noisier without making anything more readable.
+  "MD013": false,
+
+  // Repeated headings are legal as long as they sit under different parents —
+  // "## Чем подтвердим" appears once per document, but "### Evidence"-shaped
+  // subheadings may repeat across sections.
+  "MD024": { "siblings_only": true },
+
+  // Bare URLs are common in generated mirrors (docs/project-state.md).
+  "MD034": false,
+
+  // MD043 fixes one heading list for a whole run, and this repository has five
+  // artifact types with five different lists. Off here; the five configs under
+  // lint/ turn it on, one type at a time. See templates/README.md.
+  "MD043": false
+}
