@@ -6,6 +6,7 @@ a caller that cannot distinguish "unreachable" from "malformed request" cannot
 decide whether retrying is safe. These tests pin one case per failure mode.
 """
 
+import io
 import unittest
 import urllib.error
 from unittest import mock
@@ -34,7 +35,7 @@ class TransportFailureTests(ScriptTestCase):
         self.assertIn("check the card", message)
 
     def test_exits_2_and_says_so_plainly_when_the_key_is_rejected(self):
-        error = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+        error = urllib.error.HTTPError("url", 401, "Unauthorized", {}, io.BytesIO(b""))
         with mock.patch.object(linear.urllib.request, "urlopen", raises(error)):
             message = self.assert_exits(2, self.call)
 

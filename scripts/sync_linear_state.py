@@ -513,12 +513,16 @@ class Board:
 
 
 def _brief(node):
+    parent = node.get("parent")
     return {
         "identifier": node["identifier"],
         "title": node["title"],
         "url": node["url"],
         "status": node["state"]["name"],
         "status_type": node["state"]["type"],
+        # The query already asks for it; dropping it here made every issue look
+        # parentless, which made every sub-issue look like a top-level feature.
+        "parent": parent["identifier"] if parent else None,
     }
 
 

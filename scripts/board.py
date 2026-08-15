@@ -30,6 +30,10 @@ Usage:
     board.py status IDE-90                      where the card is, what to run next
     board.py start IDE-90 --phase design        claim the card for a phase
     board.py finish IDE-90 --phase design       hand it on
+    board.py memory core                        what exists, one line each
+    board.py memory why IDE-42                  why this feature is the way it is
+    board.py memory check                       drift between the registry and git
+    board.py memory init                        seed memory for an existing project
     board.py sync                               regenerate docs/project-state.md
 
 Exit codes, shared by every adapter:
@@ -59,6 +63,10 @@ DEFAULT_MIRROR = REPO_ROOT / "docs" / "project-state.md"
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
+
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 # ---------------------------------------------------------------------------
@@ -181,17 +189,17 @@ def load_adapter(profile):
     return module
 
 
-def load_state_module():
-    """The resolver is a sibling script, imported the same way an adapter is."""
-    path = SCRIPT_DIR / "state.py"
-    spec = importlib.util.spec_from_file_location("idp_state", path)
+def load_sibling(name, alias):
+    """Import a sibling script the same way an adapter is imported."""
+    spec = importlib.util.spec_from_file_location(alias, SCRIPT_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["idp_state"] = module
+    sys.modules[alias] = module
     spec.loader.exec_module(module)
     return module
 
 
-state = load_state_module()
+state = load_sibling("state", "idp_state")
+memory = load_sibling("memory", "idp_memory")
 
 
 def open_board():
@@ -362,6 +370,79 @@ def cmd_status(args):
         sys.exit(0 if answer["next"] else 1)
 
 
+def memory_document(profile, board):
+    """The epic document that carries the registry, named by the profile."""
+    slug = profile.get("memory_doc")
+    if not slug:
+        fail(6, "the profile has no 'memory_doc': the slug of the epic document "
+                "that carries the registry. Add it, then re-run.")
+    return slug, board.get_document(slug)
+
+
+def cmd_memory(args):
+    profile, _, board = open_board()
+    try:
+        if args.action == "init":
+            issues = board.list_project(project_id_from(profile, None))
+            registry = memory.seed(issues, now())
+            print(memory.render_registry(registry))
+            print("\nReview every line, then paste the block into the epic document.",
+                  file=sys.stderr)
+            print("Each entry is marked legacy: it came from the board, not from a "
+                  "decision anyone recorded.", file=sys.stderr)
+            return
+
+        _, document = memory_document(profile, board)
+        registry = memory.parse_registry(document["content"])
+
+        if args.action == "core":
+            print(memory.core(registry))
+        elif args.action == "why":
+            if not args.id:
+                fail(3, "memory why needs an issue: board.py memory why IDE-42")
+            print(explain(board, registry, args.id))
+        elif args.action == "check":
+            issues = board.list_project(project_id_from(profile, None))
+            findings = memory.check_drift(registry, issues, profile,
+                                          do_fetch=not args.no_fetch)
+            print(memory.describe_drift(findings))
+            if any(findings[k] for k in ("unbacked", "unregistered",
+                                          "unrecorded_removals")):
+                sys.exit(1)
+    except memory.MemoryError_ as exc:
+        fail(3, str(exc))
+
+
+def explain(board, registry, identifier):
+    """Why this feature is the way it is: the registry line, then its own files."""
+    entry = next((f for f in registry["features"] if f["issue"] == identifier), None)
+    removed = next((r for r in registry["removed"]
+                    if identifier in r.get("issues", [])), None)
+
+    lines = []
+    if entry:
+        lines.append(f"{entry['issue']}  {entry['name']}")
+        lines.append(f"  {entry['one_liner']}")
+        if entry.get("legacy"):
+            lines.append("  (legacy: recorded from the board at init, never reviewed)")
+    elif removed:
+        lines.append(f"{identifier}  {removed['name']} — REMOVED")
+        lines.append(f"  why: {removed['why_removed']}")
+        lines.append(f"  replaced by: {removed.get('replaced_by') or 'nothing recorded'}")
+        return "\n".join(lines)
+    else:
+        lines.append(f"{identifier} is not in the registry.")
+        lines.append("  Either it is not a feature, or it was never registered — "
+                     "which is the drift `memory check` reports.")
+
+    issue = board.get_issue(identifier)
+    lines.append("")
+    lines.append(f"status: {issue['status']}")
+    lines.append("The feature's own files — its ADR, its history, its Tried & Rejected —")
+    lines.append(f"are attachments on the card: {issue['url']}")
+    return "\n".join(lines)
+
+
 def cmd_start(args):
     _, _, board = open_board()
     result = board.start_phase(args.id, args.phase)
@@ -452,6 +533,13 @@ def main():
     p.add_argument("--quiet", action="store_true",
                    help="exit 1 when there is nothing to run, for scripting")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("memory", help="project memory: registry, why, drift")
+    p.add_argument("action", choices=["core", "why", "check", "init"])
+    p.add_argument("id", nargs="?", help="the issue, for `why`")
+    p.add_argument("--no-fetch", action="store_true",
+                   help="skip git fetch; the check then runs against a stale clone")
+    p.set_defaults(func=cmd_memory)
 
     p = sub.add_parser("start", help="claim a card for a phase, or refuse and say why")
     p.add_argument("id")

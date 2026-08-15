@@ -3,5 +3,9 @@
   "team_key": "IDE",
   "token_path": "~/.feature-discovery/linear-token",
   "project_id": "6d49b0dc-e8b7-4e4c-a655-86439a48775e",
-  "workspace": "krukov-idea-hub"
+  "workspace": "krukov-idea-hub",
+  "memory_doc": "4d61e3161927",
+  "repositories": [
+    "."
+  ]
 }
