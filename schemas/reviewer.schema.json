@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/reviewer.schema.json",
+  "title": "Independent reviewer output",
+  "description": "Enforced by codex exec --output-schema, and by the same schema when the Claude fallback is used. The reviewer is a different model from the one running the interview: a model reviewing its own draft agrees with itself.",
+  "type": "object",
+  "required": ["verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {"enum": ["sufficient", "gaps-found"]},
+    "resolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["question_id", "answer", "confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "question_id": {"type": "string"},
+          "answer": {"type": "string", "minLength": 1},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["uri", "quote"],
+              "additionalProperties": false,
+              "properties": {"uri": {"type": "string"}, "quote": {"type": "string"}}
+            }
+          },
+          "confidence": {
+            "enum": ["evidence-backed", "model-inference"],
+            "description": "Mandatory. Only an evidence-backed resolution may close a slot without the Product Owner seeing it; a model inference is shown to them as its own section."
+          }
+        }
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lens", "gap", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "lens": {"enum": ["edge-cases", "failure-modes", "non-functional",
+                            "data-and-migration", "permissions-and-security",
+                            "operations-and-rollout", "contradictions"]},
+          "slot": {"type": "string"},
+          "gap": {"type": "string", "minLength": 1},
+          "why_it_matters": {"type": "string"},
+          "severity": {"enum": ["high", "medium", "low"]},
+          "suggested_question": {"type": "string"},
+          "class": {"enum": ["product_decision", "fact", "risk", "ambiguity"]}
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["between", "explanation"],
+        "additionalProperties": false,
+        "properties": {
+          "between": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+          "explanation": {"type": "string"}
+        }
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["to", "proposal"],
+        "additionalProperties": false,
+        "properties": {
+          "to": {"type": "string"},
+          "proposal": {"type": "string"},
+          "tradeoff": {"type": "string"}
+        }
+      }
+    }
+  }
+}

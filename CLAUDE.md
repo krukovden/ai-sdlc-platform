@@ -159,10 +159,10 @@ scripts/       board.py (front door) + sync_<board>_state.py (one adapter per tr
 tests/         deterministic tests, none touch the network                                ✅
 docs/          project-state.md (generated)                                               ✅
 templates/     the four artifact templates: feature, adr, pbi, bug                        ✅
-schemas/       frontmatter.schema.json; feature-package and profile schemas to come
+schemas/       frontmatter.schema.json, reviewer.schema.json                            ✅
 lint/          one markdownlint config per artifact type (MD043 required-headings)        ✅
-skills/        feature-discovery/ and the other five commands
-registry/      coverage slot registry, providers.json
+skills/        feature-discovery/ — SKILL.md + discovery.py, the deterministic core       ✅
+registry/      slots.json (the 15 coverage slots), providers.json                         ✅
 evals/         golden ideas and LLM evaluations
 ```
 
@@ -172,7 +172,13 @@ agent, because the claim protocol reads the actor from history), `memory_doc` (t
 document holding the registry) and `repositories` (everything the drift detector must
 search, not just the clone you happen to be in).
 
-Skills are developed here and symlinked into `~/.claude/skills/` for local use.
+Skills are developed here and symlinked into `~/.claude/skills/` for local use — a link, never a copy, so an edit here is live everywhere immediately:
+
+```bash
+ln -sfn "$(pwd)/skills/feature-discovery" ~/.claude/skills/feature-discovery
+```
+
+Verified after installing: Claude Code lists `feature-discovery` among its skills. Codex and Copilot read skills from their own locations in their own formats; installing there is [IDE-101](https://linear.app/krukov-idea-hub/issue/IDE-101/work-item-ide-92-skill-installation-for-claude-codex-and-copilot), and those formats are to be confirmed on the live tools rather than inferred from documentation.
 
 ## Traceability
 
