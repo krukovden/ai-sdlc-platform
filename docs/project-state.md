@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-18T22:22:14Z
+**Generated:** 2026-08-18T23:10:21Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 36 live (3 in progress, 22 done) · 15 archived
+**Issues:** 44 live (1 in progress, 28 done) · 15 archived
 
 ## Project documents
 
@@ -33,11 +33,13 @@
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-101](https://linear.app/krukov-idea-hub/issue/IDE-101/work-item-ide-92-skill-installation-for-claude-codex-and-copilot) | [Work Item · IDE-92] Skill installation for Claude, Codex and Copilot | Backlog | — | `krukovden/ide-101-work-item-ide-92-skill-installation-for-claude-codex-and` | child of IDE-92, related IDE-99 |
-| [IDE-102](https://linear.app/krukov-idea-hub/issue/IDE-102/work-item-ide-80-content-validator-for-the-artifact-standard) | [Work Item · IDE-80] Content validator for the artifact standard | Todo | — | `krukovden/ide-102-work-item-ide-80-content-validator-for-the-artifact-standard` | child of IDE-80, related IDE-78, related IDE-83 |
+| [IDE-111](https://linear.app/krukov-idea-hub/issue/IDE-111/work-item-ide-80-wire-the-content-validator-into-publication) | [Work Item · IDE-80] Wire the content validator into publication | Backlog | — | `krukovden/ide-111-work-item-ide-80-wire-the-content-validator-into-publication` | child of IDE-80, related IDE-102 |
+| [IDE-112](https://linear.app/krukov-idea-hub/issue/IDE-112/work-item-ide-80-spike-as-an-artifact-type-in-schema-lint-and) | [Work Item · IDE-80] Spike as an artifact type in schema, lint and validator | Backlog | — | `krukovden/ide-112-work-item-ide-80-spike-as-an-artifact-type-in-schema-lint` | child of IDE-80, related IDE-102, related IDE-78 |
+| [IDE-113](https://linear.app/krukov-idea-hub/issue/IDE-113/work-item-ide-92-three-consistency-debts-left-by-the-parallel-build) | [Work Item · IDE-92] Three consistency debts left by the parallel build | Backlog | — | `krukovden/ide-113-work-item-ide-92-three-consistency-debts-left-by-the` | child of IDE-92, related IDE-69, related IDE-105 |
 | [IDE-106](https://linear.app/krukov-idea-hub/issue/IDE-106/work-item-ide-92-feature-history-order-and-entry-form-diverge-from-the) | [Work Item · IDE-92] Feature history order and entry form diverge from the contract | Todo | — | `krukovden/ide-106-work-item-ide-92-feature-history-order-and-entry-form` | child of IDE-92, related IDE-76, related IDE-105 |
-| [IDE-87](https://linear.app/krukov-idea-hub/issue/IDE-87/work-item-ide-80-azure-devops-publishing-adapter) | [Work Item · IDE-80] Azure DevOps publishing adapter | Todo | — | `krukovden/ide-87-work-item-ide-80-azure-devops-publishing-adapter` | child of IDE-80, related IDE-76, related IDE-93 |
 | [IDE-88](https://linear.app/krukov-idea-hub/issue/IDE-88/work-item-ide-80-llm-evaluation-harness) | [Work Item · IDE-80] LLM evaluation harness | Todo | — | `krukovden/ide-88-work-item-ide-80-llm-evaluation-harness` | child of IDE-80 |
 | [IDE-80](https://linear.app/krukov-idea-hub/issue/IDE-80/feature-feature-discovery-skill) | [Feature] Feature Discovery Skill | In Progress | Feature | `krukovden/ide-80-feature-feature-discovery-skill` | related IDE-101, related IDE-98, related IDE-78, related IDE-92, related IDE-71 |
+| [IDE-102](https://linear.app/krukov-idea-hub/issue/IDE-102/work-item-ide-80-content-validator-for-the-artifact-standard) | [Work Item · IDE-80] Content validator for the artifact standard | Done | — | `krukovden/ide-102-work-item-ide-80-content-validator-for-the-artifact-standard` | child of IDE-80, related IDE-78, related IDE-83 |
 | [IDE-103](https://linear.app/krukov-idea-hub/issue/IDE-103/work-item-ide-80-reviewer-schema-and-fallback-under-strict-structured) | [Work Item · IDE-80] Reviewer schema and fallback under strict structured output | Done | — | `krukovden/ide-103-work-item-ide-80-reviewer-schema-and-fallback-under-strict` | child of IDE-80, related IDE-85, related IDE-68 |
 | [IDE-104](https://linear.app/krukov-idea-hub/issue/IDE-104/work-item-ide-92-drift-detector-a-container-feature-is-satisfied-by) | [Work Item · IDE-92] Drift detector: a container feature is satisfied by its children | Done | — | `krukovden/ide-104-work-item-ide-92-drift-detector-a-container-feature-is` | child of IDE-92, related IDE-99, related IDE-94, related IDE-76, related IDE-93, related IDE-100, related IDE-95, related IDE-79, related IDE-101 |
 | [IDE-105](https://linear.app/krukov-idea-hub/issue/IDE-105/work-item-ide-92-unified-naming-for-memory-files-at-both-levels) | [Work Item · IDE-92] Unified naming for memory files at both levels | Done | — | `krukovden/ide-105-work-item-ide-92-unified-naming-for-memory-files-at-both` | child of IDE-92, related IDE-79, related IDE-76, related IDE-80 |
@@ -46,6 +48,7 @@
 | [IDE-84](https://linear.app/krukov-idea-hub/issue/IDE-84/work-item-ide-80-discovery-core-state-machine-slot-registry-cli) | [Work Item · IDE-80] Discovery core: state machine, slot registry, CLI | Done | — | `krukovden/ide-84-work-item-ide-80-discovery-core-state-machine-slot-registry` | child of IDE-80, blocks IDE-88, blocks IDE-87, blocks IDE-86, blocks IDE-85 |
 | [IDE-85](https://linear.app/krukov-idea-hub/issue/IDE-85/work-item-ide-80-reviewer-integration-and-practice-research) | [Work Item · IDE-80] Reviewer integration and practice research | Done | — | `krukovden/ide-85-work-item-ide-80-reviewer-integration-and-practice-research` | child of IDE-80 |
 | [IDE-86](https://linear.app/krukov-idea-hub/issue/IDE-86/work-item-ide-80-linear-publishing-adapter) | [Work Item · IDE-80] Linear publishing adapter | Done | — | `krukovden/ide-86-work-item-ide-80-linear-publishing-adapter` | child of IDE-80, related IDE-93 |
+| [IDE-87](https://linear.app/krukov-idea-hub/issue/IDE-87/work-item-ide-80-azure-devops-publishing-adapter) | [Work Item · IDE-80] Azure DevOps publishing adapter | Done | — | `krukovden/ide-87-work-item-ide-80-azure-devops-publishing-adapter` | child of IDE-80, related IDE-76, related IDE-93 |
 | [IDE-10](https://linear.app/krukov-idea-hub/issue/IDE-10/add-grilling-research-and-independent-llm-review) | Add grilling, research, and independent LLM review | Canceled · archived | — | `krukovden/ide-10-add-grilling-research-and-independent-llm-review` | — |
 | [IDE-11](https://linear.app/krukov-idea-hub/issue/IDE-11/generate-and-publish-the-approved-feature-package) | Generate and publish the approved Feature package | Canceled · archived | — | `krukovden/ide-11-generate-and-publish-the-approved-feature-package` | — |
 | [IDE-9](https://linear.app/krukov-idea-hub/issue/IDE-9/build-the-local-feature-discovery-skill-entry-point) | Build the local Feature Discovery skill entry point | Canceled · archived | — | `krukovden/ide-9-build-the-local-feature-discovery-skill-entry-point` | — |
@@ -93,6 +96,7 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
+| [IDE-114](https://linear.app/krukov-idea-hub/issue/IDE-114/work-item-pilot-live-verification-of-the-chain-on-azure-devops) | [Work Item · Pilot] Live verification of the chain on Azure DevOps | Backlog | — | `krukovden/ide-114-work-item-pilot-live-verification-of-the-chain-on-azure` | related IDE-103, related IDE-87, related IDE-108, related IDE-107 |
 | [IDE-98](https://linear.app/krukov-idea-hub/issue/IDE-98/work-item-pilot-run-the-full-process-on-private-ai-knowledge-platform) | [Work Item · Pilot] Run the full process on Private AI Knowledge Platform MVP | Backlog | — | `krukovden/ide-98-work-item-pilot-run-the-full-process-on-private-ai-knowledge` | — |
 | [IDE-18](https://linear.app/krukov-idea-hub/issue/IDE-18/build-documentation-impact-analysis-and-update-workflow) | Build documentation impact analysis and update workflow | Canceled · archived | — | `krukovden/ide-18-build-documentation-impact-analysis-and-update-workflow` | — |
 | [IDE-19](https://linear.app/krukov-idea-hub/issue/IDE-19/run-the-end-to-end-pilot-on-private-ai-knowledge-platform-mvp) | Run the end-to-end pilot on Private AI Knowledge Platform MVP | Canceled · archived | — | `krukovden/ide-19-run-the-end-to-end-pilot-on-private-ai-knowledge-platform` | — |
@@ -135,11 +139,28 @@
 |---|---|---|---|---|---|
 | [IDE-81](https://linear.app/krukov-idea-hub/issue/IDE-81/feature-komanda-idp-design-tehnicheskij-dizajn) | [Feature] Команда /idp-design — технический дизайн | Backlog | Feature | `krukovden/ide-81-feature-komanda-idp-design-tekhnicheskii-dizain` | related IDE-82, related IDE-90 |
 | [IDE-82](https://linear.app/krukov-idea-hub/issue/IDE-82/feature-komanda-idp-planning-dekompoziciya-na-pbi) | [Feature] Команда /idp-planning — декомпозиция на PBI | Backlog | Feature | `krukovden/ide-82-feature-komanda-idp-planning-dekompoziciya-na-pbi` | related IDE-90, related IDE-78 |
-| [IDE-69](https://linear.app/krukov-idea-hub/issue/IDE-69/spike-ide-81-design-the-idp-design-command) | [Spike · IDE-81] Design the /idp-design command | Design Review | Spike | `krukovden/ide-69-spike-ide-81-design-the-idp-design-command` | child of IDE-81, related IDE-90, related IDE-78, blocks IDE-72 |
-| [IDE-72](https://linear.app/krukov-idea-hub/issue/IDE-72/spike-ide-82-design-the-idp-planning-command) | [Spike · IDE-82] Design the /idp-planning command | Design Review | Spike | `krukovden/ide-72-spike-ide-82-design-the-idp-planning-command` | child of IDE-82, related IDE-78, related IDE-90 |
+| [IDE-107](https://linear.app/krukov-idea-hub/issue/IDE-107/work-item-ide-81-idp-design-core-subphases-decision-registry) | [Work Item · IDE-81] /idp-design core: subphases, decision registry, alternatives budget | Done | — | `krukovden/ide-107-work-item-ide-81-idp-design-core-subphases-decision-registry` | child of IDE-81, related IDE-69, related IDE-103 |
+| [IDE-108](https://linear.app/krukov-idea-hub/issue/IDE-108/work-item-ide-82-idp-planning-core-atomicity-path-overlap-graph) | [Work Item · IDE-82] /idp-planning core: atomicity, path overlap graph, feature branch | Done | — | `krukovden/ide-108-work-item-ide-82-idp-planning-core-atomicity-path-overlap` | child of IDE-82, related IDE-72 |
+| [IDE-69](https://linear.app/krukov-idea-hub/issue/IDE-69/spike-ide-81-design-the-idp-design-command) | [Spike · IDE-81] Design the /idp-design command | Done | Spike | `krukovden/ide-69-spike-ide-81-design-the-idp-design-command` | child of IDE-81, related IDE-90, related IDE-78, blocks IDE-72 |
+| [IDE-72](https://linear.app/krukov-idea-hub/issue/IDE-72/spike-ide-82-design-the-idp-planning-command) | [Spike · IDE-82] Design the /idp-planning command | Done | Spike | `krukovden/ide-72-spike-ide-82-design-the-idp-planning-command` | child of IDE-82, related IDE-78, related IDE-90 |
 | [IDE-12](https://linear.app/krukov-idea-hub/issue/IDE-12/implement-the-tech-lead-design-approval-gate) | Implement the Tech Lead design approval gate | Canceled · archived | — | `krukovden/ide-12-implement-the-tech-lead-design-approval-gate` | — |
 | [IDE-13](https://linear.app/krukov-idea-hub/issue/IDE-13/generate-implementation-tasks-from-the-approved-spike) | Generate implementation tasks from the approved Spike | Canceled · archived | — | `krukovden/ide-13-generate-implementation-tasks-from-the-approved-spike` | — |
 | [IDE-14](https://linear.app/krukov-idea-hub/issue/IDE-14/generate-the-spike-technical-design-from-an-approved-feature) | Generate the Spike technical design from an approved Feature | Canceled · archived | — | `krukovden/ide-14-generate-the-spike-technical-design-from-an-approved-feature` | — |
+
+### 6. Establish project
+
+Start a whole project, not a single feature.
+
+The Product Owner arrives with an architecture already thought through and wants it verified, sliced into features, and put on the board — then delivered stage by stage. The existing pipeline has no entry at this level: it always assumes a live repository, a live board and one idea at a time.
+
+This milestone builds `/idp-establish`: it verifies the supplied architecture can actually carry the product, turns it into a project-scope ADR, slices it into stages and features, and blocks every feature that is not thought through until Feature Discovery has run on it.
+
+It precedes the pilot: the pilot verifies the process, this milestone gives the process a way to begin.
+
+| Issue | Title | Status | Labels | Branch | Links |
+|---|---|---|---|---|---|
+| [IDE-109](https://linear.app/krukov-idea-hub/issue/IDE-109/feature-establish-project) | [Feature] Establish project | Backlog | Feature | `krukovden/ide-109-feature-establish-project` | — |
+| [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Backlog | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-93, related IDE-87 |
 
 ## How to use this file
 
