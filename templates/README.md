@@ -10,6 +10,7 @@
 |---|---|---|---|
 | `feature.md` | карточка верхнего уровня | Product Owner через Discovery | в начале маршрута `feature` или `small-feature` |
 | `adr.md` | файл, прикреплённый к фиче | архитектор | после фичи, до планирования; на маршруте `small-feature` не пишется |
+| `adr.project.md` | файл, прикреплённый к эпику | `/idp-establish`, утверждает Product Owner | один на проект, до первой фичи ([IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase)) |
 | `pbi.md` | sub-issue фичи | планировщик | после утверждения ADR |
 | `pbi.agent.md` | вложение к тому же PBI | планировщик, одним действием с карточкой | вместе с `pbi.md`, не отдельным актом |
 | `bug.md` | карточка верхнего уровня | Product Owner через Discovery | маршрут `bug`, один гейт |
@@ -48,13 +49,20 @@ Owner, тестировщику. Вложение отвечает на «где
 
 Структуру разделов проверяет `markdownlint` правилом **MD043
 (required-headings)**. MD043 хранит один список заголовков на весь прогон, а
-типов артефактов пять — поэтому конфигов тоже пять, по одному на тип, в каталоге
-`lint/`. Каждый расширяет корневой `.markdownlint.jsonc` и переопределяет только
+структур у артефактов шесть — поэтому конфигов тоже шесть, в каталоге `lint/`.
+Каждый расширяет корневой `.markdownlint.jsonc` и переопределяет только
 `MD043.headings`.
+
+Конфиг выбирается по полю `type`, а у ADR — по `type` **и** `scope`: проектный
+ADR несёт раздел «Этапы», которого у фичевого нет. Это единственное место, где
+конфиг выбирают два поля шапки, и это же довод за то, что `scope` — отдельное
+поле, а не ещё одно значение `route`: маршрут считает гейты одной единицы
+работы, а проект целиком единицей работы не является.
 
 ```bash
 npx markdownlint-cli --config lint/feature.jsonc   templates/feature.md
 npx markdownlint-cli --config lint/adr.jsonc       templates/adr.md
+npx markdownlint-cli --config lint/adr-project.jsonc templates/adr.project.md
 npx markdownlint-cli --config lint/pbi.jsonc       templates/pbi.md
 npx markdownlint-cli --config lint/pbi-agent.jsonc templates/pbi.agent.md
 npx markdownlint-cli --config lint/bug.jsonc       templates/bug.md

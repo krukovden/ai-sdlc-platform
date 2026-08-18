@@ -8,21 +8,37 @@
   "properties": {
     "type": {
       "description": "Which artifact this is. It selects both the required header fields and the MD043 heading list used to lint the body.",
-      "enum": ["feature", "adr", "pbi", "pbi-agent", "bug"]
+      "enum": [
+        "feature",
+        "adr",
+        "pbi",
+        "pbi-agent",
+        "bug"
+      ]
     },
     "status": {
       "description": "Approval state of an ADR. Only an ADR has one: a card's state lives on the board, not in its text.",
-      "enum": ["proposed", "approved", "superseded"]
+      "enum": [
+        "proposed",
+        "approved",
+        "superseded"
+      ]
     },
     "route": {
       "description": "How many gates this work passes: feature — three, small-feature — two (no ADR is written), bug — one. Process metadata, not a plan, which is why it lives in the header and not in a section.",
-      "enum": ["feature", "small-feature", "bug"]
+      "enum": [
+        "feature",
+        "small-feature",
+        "bug"
+      ]
     },
     "standard": {
       "description": "Version of the authoring standard this artifact was written against. A new version never invalidates older artifacts retroactively; touching an artifact pulls it up to the current version.",
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+$",
-      "examples": ["1.0"]
+      "examples": [
+        "1.0"
+      ]
     },
     "cid": {
       "description": "Correlation identifier tying a feature to its ADR and to the issues produced from it, across trackers. The value format is owned by the Feature Discovery package contract (IDE-68); here it is only required to be present and non-empty.",
@@ -33,61 +49,218 @@
       "description": "Identifier of the issue this artifact hangs from — the feature, for an ADR, a PBI and its agent attachment. The IDE prefix is this project's team key.",
       "type": "string",
       "pattern": "^IDE-[0-9]+$"
+    },
+    "scope": {
+      "description": "Which level a decision was taken at. Absent means the feature level, which is every ADR the architect writes. 'project' marks the one ADR that describes the whole system: it hangs from the epic rather than a feature, and feature-level ADRs link to it and record only their delta.",
+      "enum": [
+        "project"
+      ]
+    },
+    "discovery": {
+      "description": "Whether this feature has been thought through. 'required' means it was sliced out of a project architecture without enough behind it and cannot move until Feature Discovery has run on it; 'done' means Discovery lifted the block. Absent means the feature never came from a slice. The block lives here rather than in a board status because Linear has no API for creating statuses, and a tenth status would be a manual step on every foreign board.",
+      "enum": [
+        "required",
+        "done"
+      ]
+    },
+    "stage": {
+      "description": "Which stage of the project this feature belongs to. Stages come out of the traced end-to-end scenarios, the first being the walking skeleton. Cards exist only for the open stage; later stages live as one line in the project ADR until their turn.",
+      "type": "string",
+      "minLength": 1
     }
   },
-  "required": ["type", "standard"],
+  "required": [
+    "type",
+    "standard"
+  ],
   "allOf": [
     {
       "if": {
-        "properties": { "type": { "const": "feature" } },
-        "required": ["type"]
+        "properties": {
+          "type": {
+            "const": "feature"
+          }
+        },
+        "required": [
+          "type"
+        ]
       },
       "then": {
-        "required": ["type", "route", "standard", "cid"],
+        "required": [
+          "type",
+          "route",
+          "standard",
+          "cid"
+        ],
         "properties": {
-          "route": { "enum": ["feature", "small-feature"] }
+          "route": {
+            "enum": [
+              "feature",
+              "small-feature"
+            ]
+          }
         }
       }
     },
     {
       "if": {
-        "properties": { "type": { "const": "adr" } },
-        "required": ["type"]
+        "properties": {
+          "type": {
+            "const": "adr"
+          },
+          "scope": {
+            "const": "project"
+          }
+        },
+        "required": [
+          "type",
+          "scope"
+        ]
       },
       "then": {
-        "required": ["type", "status", "route", "standard", "cid", "parent"],
+        "$comment": "No `route` and no `parent`. Routes count the gates one piece of work passes and a whole project is not one piece of work; `parent` is an issue identifier, and the epic that carries this ADR is a project on Linear, which has none.",
+        "required": [
+          "type",
+          "status",
+          "standard",
+          "cid"
+        ]
+      }
+    },
+    {
+      "if": {
         "properties": {
-          "route": { "enum": ["feature", "small-feature"] }
+          "type": {
+            "const": "adr"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "not": {
+          "required": [
+            "scope"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "type",
+          "status",
+          "route",
+          "standard",
+          "cid",
+          "parent"
+        ],
+        "properties": {
+          "route": {
+            "enum": [
+              "feature",
+              "small-feature"
+            ]
+          }
         }
       }
     },
     {
       "if": {
-        "properties": { "type": { "const": "pbi" } },
-        "required": ["type"]
-      },
-      "then": {
-        "required": ["type", "standard", "parent"]
-      }
-    },
-    {
-      "if": {
-        "properties": { "type": { "const": "pbi-agent" } },
-        "required": ["type"]
-      },
-      "then": {
-        "required": ["type", "standard", "parent"]
-      }
-    },
-    {
-      "if": {
-        "properties": { "type": { "const": "bug" } },
-        "required": ["type"]
-      },
-      "then": {
-        "required": ["type", "route", "standard", "cid"],
         "properties": {
-          "route": { "const": "bug" }
+          "type": {
+            "const": "pbi"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "type",
+          "standard",
+          "parent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "pbi-agent"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "type",
+          "standard",
+          "parent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "bug"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "type",
+          "route",
+          "standard",
+          "cid"
+        ],
+        "properties": {
+          "route": {
+            "const": "bug"
+          }
+        }
+      }
+    },
+    {
+      "$comment": "`scope` belongs to an ADR alone: nothing else is decided at two levels.",
+      "if": {
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "type": {
+            "const": "adr"
+          }
+        }
+      }
+    },
+    {
+      "$comment": "`discovery` and `stage` describe a feature that came out of a slice.",
+      "if": {
+        "anyOf": [
+          {
+            "required": [
+              "discovery"
+            ]
+          },
+          {
+            "required": [
+              "stage"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "type": {
+            "const": "feature"
+          }
         }
       }
     }

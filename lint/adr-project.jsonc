@@ -1,0 +1,34 @@
+{
+  // Project ADR — the architecture of a whole system, attached to the epic.
+  //
+  // A sixth config because MD043 holds one heading list per lint run and a
+  // project ADR carries a section a feature ADR does not: Этапы, the delivery
+  // order. The config is chosen by `type` **and** `scope`: adr + scope:project
+  // -> this file, adr alone -> adr.jsonc. That is the only place in the lint
+  // layer where two header fields select a config, and it is why `scope` is a
+  // field rather than another value of `route`.
+  "extends": "../.markdownlint.jsonc",
+
+  // The document title is the attachment title on the epic.
+  "MD041": false,
+
+  // Placeholders are written in angle brackets and read as inline HTML.
+  "MD033": false,
+
+  "MD043": {
+    "headings": [
+      "## Зачем",
+      "*",
+      "## Что строим",
+      "*",
+      "## Этапы",
+      "*",
+      "## Чем подтвердим",
+      "*",
+      "## Чего этот документ не решает",
+      "*",
+      "## Чем платим",
+      "*"
+    ]
+  }
+}

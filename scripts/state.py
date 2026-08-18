@@ -137,6 +137,8 @@ def resolve(board, profile, identifier, phases=None):
         "phase": phase,
         "position": position,
         "blocked": position == "blocked",
+        "discovery": header.get("discovery"),
+        "stage": header.get("stage"),
         "waiting_on": None,
         "next": None,
         "reason": None,
@@ -147,6 +149,18 @@ def resolve(board, profile, identifier, phases=None):
         answer["next"] = f"decide, then re-run /idp-design {identifier}"
         answer["reason"] = ("a chain participant stopped the work; escalation always "
                             "reaches a human, on every route")
+        return answer
+
+    if kind == "feature" and header.get("discovery") == "required":
+        # A feature sliced out of a project architecture that nobody has thought
+        # through yet. It may sit in a status that opens design, and answering
+        # "/idp-design" would be exactly the confident wrong answer this resolver
+        # exists to replace: the architecture never said enough about this piece.
+        # Only Discovery lifts the block, and it lifts it by rewriting the header.
+        answer["waiting_on"] = "agent"
+        answer["next"] = f"/idp-discovery {identifier}"
+        answer["reason"] = ("sliced from a project architecture with too little behind it; "
+                            "Discovery lifts the block, no board status does")
         return answer
 
     if phase is None:

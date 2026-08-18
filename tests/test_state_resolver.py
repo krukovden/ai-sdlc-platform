@@ -202,3 +202,44 @@ class DescribeTests(ScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SLICED = ('---\ntype: feature\nroute: feature\nstandard: "1.0"\ncid: abc\n'
+          'stage: "1"\ndiscovery: required\n---\n\n## Зачем\n')
+DISCOVERED = SLICED.replace("discovery: required", "discovery: done")
+
+
+class SlicedFeatureTests(ScriptTestCase):
+    """A feature cut out of a project architecture that nobody has thought through.
+
+    It sits in a status that opens design, and every signal the board gives says
+    "start designing". The header says otherwise, and the header wins — which is
+    the whole reason the block lives there rather than in a tenth board status.
+    """
+
+    def test_a_feature_awaiting_discovery_is_sent_to_discovery_not_design(self):
+        result = answer(status="Ready for Design", description=SLICED)
+        self.assertEqual(result["next"], "/idp-discovery IDE-42")
+        self.assertEqual(result["waiting_on"], "agent")
+        self.assertIn("Discovery lifts the block", result["reason"])
+
+    def test_discovery_lifting_the_block_hands_the_card_back_to_design(self):
+        result = answer(status="Ready for Design", description=DISCOVERED)
+        self.assertEqual(result["next"], "/idp-design IDE-42")
+
+    def test_a_human_stopping_the_work_still_comes_first(self):
+        # Escalation reaches a human on every route; an unfinished slice does not
+        # outrank someone who deliberately stopped the chain.
+        result = answer(status="Blocked - Needs Design", status_type="started",
+                        description=SLICED)
+        self.assertEqual(result["waiting_on"], "human")
+
+    def test_the_stage_and_the_block_are_reported_so_status_can_show_them(self):
+        result = answer(status="Ready for Design", description=SLICED)
+        self.assertEqual(result["stage"], "1")
+        self.assertEqual(result["discovery"], "required")
+
+    def test_a_feature_that_never_came_from_a_slice_is_unaffected(self):
+        result = answer(status="Ready for Design")
+        self.assertIsNone(result["discovery"])
+        self.assertEqual(result["next"], "/idp-design IDE-42")
