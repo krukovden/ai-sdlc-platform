@@ -30,6 +30,8 @@ resumable from state.json alone, never from chat history.
     establish.py traverse  --scenario <id> --trace-file <f>
     establish.py slice     --file <f>
     establish.py review    --feature <id> --build|--discovery --note-file <f>
+    establish.py approve   --what architecture|slice --approver <id>
+    establish.py publish   [--dry-run]
     establish.py validate  [--json]
     establish.py package-path
 
@@ -360,10 +362,14 @@ def save_package(slug, package):
 
 
 def slot_is_closed(package, slot_id):
-    value = package["material"].get(slot_id)
-    if isinstance(value, (list, dict)):
-        return len(value) > 0
-    return bool(str(value or "").strip())
+    """A slot is closed because somebody answered it, not because it is non-empty.
+
+    `external_dependencies: []` is an answer — it says this system depends on
+    nothing outside itself. Reading emptiness as silence would force a project
+    with no external dependencies to invent one, and the record of who answered
+    is what the platform actually needs.
+    """
+    return slot_id in (package.get("sources") or {})
 
 
 def slot_is_dismissed(state, slot_id):
@@ -660,6 +666,59 @@ def escalate(feature, package):
     """
     facts = escalation_facts(feature, package)
     return ("done" if all(f["holds"] for f in facts) else "required"), facts
+
+
+# ---------------------------------------------------------------------------
+# Approval — two hashes, and what voids them
+# ---------------------------------------------------------------------------
+
+def architecture_material(package):
+    """Everything the first approval is an approval *of*."""
+    return {
+        "architecture": package.get("architecture_text", ""),
+        "material": package["material"],
+        "traces": package.get("traces", {}),
+    }
+
+
+def slice_material(package):
+    """Everything the second approval is an approval of.
+
+    Derived fields are left out on purpose: `facts` and `recommended` are
+    computed from the first, so hashing them would make the slice approval
+    depend on itself.
+    """
+    return {
+        "stages": package.get("stages", []),
+        "features": [
+            {k: f[k] for k in ("id", "title", "stage", "components", "scenarios",
+                               "external_dependencies", "outcome", "discovery")}
+            for f in package.get("features", [])
+        ],
+    }
+
+
+def approval_is_void(package):
+    """Has the architecture changed since it was approved?
+
+    A slice made from one architecture is not a slice of another. This follows
+    from IDE-71's rule on what voids an approval; it is applied here rather than
+    reinvented.
+    """
+    approved = (package.get("approvals") or {}).get("architecture")
+    if not approved:
+        return False
+    return approved["hash"] != content_hash(architecture_material(package))
+
+
+def guard_approvals(slug, package):
+    if approval_is_void(package):
+        package["approvals"] = {"architecture": None, "slice": None}
+        save_package(slug, package)
+        journal(slug, {"event": "approval-void"})
+        fail(7, "the architecture changed after it was approved, so both approvals "
+                "are void. A slice made from one architecture is not a slice of "
+                "another. Re-approve the architecture, then the slice")
 
 
 # ---------------------------------------------------------------------------
@@ -1070,10 +1129,85 @@ def cmd_review(args):
           + ("  (against the rule)" if decided != feature["recommended"] else ""))
 
 
+def cmd_approve(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    package = load_package(slug)
+
+    if args.what == "architecture":
+        if state["state"] != "traversal":
+            fail(4, "the architecture is approved once it has been traversed; this "
+                    f"session is in '{state['state']}'")
+        untraced = [s["id"] for s in package["material"].get("scenarios", [])
+                    if s["id"] not in package["traces"]]
+        if untraced:
+            fail(4, "these scenarios are not traced: " + ", ".join(untraced))
+        material = architecture_material(package)
+    else:
+        guard_approvals(slug, package)
+        if state["state"] != "approval":
+            fail(4, "the slice is approved after the per-feature pass; this session "
+                    f"is in '{state['state']}'")
+        if not (package.get("approvals") or {}).get("architecture"):
+            fail(4, "the architecture has not been approved; a slice of an unapproved "
+                    "architecture approves nothing")
+        material = slice_material(package)
+
+    package.setdefault("approvals", {})[args.what] = {
+        "hash": content_hash(material),
+        "approver": args.approver,
+        "at": now(),
+    }
+    save_package(slug, package)
+    journal(slug, {"event": "approve", "what": args.what, "approver": args.approver})
+    print(f"{args.what} approved by {args.approver}")
+    print(f"hash: {package['approvals'][args.what]['hash']}")
+
+
+def cmd_publish(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    package = load_package(slug)
+    guard_approvals(slug, package)
+    if state["state"] not in ("publish", "published"):
+        fail(4, f"publication belongs to the publish step; this session is in "
+                f"'{state['state']}'")
+    if not (package.get("approvals") or {}).get("slice"):
+        fail(4, "the slice has not been approved")
+
+    publisher = load_publisher()
+    board = None if args.dry_run else publisher.open_board(state, package)
+    done = publisher.run(board, state, package, dry_run=args.dry_run,
+                         save=lambda: save_package(slug, package))
+    save_package(slug, package)
+    for line in done:
+        print(line)
+    if not args.dry_run:
+        transition(state, "published")
+        save_state(state)
+
+
+_PUBLISHER = None
+
+
+def load_publisher():
+    """Publication lives next door, so this file stays about the process."""
+    global _PUBLISHER
+    if _PUBLISHER is None:
+        import importlib.util
+        path = Path(__file__).resolve().parent / "publish.py"
+        spec = importlib.util.spec_from_file_location("establish_publish", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _PUBLISHER = module
+    return _PUBLISHER
+
+
 def cmd_advance(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     package = load_package(slug)
+    guard_approvals(slug, package)
     step = state["state"]
 
     if step == "coverage":
@@ -1116,6 +1250,12 @@ def cmd_advance(args):
         if lonely:
             fail(4, "components no traced scenario reaches: " + ", ".join(lonely)
                     + ". Recorded as findings; decide them, then advance")
+        # Approval is asked for last, when nothing known to be broken is left.
+        # Asking a human to approve something the script already knows is wrong
+        # spends their attention on a decision that cannot stand.
+        if not (package.get("approvals") or {}).get("architecture"):
+            fail(4, "the architecture has not been approved; slicing an unapproved "
+                    "architecture produces a slice nobody agreed to")
         target = "slicing"
     elif step == "slicing":
         if not package["features"]:
@@ -1126,6 +1266,10 @@ def cmd_advance(args):
         if undecided_features:
             fail(4, "these features have no verdict: " + ", ".join(undecided_features))
         target = "approval"
+    elif step == "approval":
+        if not (package.get("approvals") or {}).get("slice"):
+            fail(4, "the slice has not been approved")
+        target = "publish"
     else:
         fail(4, f"nothing to advance from '{step}' yet")
 
@@ -1236,6 +1380,17 @@ def build_parser():
     p.add_argument("--note-file", required=True)
     p.add_argument("--slug")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("approve", help="record an approval and hash what it covers")
+    p.add_argument("--what", required=True, choices=("architecture", "slice"))
+    p.add_argument("--approver", required=True)
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("publish", help="create everything, idempotently by cid")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("validate", help="is coverage complete")
     p.add_argument("--slug")

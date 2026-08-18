@@ -438,13 +438,16 @@ class Board:
 
         mutation = """
         mutation Doc($input: DocumentCreateInput!) {
-          documentCreate(input: $input) { success document { url } }
+          documentCreate(input: $input) { success document { url slugId } }
         }
         """
         result = query(self.token, mutation, {"input": payload})["documentCreate"]
         if not result["success"]:
             fail(3, "Linear refused the document")
-        return result["document"]["url"]
+        # The slug, not only the url: a profile's `memory_doc` is a slug, and
+        # deriving one by slicing a url is the kind of guess that works until
+        # somebody renames a document.
+        return result["document"]
 
     def list_documents(self, project_id):
         q = """

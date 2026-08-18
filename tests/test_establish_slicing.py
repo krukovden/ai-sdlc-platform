@@ -185,6 +185,7 @@ class Session(ScriptTestCase):
         self.run_cli(["advance"])
         self.run_cli(["traverse", "--scenario", "s-1",
                       "--trace-file", self.write("t.json", TRACE)])
+        self.run_cli(["approve", "--what", "architecture", "--approver", "po"])
         self.run_cli(["advance"])
 
     def run_cli(self, argv):

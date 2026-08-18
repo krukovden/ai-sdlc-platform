@@ -1,16 +1,14 @@
-# Python
+
 __pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Generated intermediates (the final generated files ARE committed on purpose —
-# their git history is the record of how the work changed over time)
-*.tmp
-
-# macOS
 .DS_Store
-
-# Local discovery state never belongs in a repository; it lives in
-# ~/.feature-discovery/ by design. This is a guard against accidents.
 .feature-discovery/
+.venv/
+*.py[cod]
+*.tmp
+# ~/.feature-discovery/ by design. This is a guard against accidents.
+# Generated intermediates (the final generated files ARE committed on purpose —
+# Local discovery state never belongs in a repository; it lives in
+# macOS
+# Python
+# their git history is the record of how the work changed over time)
+venv/

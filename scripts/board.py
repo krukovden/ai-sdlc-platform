@@ -443,11 +443,11 @@ def cmd_doc(args):
     content = path.read_text(encoding="utf-8")
 
     if args.id:
-        url = board.attach_document(args.title, content, identifier=args.id)
+        document = board.attach_document(args.title, content, identifier=args.id)
     else:
-        url = board.attach_document(args.title, content,
-                                    project_id=project_id_from(profile, args.project))
-    print(url)
+        document = board.attach_document(
+            args.title, content, project_id=project_id_from(profile, args.project))
+    print(document["url"])
 
 
 def cmd_status(args):
@@ -520,7 +520,7 @@ def cmd_memory(args):
             if existing and body == existing["content"]:
                 print(f"{title}: already recorded, nothing appended")
                 return
-            print(board.attach_document(title, body, identifier=args.id))
+            print(board.attach_document(title, body, identifier=args.id)["url"])
         elif args.action == "check":
             issues = board.list_project(project_id_from(profile, None))
             findings = memory.check_drift(registry, issues, profile,
