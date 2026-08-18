@@ -51,10 +51,14 @@ class LoadAdapterTests(ScriptTestCase):
         self.assertEqual(Path(module.__file__).name, "sync_linear_state.py")
 
     def test_exits_6_and_names_the_expected_file_for_a_board_without_an_adapter(self):
-        message = self.assert_exits(6, board.load_adapter, {"board": "azure-devops"})
+        # Named after a tracker this repository has no adapter for and is not
+        # about to grow one for. It used to say azure-devops; IDE-87 wrote that
+        # adapter, which made the assertion false by design. What the test is
+        # for is the convention and its failure mode, not any one board.
+        message = self.assert_exits(6, board.load_adapter, {"board": "trello"})
 
-        self.assertIn("scripts/sync_azure_devops_state.py", message)
-        self.assertIn("azure-devops", message)
+        self.assertIn("scripts/sync_trello_state.py", message)
+        self.assertIn("trello", message)
 
     def test_exits_6_when_the_module_exists_but_has_no_connect(self):
         with tempfile.TemporaryDirectory() as tmp:

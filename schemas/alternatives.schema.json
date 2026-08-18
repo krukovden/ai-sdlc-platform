@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/alternatives.schema.json",
+  "title": "One alternative to one hard-to-reverse decision",
+  "description": "IDE-69 §4.3. One provider call produces exactly one alternative, so this schema types one alternative and not a round: a call that is forbidden from returning more than one cannot satisfy a whole-round schema. The script issues the two or three calls, collects the validated documents and builds the comparison table itself — the table is rendering, and rendering belongs to the script. There is no recommendation field here: at сведение the architect recommends, and `when_it_wins`/`when_it_loses` are the material they recommend from. Written for strict structured output: every object lists every one of its properties in `required` and forbids additional ones, and the one optional field is optional by being nullable rather than by being absent (IDE-103).",
+  "type": "object",
+  "required": ["decision_id", "name", "sketch", "axes", "when_it_wins",
+               "when_it_loses", "addresses_practice_finding"],
+  "additionalProperties": false,
+  "properties": {
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The id of the hard-to-reverse decision in the ADR's decision registry that this is an alternative to. Alternatives are generated per decision, never per document: one alternative spread over a whole ADR compares nothing."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A short name for the alternative, distinct from the decision it competes with. A name that paraphrases the decision is the first sign of a pass that converged."
+    },
+    "sketch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "How it would actually be built: modules, interfaces, the seam it puts the boundary at."
+    },
+    "axes": {
+      "type": "object",
+      "description": "The five fixed comparison axes from IDE-69 §4.3. Fixed because a table with free columns is prose in table markup — and free columns are impossible here by construction, since these five keys are the only ones this object accepts.",
+      "required": ["depth", "locality", "seam_placement", "testability",
+                   "cost_of_reversal"],
+      "additionalProperties": false,
+      "properties": {
+        "depth": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How much behaviour sits behind one unit of interface."
+        },
+        "locality": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where a change under this alternative lands."
+        },
+        "seam_placement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where the boundary is drawn, and what is on each side of it."
+        },
+        "testability": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What can be tested without the rest of the system, and what cannot."
+        },
+        "cost_of_reversal": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What undoing this would cost: a migration, a coordinated change in two repositories, or an afternoon."
+        }
+      }
+    },
+    "when_it_wins": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The conditions under which this alternative is the better choice."
+    },
+    "when_it_loses": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The conditions under which it is the worse choice. An alternative that only wins is an advertisement, not an alternative."
+    },
+    "addresses_practice_finding": {
+      "type": ["string", "null"],
+      "description": "Names the external practice finding this alternative takes up, when best practice contradicted the decision. Null when there was no such finding. IDE-69 §4.2 obliges the alternative pass to consider a contradicting approach, and this field is how that obligation becomes mechanical: for a flagged decision the script refuses a round in which no alternative fills it in."
+    }
+  }
+}

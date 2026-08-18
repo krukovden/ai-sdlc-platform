@@ -127,7 +127,16 @@ def find_existing(board, project_id, correlation_id):
     Matching on title instead would create a duplicate the first time somebody
     reworded the feature, and the duplicate is the thing nobody notices until
     two agents are building from two cards.
+
+    A board that can answer this in one query says so by exposing
+    `find_by_correlation` — Azure DevOps does, with a WIQL query on the
+    `sdlc:cid=` tag (IDE-68 §8.3). It stays an optional facade method rather
+    than a branch on the board's name, so this script still knows no tracker.
     """
+    finder = getattr(board, "find_by_correlation", None)
+    if finder:
+        return finder(correlation_id)
+
     for issue in board.list_project(project_id):
         full = board.get_issue(issue["identifier"])
         if correlation_id in (full.get("description") or ""):

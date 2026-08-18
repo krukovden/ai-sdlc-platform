@@ -8,7 +8,28 @@
     "The reviewer is deliberately a different model from the one running the",
     "interview. A model reviewing its own draft agrees with itself."
   ],
+  "architect": {
+    "name": "claude",
+    "_note": [
+      "Which model plays the architect in /idp-design. It is here rather than",
+      "in the code for the same reason as every other entry: the collision",
+      "check compares two pieces of data, not one piece of data against a",
+      "string somebody hard-coded. `init --architect <name>` overrides it for",
+      "one session.",
+      "",
+      "IDE-69 §12: the critic and the architect must be different models. When",
+      "they turn out to be the same, that is recorded as a degradation and",
+      "shown to the human — it does not stop the run."
+    ]
+  },
   "reviewer": {
+    "_note_alternatives": [
+      "The alternative pass of /idp-design deliberately reuses this section",
+      "with a different schema (schemas/alternatives.schema.json), as IDE-69",
+      "§4.3 specifies. It is the same machinery — a second model that did not",
+      "write the draft — pointed at a different question, so a second provider",
+      "section would be two places to keep one fact."
+    ],
     "primary": {
       "name": "codex",
       "command": ["codex", "exec", "--output-schema", "{schema}"],

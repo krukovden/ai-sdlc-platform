@@ -57,6 +57,21 @@ from pathlib import Path
 PROFILE_DIR = ".idp"
 PROFILE_NAME = "profile.json"
 DEFAULT_TOKEN_PATH = "~/.feature-discovery/linear-token"
+DEFAULT_BOARD = "linear"
+
+# How each board is authenticated. The board name comes from the profile, so a
+# project pointed at Azure DevOps never has the Linear key read for it, let
+# alone handed to a different vendor — which is exactly what happened while
+# this table was a hardcoded `LINEAR_API_KEY` (IDE-87).
+#
+# `path` is the file to fall back to when nothing is configured; None means
+# this board does not authenticate with a file at all. Azure DevOps signs in
+# interactively with `az login`, so there is no secret for us to hold, and
+# `read_token` returning None is the correct answer rather than a failure.
+CREDENTIALS = {
+    "linear": {"env": "LINEAR_API_KEY", "path": DEFAULT_TOKEN_PATH},
+    "azure-devops": {"env": "AZURE_DEVOPS_EXT_PAT", "path": None},
+}
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_MIRROR = REPO_ROOT / "docs" / "project-state.md"
@@ -160,20 +175,48 @@ def token_path_for(profile):
     name = agent_name(profile)
     if name:
         return Path(agents[name]).expanduser()
-    return Path(profile.get("token_path", DEFAULT_TOKEN_PATH)).expanduser()
+
+    configured = profile.get("token_path")
+    if configured:
+        return Path(configured).expanduser()
+
+    board_name, credentials = credentials_for(profile)
+    if credentials is None:
+        fail(6, f"board '{board_name}' has no credential rule and the profile has no "
+                "'token_path'. Add one — guessing would mean handing another "
+                "board's key to this one.")
+    default_path = credentials["path"]
+    return Path(default_path).expanduser() if default_path else None
+
+
+def credentials_for(profile):
+    """Which board this profile names, and how that board is authenticated."""
+    board_name = (profile or {}).get("board") or DEFAULT_BOARD
+    return board_name, CREDENTIALS.get(board_name)
 
 
 def read_token(profile):
-    token = os.environ.get("LINEAR_API_KEY")
-    if token:
+    """The secret this board needs, or None when it does not use one.
+
+    Azure DevOps is the None case: the adapter runs under an interactive
+    `az login`, and there is nothing here to read. Returning None is not a
+    failure and must not be reported as one.
+    """
+    _, credentials = credentials_for(profile)
+    variable = credentials["env"] if credentials else None
+    token = os.environ.get(variable, "") if variable else ""
+    if token.strip():
         # Still validate the identity map, so a broken profile fails the same
         # way whether or not the environment happens to carry a key today.
         token_path_for(profile)
         return token.strip()
 
     token_path = token_path_for(profile)
+    if token_path is None:
+        return None
     if not token_path.exists():
-        fail(6, f"no token file at {token_path} and no LINEAR_API_KEY in the environment")
+        fail(6, f"no token file at {token_path} and no "
+                f"{variable or 'API key'} in the environment")
     mode = stat.S_IMODE(token_path.stat().st_mode)
     if mode & 0o077:
         fail(6, f"{token_path} must be mode 0600, found {oct(mode)}")
@@ -252,8 +295,13 @@ def cmd_init(args):
     profile = {
         "board": args.board,
         "team_key": args.team,
-        "token_path": args.token_path or DEFAULT_TOKEN_PATH,
     }
+    # Only boards that authenticate with a file get a token_path. Writing the
+    # Linear default into an Azure DevOps profile would put a path to another
+    # vendor's secret in a committed file, and eventually read it.
+    default_path = (CREDENTIALS.get(args.board) or {}).get("path")
+    if args.token_path or default_path:
+        profile["token_path"] = args.token_path or default_path
     if args.project:
         profile["project_id"] = args.project
     if args.workspace:
@@ -273,7 +321,10 @@ def cmd_init(args):
     print(f"  team:    {facts['team_key']} — {facts['team_name']}")
     if facts.get("project_name"):
         print(f"  project: {facts['project_name']}")
-    print(f"  token:   {profile['token_path']} (path only, never the secret)")
+    if profile.get("token_path"):
+        print(f"  token:   {profile['token_path']} (path only, never the secret)")
+    else:
+        print("  token:   none — this board signs in interactively")
 
 
 def cmd_profile(args):

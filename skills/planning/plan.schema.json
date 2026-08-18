@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/skills/planning/plan.schema.json",
+  "title": "Decomposition proposed by the model",
+  "description": "What the model is allowed to hand the planner: the cut into PBIs, the declared paths, the declared dependencies, the references to ADR sections, and the two descriptions. Everything derived from these — the overlap graph, the parallel groups, the critical path — is the script's and is refused here with exit 5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pbis"],
+  "properties": {
+    "notes": {
+      "description": "Platform particulars of this repository worth carrying into every brief. Prose, never a decision.",
+      "type": ["string", "null"]
+    },
+    "pbis": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "title", "result", "acceptance_criteria",
+                     "adr_sections", "paths", "where_to_look"],
+        "properties": {
+          "key": {
+            "description": "Stable identity of this slice inside the plan. Re-running matches on it, so it must not change when the title is reworded.",
+            "type": "string",
+            "minLength": 1
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "result": {
+            "description": "What and why: how the world differs once the card is closed. Card only — the brief never restates it.",
+            "type": "string",
+            "minLength": 1
+          },
+          "acceptance_criteria": {
+            "description": "Technical, checkable by a tester, and executable rather than desirable. Card only.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "text", "evidence"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "text": { "type": "string", "minLength": 1 },
+                "evidence": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "adr_sections": {
+            "description": "The sections of the ADR this slice was derived from. A slice referring to none was derived from nothing.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "paths": {
+            "description": "Repository-relative paths this slice touches. A trailing slash declares a subtree; * ? [ make a glob. Inaccuracy is tolerated and errs toward an extra dependency.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "depends_on": {
+            "description": "Keys of slices that must land first.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "parallel_with": {
+            "description": "An assertion the script verifies, never the trigger of the check: naming a slice whose paths intersect these is exit 3.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "where_to_look": {
+            "description": "Pointers for the agent: where to start, what carries the contract. Brief only.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "do_not_touch": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "constraints": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}
