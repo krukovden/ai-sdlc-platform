@@ -81,7 +81,32 @@ def remote_has_branch(branch, remote="origin", runner=run_git, cwd=None):
     return bool(out.strip())
 
 
-def ensure_branch(branch, remote="origin", base="main", runner=run_git, cwd=None):
+def default_base(remote="origin", runner=run_git, cwd=None):
+    """Ask the remote which branch it defaults to, instead of assuming `main`.
+
+    A hardcoded `main` is not merely wrong on a repository that uses `master`
+    or a release line — it is wrong *silently*. `rev-parse main` on such a repo
+    either fails at a moment that reads like a git problem, or worse resolves
+    something plausible, and the feature branch is then cut from the wrong
+    place. Nobody sees it until the pull request diff is enormous.
+
+    Asked of the remote, for the same reason the branch-existence check is:
+    a local clone can be behind, and being behind is exactly the failure mode
+    the drift detector already exists to prevent.
+    """
+    code, out, err = runner(["ls-remote", "--symref", remote, "HEAD"], cwd)
+    if code != 0:
+        fail(2, f"cannot reach remote '{remote}': {err or 'git ls-remote failed'}. "
+                "The base branch is asked of the remote, so this is not something "
+                "to work around locally.")
+    for line in out.splitlines():
+        if line.startswith("ref:"):
+            return line.split()[1].rsplit("/", 1)[-1]
+    fail(2, f"remote '{remote}' did not report a default branch. Pass --base "
+            "explicitly rather than letting the feature branch be cut from a guess.")
+
+
+def ensure_branch(branch, remote="origin", base=None, runner=run_git, cwd=None):
     """Exactly one feature branch, created on the remote or reused.
 
     Created by pushing a ref, not by checking one out: this process may be
@@ -92,7 +117,14 @@ def ensure_branch(branch, remote="origin", base="main", runner=run_git, cwd=None
     if remote_has_branch(branch, remote=remote, runner=runner, cwd=cwd):
         return {"branch": branch, "created": False}
 
-    code, sha, err = runner(["rev-parse", base], cwd)
+    base = base or default_base(remote=remote, runner=runner, cwd=cwd)
+
+    # The remote-tracking ref first: it is what the remote actually has. A bare
+    # local name resolves to whatever this clone last fetched, which is the
+    # stale-clone problem in a different coat.
+    code, sha, err = runner(["rev-parse", f"{remote}/{base}"], cwd)
+    if code != 0 or not sha:
+        code, sha, err = runner(["rev-parse", base], cwd)
     if code != 0 or not sha:
         fail(2, f"cannot resolve the base '{base}': {err or 'git rev-parse failed'}")
 
@@ -136,7 +168,7 @@ def existing_children(board, feature):
 # Publication
 # ---------------------------------------------------------------------------
 
-def publish(board, profile, session, plan, planning, remote="origin", base="main",
+def publish(board, profile, session, plan, planning, remote="origin", base=None,
             git_runner=run_git, cwd=None, dry_run=False):
     """One branch, then every PBI as a card and a brief made by one action."""
     project_id = profile.get("project_id")
@@ -233,7 +265,9 @@ def main(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("id")
     parser.add_argument("--remote", default="origin")
-    parser.add_argument("--base", default="main")
+    parser.add_argument("--base", default=None,
+                        help="base to cut the feature branch from; "
+                             "default: whatever the remote says is its default branch")
     parser.add_argument("--dry-run", action="store_true",
                         help="say what would be written, and write nothing")
     args = parser.parse_args(argv)

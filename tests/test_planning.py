@@ -171,16 +171,24 @@ class StubBoard:
 class FakeGit:
     """Every argv it was handed, plus scripted answers. It never shells out."""
 
-    def __init__(self, has_branch=False, reachable=True):
+    def __init__(self, has_branch=False, reachable=True, default_branch="main",
+                 reports_default=True):
         self.calls = []
         self.has_branch = has_branch
         self.reachable = reachable
+        self.default_branch = default_branch
+        self.reports_default = reports_default
 
     def __call__(self, args, cwd=None):
         self.calls.append(list(args))
         if args[0] == "ls-remote":
             if not self.reachable:
                 return 128, "", "fatal: could not read from remote repository"
+            if "--symref" in args:
+                if not self.reports_default:
+                    return 0, "deadbeef\tHEAD", ""
+                return 0, (f"ref: refs/heads/{self.default_branch}\tHEAD\n"
+                           "deadbeef\tHEAD"), ""
             branch = args[-1].split("refs/heads/")[-1]
             return 0, (f"deadbeef\trefs/heads/{branch}" if self.has_branch else ""), ""
         if args[0] == "rev-parse":
@@ -508,6 +516,35 @@ class BranchTests(PublishingCase):
         message = self.assert_exits(2, publish_planning.ensure_branch, BRANCH,
                                     "origin", "main", git)
         self.assertIn("remote", message)
+
+    def test_the_base_is_the_remote_default_and_not_the_word_main(self):
+        """`main` is not a fact about repositories, only a common habit."""
+        git = FakeGit(has_branch=False, default_branch="master")
+        publish_planning.ensure_branch(BRANCH, runner=git)
+        asked = [c for c in git.calls if c[0] == "ls-remote" and "--symref" in c]
+        self.assertEqual(len(asked), 1, "the default branch must be asked of the remote")
+        resolved = [c for c in git.calls if c[0] == "rev-parse"]
+        self.assertTrue(any("master" in part for c in resolved for part in c),
+                        f"cut from the wrong base: {resolved}")
+
+    def test_an_explicit_base_is_not_second_guessed(self):
+        git = FakeGit(has_branch=False, default_branch="master")
+        publish_planning.ensure_branch(BRANCH, "origin", "release/24.1", git)
+        self.assertFalse([c for c in git.calls if "--symref" in c],
+                         "an explicit base must not consult the remote at all")
+
+    def test_the_remote_tracking_ref_is_preferred_over_the_local_name(self):
+        git = FakeGit(has_branch=False)
+        publish_planning.ensure_branch(BRANCH, runner=git)
+        first = [c for c in git.calls if c[0] == "rev-parse"][0]
+        self.assertEqual(first[1], "origin/main",
+                         "a bare local name is whatever this clone last fetched")
+
+    def test_a_remote_that_names_no_default_refuses_rather_than_guessing(self):
+        git = FakeGit(has_branch=False, reports_default=False)
+        message = self.assert_exits(2, publish_planning.ensure_branch, BRANCH,
+                                    "origin", None, git)
+        self.assertIn("--base", message)
 
     def test_the_branch_is_written_into_every_card_and_every_brief(self):
         board, git, _ = self.publish(plan(pbi("A", ["src/a.py"]),
