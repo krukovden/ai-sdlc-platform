@@ -1,0 +1,114 @@
+{
+  "registry_version": "1.0.0",
+  "_comment": [
+    "The project coverage slot registry. Data, not code: the wording of a",
+    "question must never mean touching a schema or a state machine.",
+    "",
+    "This is the project-level counterpart of slots.json. The difference is not",
+    "size but subject: slots.json interrogates one idea, this one interrogates",
+    "an architecture somebody has already written. Most slots are therefore",
+    "`fact` and answerable from that architecture — a question put to the",
+    "Product Owner about something they already wrote down is a question that",
+    "should never have been asked.",
+    "",
+    "Question order is the topological order of depends_on, ties broken by the",
+    "order of this list. That is what makes the interview reproducible for a",
+    "given registry version.",
+    "",
+    "lookup_first names the cheap sources consulted before anyone's attention",
+    "is spent. `architecture` is the document the Product Owner supplied and is",
+    "always the first place to look."
+  ],
+  "slots": [
+    {
+      "id": "system",
+      "class": "product_decision",
+      "depends_on": [],
+      "required": true,
+      "closable_by": ["po"],
+      "lookup_first": ["architecture"],
+      "closes_when": "what the system is and whose problem it solves are stated without naming components"
+    },
+    {
+      "id": "boundaries",
+      "class": "product_decision",
+      "depends_on": ["system"],
+      "required": true,
+      "closable_by": ["po"],
+      "lookup_first": ["architecture"],
+      "closes_when": "what is inside the system and what is deliberately outside it are both stated"
+    },
+    {
+      "id": "components",
+      "class": "fact",
+      "depends_on": ["system"],
+      "required": true,
+      "closable_by": ["architecture", "po"],
+      "lookup_first": ["architecture", "repository"],
+      "closes_when": "every component is named and carries one clause of what it is responsible for"
+    },
+    {
+      "id": "interactions",
+      "class": "fact",
+      "depends_on": ["components"],
+      "required": true,
+      "closable_by": ["architecture", "po"],
+      "lookup_first": ["architecture", "repository"],
+      "closes_when": "every interaction carries a direction and a protocol; an arrow with neither is not an interaction"
+    },
+    {
+      "id": "data_owners",
+      "class": "fact",
+      "depends_on": ["components"],
+      "required": true,
+      "closable_by": ["architecture", "po"],
+      "lookup_first": ["architecture", "repository"],
+      "closes_when": "every piece of data has exactly one component that owns it"
+    },
+    {
+      "id": "external_dependencies",
+      "class": "risk",
+      "depends_on": ["components"],
+      "required": true,
+      "closable_by": ["architecture", "po"],
+      "lookup_first": ["architecture", "repository"],
+      "closes_when": "every external system is named together with what happens when it is absent"
+    },
+    {
+      "id": "deployment_units",
+      "class": "fact",
+      "depends_on": ["components"],
+      "required": true,
+      "closable_by": ["architecture", "repository", "po"],
+      "lookup_first": ["architecture", "repository"],
+      "closes_when": "every component is assigned to a unit that is deployed as a whole"
+    },
+    {
+      "id": "scenarios",
+      "class": "product_decision",
+      "depends_on": ["components"],
+      "required": true,
+      "closable_by": ["po"],
+      "lookup_first": ["architecture"],
+      "closes_when": "at least one end-to-end scenario is named in the user's words, not in components"
+    },
+    {
+      "id": "constraints",
+      "class": "fact",
+      "depends_on": ["system"],
+      "required": true,
+      "closable_by": ["architecture", "po"],
+      "lookup_first": ["architecture", "project_documents"],
+      "closes_when": "the constraints that were not chosen freely are stated — platform, budget, organisation, law"
+    },
+    {
+      "id": "non_goals",
+      "class": "product_decision",
+      "depends_on": ["boundaries"],
+      "required": true,
+      "closable_by": ["po"],
+      "lookup_first": ["architecture"],
+      "closes_when": "what the system will not do is stated; an empty non-goals list is refused, never defaulted"
+    }
+  ]
+}
