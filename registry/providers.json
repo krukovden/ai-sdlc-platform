@@ -16,7 +16,17 @@
     },
     "fallback": {
       "name": "claude-subagent",
-      "_note": "Same output schema, enforced by the script rather than by the tool."
+      "_note": [
+        "Host-supplied, not a command this script can run. A subagent is a",
+        "capability of the agent already driving the session; the script cannot",
+        "summon one. The host runs it, then hands the JSON over with",
+        "`discovery.py review --response-file <f> --mode claude-fallback`, and",
+        "the schema is enforced on our side either way.",
+        "",
+        "A deployment that *does* have a runnable second model puts its command",
+        "here under `command` and review() will call it. The key is absent",
+        "rather than empty on purpose: absent means nobody promised anything."
+      ]
     }
   },
   "practice_research": {

@@ -2,23 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/reviewer.schema.json",
   "title": "Independent reviewer output",
-  "description": "Enforced by codex exec --output-schema, and by the same schema when the Claude fallback is used. The reviewer is a different model from the one running the interview: a model reviewing its own draft agrees with itself.",
+  "description": "Enforced by codex exec --output-schema, and by the same schema when the Claude fallback is used. The reviewer is a different model from the one running the interview: a model reviewing its own draft agrees with itself. Written for strict structured output: every object lists every one of its properties in `required` and forbids additional ones, and anything optional is optional by being nullable rather than by being absent. A provider therefore always emits the key; our own validator reads an absent nullable key as null, so a response typed by hand stays valid.",
   "type": "object",
-  "required": ["verdict"],
+  "required": ["verdict", "resolved", "gaps", "contradictions", "alternatives"],
   "additionalProperties": false,
   "properties": {
     "verdict": {"enum": ["sufficient", "gaps-found"]},
     "resolved": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "required": ["question_id", "answer", "confidence"],
+        "required": ["question_id", "answer", "evidence", "confidence"],
         "additionalProperties": false,
         "properties": {
           "question_id": {"type": "string"},
           "answer": {"type": "string", "minLength": 1},
           "evidence": {
-            "type": "array",
+            "type": ["array", "null"],
             "items": {
               "type": "object",
               "required": ["uri", "quote"],
@@ -34,26 +34,28 @@
       }
     },
     "gaps": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "required": ["lens", "gap", "severity"],
+        "required": ["lens", "slot", "gap", "why_it_matters", "severity",
+                     "suggested_question", "class"],
         "additionalProperties": false,
         "properties": {
           "lens": {"enum": ["edge-cases", "failure-modes", "non-functional",
                             "data-and-migration", "permissions-and-security",
                             "operations-and-rollout", "contradictions"]},
-          "slot": {"type": "string"},
+          "slot": {"type": ["string", "null"]},
           "gap": {"type": "string", "minLength": 1},
-          "why_it_matters": {"type": "string"},
+          "why_it_matters": {"type": ["string", "null"]},
           "severity": {"enum": ["high", "medium", "low"]},
-          "suggested_question": {"type": "string"},
-          "class": {"enum": ["product_decision", "fact", "risk", "ambiguity"]}
+          "suggested_question": {"type": ["string", "null"]},
+          "class": {"type": ["string", "null"],
+                    "enum": ["product_decision", "fact", "risk", "ambiguity", null]}
         }
       }
     },
     "contradictions": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
         "required": ["between", "explanation"],
@@ -65,15 +67,15 @@
       }
     },
     "alternatives": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "required": ["to", "proposal"],
+        "required": ["to", "proposal", "tradeoff"],
         "additionalProperties": false,
         "properties": {
           "to": {"type": "string"},
           "proposal": {"type": "string"},
-          "tradeoff": {"type": "string"}
+          "tradeoff": {"type": ["string", "null"]}
         }
       }
     }

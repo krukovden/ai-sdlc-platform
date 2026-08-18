@@ -43,6 +43,36 @@ class ReviewerError(Exception):
 # Schema enforcement
 # ---------------------------------------------------------------------------
 
+def type_names(schema):
+    """The declared types, always as a list. `null` arrives as a union member."""
+    expected = schema.get("type")
+    if expected is None:
+        return []
+    return expected if isinstance(expected, list) else [expected]
+
+
+def accepted_types(names):
+    """Python types for a list of JSON Schema type names, flattened."""
+    accepted = []
+    for name in names:
+        wanted = TYPES.get(name)
+        if wanted is None:
+            continue
+        accepted.extend(wanted if isinstance(wanted, tuple) else [wanted])
+    return tuple(accepted)
+
+
+def permits_null(schema):
+    """Whether this schema accepts null, by type union or by enum member.
+
+    Strict structured output has no notion of an absent property: every key is
+    required, and optional means nullable. This is the one predicate that tells
+    the two apart everywhere else in the validator.
+    """
+    return "null" in type_names(schema) or (
+        "enum" in schema and None in schema["enum"])
+
+
 def validate(payload, schema, path="$"):
     """Check payload against the schema subset. Returns a list of problems.
 
@@ -52,21 +82,23 @@ def validate(payload, schema, path="$"):
     """
     problems = []
 
+    # Null against a nullable schema is a complete answer, not a value to
+    # inspect further: minLength and minItems have nothing to measure.
+    if payload is None and permits_null(schema):
+        return problems
+
     if "enum" in schema:
         if payload not in schema["enum"]:
             allowed = ", ".join(str(v) for v in schema["enum"])
             problems.append(f"{path}: {payload!r} is not one of: {allowed}")
         return problems
 
-    expected = schema.get("type")
-    if expected:
-        wanted = TYPES.get(expected)
+    names = type_names(schema)
+    if names:
+        wanted = accepted_types(names)
         if wanted and not isinstance(payload, wanted):
-            problems.append(f"{path}: expected {expected}, got "
+            problems.append(f"{path}: expected {' or '.join(names)}, got "
                             f"{type(payload).__name__}")
-            return problems
-        if expected == "boolean" and isinstance(payload, bool) is False:
-            problems.append(f"{path}: expected boolean")
             return problems
 
     if isinstance(payload, str):
@@ -84,10 +116,17 @@ def validate(payload, schema, path="$"):
                 problems += validate(item, item_schema, f"{path}[{index}]")
 
     if isinstance(payload, dict):
+        properties = schema.get("properties", {})
         for field in schema.get("required", []):
             if field not in payload:
+                # A key that is required *and* nullable is required of the
+                # provider, which emits every key by construction. A response
+                # typed by hand — the --response-file path — omits it instead,
+                # and omission and null mean the same thing here. Refusing it
+                # would make us stricter than the schema we hand the provider.
+                if permits_null(properties.get(field, {})):
+                    continue
                 problems.append(f"{path}: missing required field '{field}'")
-        properties = schema.get("properties", {})
         if schema.get("additionalProperties") is False:
             for field in payload:
                 if field not in properties:
@@ -160,9 +199,18 @@ def review(prompt, providers=None, schema_name="reviewer.schema.json",
 
     Returns (payload, mode, failures) in every case — one shape, so a caller
     cannot accidentally unpack the success path and crash on the failure one.
-    `mode` is `primary`, `claude-fallback` or `skipped`. The mode is recorded in the package and shown to the Product
-    Owner, because a review that silently did not happen reads exactly like one
-    that did and found nothing.
+
+    `mode` is `primary` or `skipped` here, and `claude-fallback` only where a
+    deployment configured a fallback it can actually run. The Claude subagent
+    named in `providers.json` is not one of those: it belongs to the host agent,
+    which runs it itself and hands the result to `review --response-file --mode
+    claude-fallback`. Returning `skipped` when the only fallback is host-supplied
+    is therefore correct and not a missed opportunity — the host has not been
+    asked yet.
+
+    The mode is recorded in the package and shown to the Product Owner, because
+    a review that silently did not happen reads exactly like one that did and
+    found nothing.
     """
     config = providers if providers is not None else load_providers()
     section = config.get("reviewer", {})

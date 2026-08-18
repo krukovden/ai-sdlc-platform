@@ -44,6 +44,12 @@ class DiscoveryTestCase(ScriptTestCase):
             discovery.main(list(argv))
         return out.getvalue()
 
+    def review_without_a_provider(self):
+        """Run `review` with the provider call replaced, never performed."""
+        with mock.patch.object(discovery, "load_reviewer_module",
+                               lambda: NoProviderConfigured):
+            self.run_cli("review")
+
     def expect_exit(self, code, *argv):
         """Return stderr, so a test can assert on what the refusal said.
 
@@ -368,6 +374,29 @@ class T6Validation(DiscoveryTestCase):
 # T7, T8 · what invalidates an approval
 # ---------------------------------------------------------------------------
 
+class NoProviderConfigured:
+    """A reviewer module with nothing to call.
+
+    These two tests are about what `approve` does when no review ran, not about
+    what happens when a provider is missing from *this* machine. Relying on the
+    real module made the outcome depend on whether the Codex CLI happened to be
+    installed: the suite passed for the wrong reason, and it made a real network
+    call the moment the CLI appeared. The seam is `load_reviewer_module`, which
+    exists precisely so the call can be replaced.
+    """
+
+    class ReviewerError(Exception):
+        pass
+
+    @staticmethod
+    def build_prompt(package, lenses, kind="review"):
+        return "prompt"
+
+    @staticmethod
+    def review(prompt):
+        return None, "skipped", ["no provider configured"]
+
+
 class ApprovalTests(DiscoveryTestCase):
 
     def approve(self):
@@ -404,7 +433,7 @@ class ApprovalTests(DiscoveryTestCase):
     def test_approval_is_refused_when_no_review_was_run(self):
         self.start()
         self.fill_required()
-        self.run_cli("review")                       # no response file: skipped
+        self.review_without_a_provider()
         state = self.state()
         state["state"] = "AWAITING_APPROVAL"
         discovery.save_state(state)
@@ -415,7 +444,7 @@ class ApprovalTests(DiscoveryTestCase):
     def test_forcing_approval_without_review_is_journalled(self):
         self.start()
         self.fill_required()
-        self.run_cli("review")
+        self.review_without_a_provider()
         state = self.state()
         state["state"] = "AWAITING_APPROVAL"
         discovery.save_state(state)

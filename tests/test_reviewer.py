@@ -31,6 +31,85 @@ GOOD = {
 }
 
 
+class StrictStructuredOutputTests(ScriptTestCase):
+    """The shape `codex exec --output-schema` will accept, checked offline.
+
+    The first live call ever made was rejected with HTTP 400: strict structured
+    output requires every property to appear in `required`, and expresses
+    optional as nullable rather than as absent. Nothing in the suite could have
+    caught that, because the provider was stubbed everywhere. This is the
+    cheapest possible stand-in — it does not prove the provider accepts the
+    schema, it proves the next edit cannot silently break the rule that made it
+    acceptable.
+    """
+
+    def objects(self, schema, path="$"):
+        """Every object node in the schema, with its path."""
+        found = []
+        if isinstance(schema, dict):
+            if "properties" in schema:
+                found.append((path, schema))
+            for key in ("properties", "items", "$defs"):
+                child = schema.get(key)
+                if isinstance(child, dict) and key == "items":
+                    found += self.objects(child, f"{path}[]")
+                elif isinstance(child, dict):
+                    for name, sub in child.items():
+                        found += self.objects(sub, f"{path}.{name}")
+        return found
+
+    def setUp(self):
+        super().setUp()
+        self.schema = reviewer.load_schema("reviewer.schema.json")
+
+    def test_every_property_of_every_object_is_required(self):
+        for path, node in self.objects(self.schema):
+            with self.subTest(node=path):
+                self.assertEqual(sorted(node.get("required", [])),
+                                 sorted(node["properties"]),
+                                 f"{path}: strict mode requires every property "
+                                 f"to be listed in `required`")
+
+    def test_no_object_accepts_additional_properties(self):
+        for path, node in self.objects(self.schema):
+            with self.subTest(node=path):
+                self.assertIs(node.get("additionalProperties"), False, path)
+
+    def test_optional_is_expressed_as_nullable(self):
+        """The four collections at the top level come back null when empty."""
+        top = self.schema["properties"]
+        for field in ("resolved", "gaps", "contradictions", "alternatives"):
+            with self.subTest(field=field):
+                self.assertTrue(reviewer.permits_null(top[field]),
+                                f"{field} must accept null: a provider under "
+                                f"strict mode cannot omit it")
+        self.assertFalse(reviewer.permits_null(top["verdict"]),
+                         "the verdict is the one thing a review must state")
+
+    def test_a_live_shaped_response_with_nulls_validates(self):
+        """The exact shape a real codex run returned on 18 August 2026."""
+        live = {"verdict": "gaps-found",
+                "resolved": None,
+                "gaps": [{"lens": "permissions-and-security",
+                          "slot": "eligible_users",
+                          "gap": "roles that may export are undefined",
+                          "why_it_matters": "unauthorized data extraction",
+                          "severity": "high",
+                          "suggested_question": "which roles may export?",
+                          "class": "product_decision"}],
+                "contradictions": None,
+                "alternatives": None}
+        self.assertEqual(reviewer.validate(live, self.schema), [])
+
+    def test_a_hand_written_response_may_omit_what_it_could_only_set_to_null(self):
+        """The --response-file path: absence and null mean the same thing."""
+        self.assertEqual(reviewer.validate({"verdict": "sufficient"}, self.schema), [])
+
+    def test_a_missing_verdict_is_still_refused(self):
+        problems = reviewer.validate({"resolved": None}, self.schema)
+        self.assertTrue(any("verdict" in p for p in problems), problems)
+
+
 class SchemaSubsetTests(ScriptTestCase):
     """The validator is a subset of JSON Schema, so its edges are pinned."""
 
