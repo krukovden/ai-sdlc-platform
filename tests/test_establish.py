@@ -19,6 +19,15 @@ from support import ScriptTestCase, load_script, REPO_ROOT
 establish = load_script("establish", REPO_ROOT / "skills" / "establish-project")
 
 
+# Three slots are answered with JSON because traversal has to check them
+# mechanically; everything else stays prose.
+SHAPED = {
+    "components": [{"name": "storefront", "responsibility": "shows the catalogue"}],
+    "interactions": [{"from": "person", "to": "storefront", "protocol": "HTTP",
+                      "interface": "GET /"}],
+    "scenarios": [{"id": "s-1", "title": "a person browses the toys"}],
+}
+
 ARCHITECTURE = """# Toy shop
 
 Two components: a storefront and a catalogue. The storefront calls the
@@ -178,7 +187,8 @@ class CoverageTests(SessionTestCase):
     def test_a_fact_the_architecture_answers_is_never_put_to_the_human(self):
         self.init()
         self.answer(["answer", "--slot", "components", "--source", "architecture",
-                        "--value-file", self.write("v.md", "storefront, catalogue")])
+                     "--value-file", self.write("v.md", json.dumps(
+                         [{"name": "catalogue", "responsibility": "owns products"}]))])
         self.assertEqual(establish.load_package(establish.current_slug())
                          ["sources"]["components"]["source"], "architecture")
 
@@ -204,8 +214,10 @@ class CoverageTests(SessionTestCase):
 
         for slot in establish.load_state(slug)["order"]:
             allowed = establish.definition(establish.load_state(slug), slot)["closable_by"][0]
+            value = SHAPED.get(slot, "answered")
             self.answer(["answer", "--slot", slot, "--source", allowed,
-                            "--value-file", self.write("v.md", "answered")])
+                         "--value-file", self.write(
+                             "v.md", value if isinstance(value, str) else json.dumps(value))])
         self.assertEqual(establish.validate(establish.load_package(slug),
                                             establish.load_state(slug)), [])
 

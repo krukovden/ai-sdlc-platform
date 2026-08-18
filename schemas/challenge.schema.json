@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/challenge.schema.json",
+  "title": "Independent challenge of a project architecture",
+  "description": "The second model's job in /idp-establish is the inverse of the architect's: it is given an architecture a human already wrote and asked to find what will not hold. Enforced the same way as reviewer.schema.json — by the provider's own output schema, and by this schema again when the fallback runs.",
+  "type": "object",
+  "required": ["verdict", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "description": "'sound' means the challenger found nothing. It is allowed, and it is not the same as an empty findings list produced by a provider that failed — that failure is a mode, recorded separately.",
+      "enum": ["sound", "findings"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "claim", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "contradiction — two parts of the architecture cannot both be true. gap — something the architecture must say and does not. boundary — a responsibility sits in the wrong component.",
+            "enum": ["contradiction", "gap", "boundary"]
+          },
+          "components": {
+            "description": "Which components the finding is about. Empty when it is about the whole.",
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "claim": {
+            "description": "What will not hold, stated so that it can be argued with. 'The catalogue owns product data and the storefront writes it' is a claim; 'data ownership is unclear' is not.",
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "description": "blocking — the architecture cannot carry the product until this is answered. material — it can, at a cost that must be recorded. minor — worth knowing, not worth stopping for.",
+            "enum": ["blocking", "material", "minor"]
+          }
+        }
+      }
+    }
+  }
+}

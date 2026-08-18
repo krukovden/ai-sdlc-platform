@@ -17,7 +17,13 @@
     "",
     "lookup_first names the cheap sources consulted before anyone's attention",
     "is spent. `architecture` is the document the Product Owner supplied and is",
-    "always the first place to look."
+    "always the first place to look.",
+    "",
+    "A slot carrying `shape` is answered with JSON, not prose, and the script",
+    "validates it. Three slots do: components, interactions and scenarios.",
+    "They are the three traversal has to check mechanically, and a mechanical",
+    "check cannot be run against a sentence. The rest stay prose on purpose -",
+    "structure that nothing reads is a form nobody wanted to fill in."
   ],
   "slots": [
     {
@@ -25,89 +31,236 @@
       "class": "product_decision",
       "depends_on": [],
       "required": true,
-      "closable_by": ["po"],
-      "lookup_first": ["architecture"],
+      "closable_by": [
+        "po"
+      ],
+      "lookup_first": [
+        "architecture"
+      ],
       "closes_when": "what the system is and whose problem it solves are stated without naming components"
     },
     {
       "id": "boundaries",
       "class": "product_decision",
-      "depends_on": ["system"],
+      "depends_on": [
+        "system"
+      ],
       "required": true,
-      "closable_by": ["po"],
-      "lookup_first": ["architecture"],
+      "closable_by": [
+        "po"
+      ],
+      "lookup_first": [
+        "architecture"
+      ],
       "closes_when": "what is inside the system and what is deliberately outside it are both stated"
     },
     {
       "id": "components",
       "class": "fact",
-      "depends_on": ["system"],
+      "depends_on": [
+        "system"
+      ],
       "required": true,
-      "closable_by": ["architecture", "po"],
-      "lookup_first": ["architecture", "repository"],
-      "closes_when": "every component is named and carries one clause of what it is responsible for"
+      "closable_by": [
+        "architecture",
+        "po"
+      ],
+      "lookup_first": [
+        "architecture",
+        "repository"
+      ],
+      "closes_when": "every component is named and carries one clause of what it is responsible for",
+      "shape": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "responsibility"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "responsibility": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
     },
     {
       "id": "interactions",
       "class": "fact",
-      "depends_on": ["components"],
+      "depends_on": [
+        "components"
+      ],
       "required": true,
-      "closable_by": ["architecture", "po"],
-      "lookup_first": ["architecture", "repository"],
-      "closes_when": "every interaction carries a direction and a protocol; an arrow with neither is not an interaction"
+      "closable_by": [
+        "architecture",
+        "po"
+      ],
+      "lookup_first": [
+        "architecture",
+        "repository"
+      ],
+      "closes_when": "every interaction carries a direction and a protocol; an arrow with neither is not an interaction",
+      "shape": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "from",
+            "to",
+            "protocol",
+            "interface"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "from": {
+              "type": "string",
+              "minLength": 1
+            },
+            "to": {
+              "type": "string",
+              "minLength": 1
+            },
+            "protocol": {
+              "type": "string",
+              "minLength": 1
+            },
+            "interface": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
     },
     {
       "id": "data_owners",
       "class": "fact",
-      "depends_on": ["components"],
+      "depends_on": [
+        "components"
+      ],
       "required": true,
-      "closable_by": ["architecture", "po"],
-      "lookup_first": ["architecture", "repository"],
+      "closable_by": [
+        "architecture",
+        "po"
+      ],
+      "lookup_first": [
+        "architecture",
+        "repository"
+      ],
       "closes_when": "every piece of data has exactly one component that owns it"
     },
     {
       "id": "external_dependencies",
       "class": "risk",
-      "depends_on": ["components"],
+      "depends_on": [
+        "components"
+      ],
       "required": true,
-      "closable_by": ["architecture", "po"],
-      "lookup_first": ["architecture", "repository"],
+      "closable_by": [
+        "architecture",
+        "po"
+      ],
+      "lookup_first": [
+        "architecture",
+        "repository"
+      ],
       "closes_when": "every external system is named together with what happens when it is absent"
     },
     {
       "id": "deployment_units",
       "class": "fact",
-      "depends_on": ["components"],
+      "depends_on": [
+        "components"
+      ],
       "required": true,
-      "closable_by": ["architecture", "repository", "po"],
-      "lookup_first": ["architecture", "repository"],
+      "closable_by": [
+        "architecture",
+        "repository",
+        "po"
+      ],
+      "lookup_first": [
+        "architecture",
+        "repository"
+      ],
       "closes_when": "every component is assigned to a unit that is deployed as a whole"
     },
     {
       "id": "scenarios",
       "class": "product_decision",
-      "depends_on": ["components"],
+      "depends_on": [
+        "components"
+      ],
       "required": true,
-      "closable_by": ["po"],
-      "lookup_first": ["architecture"],
-      "closes_when": "at least one end-to-end scenario is named in the user's words, not in components"
+      "closable_by": [
+        "po"
+      ],
+      "lookup_first": [
+        "architecture"
+      ],
+      "closes_when": "at least one end-to-end scenario is named in the user's words, not in components",
+      "shape": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "id",
+            "title"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
     },
     {
       "id": "constraints",
       "class": "fact",
-      "depends_on": ["system"],
+      "depends_on": [
+        "system"
+      ],
       "required": true,
-      "closable_by": ["architecture", "po"],
-      "lookup_first": ["architecture", "project_documents"],
+      "closable_by": [
+        "architecture",
+        "po"
+      ],
+      "lookup_first": [
+        "architecture",
+        "project_documents"
+      ],
       "closes_when": "the constraints that were not chosen freely are stated — platform, budget, organisation, law"
     },
     {
       "id": "non_goals",
       "class": "product_decision",
-      "depends_on": ["boundaries"],
+      "depends_on": [
+        "boundaries"
+      ],
       "required": true,
-      "closable_by": ["po"],
-      "lookup_first": ["architecture"],
+      "closable_by": [
+        "po"
+      ],
+      "lookup_first": [
+        "architecture"
+      ],
       "closes_when": "what the system will not do is stated; an empty non-goals list is refused, never defaulted"
     }
   ]

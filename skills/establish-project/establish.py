@@ -24,6 +24,10 @@ resumable from state.json alone, never from chat history.
     establish.py answer    --slot <id> --value-file <f>
                            --source po|architecture|repository
     establish.py dismiss   --slot <id> --reason-file <f>
+    establish.py advance   [--to <step>]
+    establish.py challenge run    [--response-file <f>]
+    establish.py challenge decide --finding <id> --accept|--reject --note-file <f>
+    establish.py traverse  --scenario <id> --trace-file <f>
     establish.py validate  [--json]
     establish.py package-path
 
@@ -83,6 +87,33 @@ SOURCES = ("po", "architecture", "repository", "reviewer")
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
+
+
+_REVIEWER = None
+
+
+def reviewer():
+    """The provider gateway, loaded from the discovery skill by path.
+
+    It already does what this step needs — a primary provider, a fallback, a
+    schema enforced on the way out, and a mode recorded so nobody can mistake a
+    provider that failed for a challenger that found nothing. Writing a second
+    one would be the exact failure the standing reuse rule of IDE-77 exists to
+    prevent.
+
+    Two skills sharing a module by path is a debt, and it is recorded on
+    IDE-118 rather than hidden: the gateway is platform-level, not discovery's,
+    and it belongs in scripts/ once something else needs it too.
+    """
+    global _REVIEWER
+    if _REVIEWER is None:
+        import importlib.util
+        path = REPO_ROOT / "skills" / "feature-discovery" / "reviewer.py"
+        spec = importlib.util.spec_from_file_location("reviewer", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _REVIEWER = module
+    return _REVIEWER
 
 
 def now():
@@ -298,6 +329,7 @@ def new_package(slug, cid, epic, repository, wiki, architecture_hash):
         "sources": {},
         "findings": [],
         "scenarios": [],
+        "traces": {},
         "stages": [],
         "features": [],
         "approvals": {"architecture": None, "slice": None},
@@ -388,6 +420,105 @@ def validate(package, state):
         problems.append(f"required slot '{slot_id}' is neither answered nor dismissed "
                         "on the record")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Findings — what the challenge and the traversal both produce
+# ---------------------------------------------------------------------------
+
+def next_finding_id(package):
+    return f"f-{len(package['findings']) + 1}"
+
+
+def add_finding(package, origin, kind, claim, severity, components=()):
+    finding = {
+        "id": next_finding_id(package),
+        "origin": origin,
+        "kind": kind,
+        "claim": claim,
+        "severity": severity,
+        "components": list(components),
+        "decision": None,
+        "note": None,
+        "at": now(),
+    }
+    package["findings"].append(finding)
+    return finding
+
+
+def undecided(package):
+    return [f for f in package["findings"] if f["decision"] is None]
+
+
+# ---------------------------------------------------------------------------
+# Traversal — the mechanical part of "can this architecture carry the product"
+# ---------------------------------------------------------------------------
+
+def check_interactions(components, interactions):
+    """Every interaction must point at a component that exists.
+
+    `from` is exempt: an end-to-end scenario begins outside the system, with a
+    person or another system, and refusing that would force the architecture to
+    invent a component for the user.
+    """
+    known = {c["name"] for c in components}
+    problems = []
+    for interaction in interactions:
+        if interaction["to"] not in known:
+            problems.append(
+                (f"{interaction['from']} → {interaction['to']}",
+                 f"the interaction points at '{interaction['to']}', which is not a "
+                 "declared component — either the component is missing or the "
+                 "interaction is"))
+    return problems
+
+
+def trace_problems(trace, interactions):
+    """Each hop must match a declared interaction: same from, same to, same interface.
+
+    This is the whole argument for structured slots. Matching a hop against a
+    sentence is a judgement; matching it against a declared interface is a
+    lookup, and a lookup can be re-run tomorrow with the same answer.
+    """
+    declared = {(i["from"], i["to"], i["interface"]) for i in interactions}
+    problems = []
+    for index, hop in enumerate(trace, start=1):
+        key = (hop.get("from"), hop.get("to"), hop.get("interface"))
+        if key not in declared:
+            problems.append(
+                f"hop {index}: {hop.get('from')} → {hop.get('to')} over "
+                f"'{hop.get('interface')}' matches no declared interaction. Either "
+                "the interface is missing from the architecture, or this hop does "
+                "not happen")
+    return problems
+
+
+def unreachable_components(components, traces):
+    """Components no traced scenario ever reaches.
+
+    Not an error — a question the design says out loud: either an interface is
+    missing, or the component is.
+    """
+    touched = set()
+    for trace in traces.values():
+        for hop in trace:
+            touched.add(hop.get("from"))
+            touched.add(hop.get("to"))
+    return [c["name"] for c in components if c["name"] not in touched]
+
+
+TRACE_SHAPE = {
+    "type": "array", "minItems": 1,
+    "items": {
+        "type": "object", "required": ["from", "to", "interface"],
+        "additionalProperties": False,
+        "properties": {
+            "from": {"type": "string", "minLength": 1},
+            "to": {"type": "string", "minLength": 1},
+            "interface": {"type": "string", "minLength": 1},
+        },
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +653,20 @@ def cmd_answer(args):
     if not value:
         fail(3, "an empty answer does not close a slot")
 
+    shape = slot.get("shape")
+    if shape:
+        # A slot traversal has to check mechanically cannot be answered in
+        # prose: "the storefront calls the catalogue over HTTP" is a sentence a
+        # script can do nothing with. The model extracts; the shape is what
+        # makes the extraction checkable.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            fail(3, f"slot '{args.slot}' is answered with JSON, not prose: {exc}")
+        problems = reviewer().validate(value, shape, f"${args.slot}")
+        if problems:
+            fail(3, "the answer does not fit the slot's shape:\n  " + "\n  ".join(problems))
+
     package = load_package(slug)
     package["material"][args.slot] = value
     package["sources"][args.slot] = {"source": args.source, "at": now()}
@@ -546,6 +691,198 @@ def cmd_dismiss(args):
     save_state(state)
     journal(slug, {"event": "dismiss", "slot": args.slot})
     print(f"{args.slot} dismissed")
+
+
+CHALLENGE_PROMPT = """You are challenging a system architecture that a human has \
+already written. Your job is the inverse of an architect's: do not propose a \
+design, and do not improve this one. Find what will not hold.
+
+Three kinds of finding, and nothing else counts:
+  contradiction — two parts of this architecture cannot both be true
+  gap           — something the architecture must say and does not
+  boundary      — a responsibility sits in the wrong component
+
+State each finding so that it can be argued with. "The catalogue owns product \
+data and the storefront writes it" is a finding; "data ownership is unclear" is \
+not. Finding nothing is a legitimate answer; say so with verdict 'sound'.
+
+THE ARCHITECTURE AS SUPPLIED:
+{architecture}
+
+WHAT WAS ESTABLISHED DURING COVERAGE:
+{material}
+"""
+
+
+def build_challenge_prompt(slug, package):
+    architecture = (session_dir(slug) / "architecture.md").read_text(encoding="utf-8")
+    return CHALLENGE_PROMPT.format(
+        architecture=architecture,
+        material=json.dumps(package["material"], indent=2, ensure_ascii=False))
+
+
+def cmd_challenge_run(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    if state["state"] != "challenge":
+        fail(4, f"the challenge belongs to the challenge step; this session is in "
+                f"'{state['state']}'")
+    package = load_package(slug)
+    if package["provenance"]["reviewer_mode"] != "skipped" and not args.force:
+        fail(4, "this session has already been challenged; pass --force to run again")
+
+    gateway = reviewer()
+    if args.response_file:
+        # The offline door. A provider is not available in a test, and a step
+        # whose correctness can only be observed by running a model is a step
+        # nobody can prove anything about.
+        text = Path(args.response_file).read_text(encoding="utf-8")
+        try:
+            payload = gateway.parse_and_validate(text, "challenge.schema.json")
+        except gateway.ReviewerError as exc:
+            fail(3, str(exc))
+        mode, failures = "response-file", []
+    else:
+        payload, mode, failures = gateway.review(
+            build_challenge_prompt(slug, package), schema_name="challenge.schema.json")
+
+    if payload is None:
+        # A challenge that did not happen reads exactly like one that found
+        # nothing. Refusing here is what keeps the two apart.
+        package["provenance"]["reviewer_mode"] = "skipped"
+        save_package(slug, package)
+        fail(2, "no provider answered, so the architecture has not been challenged: "
+                + "; ".join(failures or ["no provider is configured"]))
+
+    added = [add_finding(package, "challenge", finding["kind"], finding["claim"],
+                         finding["severity"], finding.get("components", []))
+             for finding in payload["findings"]]
+    package["provenance"]["reviewer_mode"] = mode
+    package["provenance"]["reviewer"] = payload.get("verdict")
+    save_package(slug, package)
+    journal(slug, {"event": "challenge", "mode": mode,
+                   "verdict": payload["verdict"], "findings": len(payload["findings"])})
+    print(f"verdict:  {payload['verdict']}  (via {mode})")
+    print(f"findings: {len(payload['findings'])}")
+    for finding in added:
+        print(f"  {finding['id']}  {finding['severity']:<8} {finding['kind']:<13} "
+              f"{finding['claim']}")
+
+
+def cmd_challenge_decide(args):
+    slug = resolve_slug(args)
+    package = load_package(slug)
+    matches = [f for f in package["findings"] if f["id"] == args.finding]
+    if not matches:
+        fail(3, f"no finding '{args.finding}'")
+    finding = matches[0]
+    if finding["decision"] is not None:
+        fail(4, f"{args.finding} was already {finding['decision']}")
+
+    note = Path(args.note_file).read_text(encoding="utf-8").strip()
+    if not note:
+        # An accepted finding must change something and a rejected one must say
+        # why, or the step becomes a tick-box that costs a provider call.
+        fail(3, "a decision without a note is a tick-box; say what changes, or why not")
+    finding["decision"] = "accepted" if args.accept else "rejected"
+    finding["note"] = note
+    save_package(slug, package)
+    journal(slug, {"event": "finding", "id": args.finding,
+                   "decision": finding["decision"]})
+    print(f"{args.finding} {finding['decision']}")
+
+
+def cmd_traverse(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    if state["state"] != "traversal":
+        fail(4, f"tracing belongs to the traversal step; this session is in "
+                f"'{state['state']}'")
+    package = load_package(slug)
+    scenarios = {s["id"]: s for s in package["material"].get("scenarios", [])}
+    if args.scenario not in scenarios:
+        fail(3, f"no scenario '{args.scenario}'; the session named "
+                f"{', '.join(scenarios) or 'none'}")
+
+    gateway = reviewer()
+    try:
+        trace = json.loads(Path(args.trace_file).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(3, f"a trace is JSON: {exc}")
+    problems = gateway.validate(trace, TRACE_SHAPE, "$trace")
+    if problems:
+        fail(3, "the trace does not fit the shape:\n  " + "\n  ".join(problems))
+
+    interactions = package["material"].get("interactions", [])
+    broken = trace_problems(trace, interactions)
+    if broken:
+        for claim in broken:
+            add_finding(package, "traversal", "gap", claim, "blocking")
+        save_package(slug, package)
+        journal(slug, {"event": "traverse", "scenario": args.scenario,
+                       "result": "broken", "hops": len(trace)})
+        fail(3, f"{args.scenario} does not traverse:\n  " + "\n  ".join(broken))
+
+    package["traces"][args.scenario] = trace
+    save_package(slug, package)
+    journal(slug, {"event": "traverse", "scenario": args.scenario,
+                   "result": "traversed", "hops": len(trace)})
+    print(f"{args.scenario} traverses {len(trace)} hops without a break")
+
+
+def cmd_advance(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    package = load_package(slug)
+    step = state["state"]
+
+    if step == "coverage":
+        problems = validate(package, state)
+        if problems:
+            fail(3, "coverage is not complete:\n  " + "\n  ".join(problems))
+        broken = check_interactions(package["material"].get("components", []),
+                                    package["material"].get("interactions", []))
+        for _, claim in broken:
+            add_finding(package, "coverage", "gap", claim, "blocking")
+        if broken:
+            save_package(slug, package)
+            fail(3, "the declared interactions do not agree with the declared "
+                    "components:\n  " + "\n  ".join(c for _, c in broken))
+        target = "challenge"
+    elif step == "challenge":
+        if package["provenance"]["reviewer_mode"] == "skipped":
+            fail(4, "the architecture has not been challenged yet")
+        open_findings = undecided(package)
+        if open_findings:
+            fail(4, "these findings have no decision: "
+                    + ", ".join(f["id"] for f in open_findings))
+        target = "traversal"
+    elif step == "traversal":
+        scenarios = [s["id"] for s in package["material"].get("scenarios", [])]
+        untraced = [s for s in scenarios if s not in package["traces"]]
+        if untraced:
+            fail(4, "these scenarios are not traced: " + ", ".join(untraced))
+        open_findings = undecided(package)
+        if open_findings:
+            fail(4, "these findings have no decision: "
+                    + ", ".join(f["id"] for f in open_findings))
+        lonely = unreachable_components(package["material"]["components"],
+                                        package["traces"])
+        for name in lonely:
+            add_finding(package, "traversal", "boundary",
+                        f"no traced scenario reaches '{name}' — either an interface "
+                        "is missing, or the component is", "material", [name])
+        save_package(slug, package)
+        if lonely:
+            fail(4, "components no traced scenario reaches: " + ", ".join(lonely)
+                    + ". Recorded as findings; decide them, then advance")
+        target = "slicing"
+    else:
+        fail(4, f"nothing to advance from '{step}' yet")
+
+    transition(state, args.to or target)
+    save_state(state)
+    print(f"{step} -> {state['state']}")
 
 
 def cmd_validate(args):
@@ -606,6 +943,36 @@ def build_parser():
     p.add_argument("--reason-file", required=True)
     p.add_argument("--slug")
     p.set_defaults(func=cmd_dismiss)
+
+    p = sub.add_parser("advance", help="close the current step and move on")
+    p.add_argument("--to", help="override the target step")
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_advance)
+
+    p = sub.add_parser("challenge", help="the independent challenge")
+    challenge = p.add_subparsers(dest="challenge_command", required=True)
+
+    q = challenge.add_parser("run", help="ask a second model to find what will not hold")
+    q.add_argument("--response-file", help="read the answer from a file instead of "
+                                           "calling a provider")
+    q.add_argument("--force", action="store_true")
+    q.add_argument("--slug")
+    q.set_defaults(func=cmd_challenge_run)
+
+    q = challenge.add_parser("decide", help="accept or reject one finding")
+    q.add_argument("--finding", required=True)
+    group = q.add_mutually_exclusive_group(required=True)
+    group.add_argument("--accept", action="store_true")
+    group.add_argument("--reject", action="store_true")
+    q.add_argument("--note-file", required=True)
+    q.add_argument("--slug")
+    q.set_defaults(func=cmd_challenge_decide)
+
+    p = sub.add_parser("traverse", help="trace one scenario through the components")
+    p.add_argument("--scenario", required=True)
+    p.add_argument("--trace-file", required=True)
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_traverse)
 
     p = sub.add_parser("validate", help="is coverage complete")
     p.add_argument("--slug")
