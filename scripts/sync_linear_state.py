@@ -233,6 +233,21 @@ query ProjectState($id: String!) {
 # Adapter interface. Every board adapter implements these.
 # ---------------------------------------------------------------------------
 
+# What each of the platform's four kinds is on this board, and where it cannot
+# be one at all. Structure, not naming: Linear has no work item types, so a
+# feature is an issue with no parent and a PBI is an issue with one. The two
+# refusals are the honest part — an adapter that quietly created an ordinary
+# issue for an epic would produce a board that looks right and links wrong.
+KIND_NEEDS_PARENT = {"feature": False, "pbi": True}
+
+KIND_REFUSALS = {
+    "epic": ("on Linear an epic is the project itself, not an issue. Create the "
+             "project and pass its id as project_id"),
+    "task": ("Linear has no level below a sub-issue. The chain records its steps "
+             "in the card's status history, not in a fourth kind of card"),
+}
+
+
 class Board:
     """A connected board. Holds the token and the team it works against."""
 
@@ -317,7 +332,39 @@ class Board:
 
     # -- writes -------------------------------------------------------------
 
-    def create_issue(self, title, body=None, parent=None, status=None, project_id=None):
+    def kind_of(self, kind):
+        """What this board calls one of our kinds, or None if it cannot be one.
+
+        The profile wins when it says something: a foreign team may have renamed
+        its work item types, and the platform's vocabulary must not depend on
+        that. Where the profile is silent, the adapter's own knowledge answers.
+        """
+        configured = (self.profile.get("kinds") or {}).get(kind)
+        if configured:
+            return configured
+        return None if kind in KIND_REFUSALS else kind
+
+    def verify_wiki(self, address):
+        """Refuse a wiki this board cannot write. Called before a profile is saved."""
+        fail(6, f"this board has no wiki: {address!r} cannot be verified. On Linear the "
+                "role is played by the project's own documents, which the platform "
+                "already writes; leave --wiki unset")
+
+    def check_kind(self, kind, parent):
+        """Refuse before creating, naming the kind and the board."""
+        if kind in KIND_REFUSALS and not (self.profile.get("kinds") or {}).get(kind):
+            fail(3, f"this board cannot express kind '{kind}': {KIND_REFUSALS[kind]}")
+        needs_parent = KIND_NEEDS_PARENT.get(kind)
+        if needs_parent is True and not parent:
+            fail(3, f"kind '{kind}' is a sub-issue on this board and needs --parent")
+        if needs_parent is False and parent:
+            fail(3, f"kind '{kind}' is a top-level issue on this board and cannot "
+                    "have a parent")
+
+    def create_issue(self, title, body=None, parent=None, status=None, project_id=None,
+                     kind=None):
+        if kind:
+            self.check_kind(kind, parent)
         payload = {"teamId": self.team["id"], "title": title}
         if body:
             payload["description"] = body

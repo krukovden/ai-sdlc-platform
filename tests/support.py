@@ -154,6 +154,12 @@ class FakeLinear:
                 "identifier": self.issue["identifier"],
                 "state": {"name": self.issue["state"]["name"]},
             }}}
+        if "issueCreate" in document:
+            return {"issueCreate": {"success": True, "issue": {
+                "identifier": "IDE-999",
+                "url": "https://linear.app/krukov-idea-hub/issue/IDE-999",
+                "branchName": "krukovden/ide-999-new",
+            }}}
         if "query Issue" in document:
             return {"issue": self.issue}
         raise AssertionError(f"unexpected GraphQL document: {document!r}")

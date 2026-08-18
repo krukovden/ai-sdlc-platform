@@ -20,7 +20,7 @@ Usage:
     board.py states                             list the statuses this team has
     board.py show IDE-90 [--body]               print one issue
     board.py list [--parent IDE-79] [--status S]
-    board.py create --title T [--parent IDE-79] [--body-file F] [--status S]
+    board.py create --title T [--parent IDE-79] [--kind feature] [--status S]
     board.py update IDE-90 [--status S] [--title T] [--body-file F]
     board.py comment IDE-90 --body-file F
     board.py doc --list                         list the project's documents
@@ -53,6 +53,13 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# The four kinds of work item the platform knows. Everything above the adapter
+# speaks these words; what they become on a particular board is the adapter's
+# business, and only the adapter's. Azure DevOps has all four as real work item
+# types; on Linear an epic is the project itself and there is no task at all,
+# which is exactly the sort of difference this vocabulary exists to hide.
+KINDS = ("epic", "feature", "pbi", "task")
 
 PROFILE_DIR = ".idp"
 PROFILE_NAME = "profile.json"
@@ -306,12 +313,23 @@ def cmd_init(args):
         profile["project_id"] = args.project
     if args.workspace:
         profile["workspace"] = args.workspace
+    if args.kind:
+        profile["kinds"] = dict(args.kind)
+    if args.wiki:
+        profile["wiki"] = args.wiki
+
+    for kind in profile.get("kinds", {}):
+        if kind not in KINDS:
+            fail(6, f"the profile maps a kind the platform does not know: '{kind}'; "
+                    f"known kinds are {', '.join(KINDS)}")
 
     # Verify before writing. A profile that was never checked is a file that
     # lies, and it will lie at the least convenient moment.
     adapter = load_adapter(profile)
     handle = adapter.connect(read_token(profile), profile)
     facts = handle.describe()
+    if profile.get("wiki"):
+        handle.verify_wiki(profile["wiki"])
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -325,6 +343,8 @@ def cmd_init(args):
         print(f"  token:   {profile['token_path']} (path only, never the secret)")
     else:
         print("  token:   none — this board signs in interactively")
+    if profile.get("wiki"):
+        print(f"  wiki:    {profile['wiki']}")
 
 
 def cmd_profile(args):
@@ -373,12 +393,15 @@ def cmd_list(args):
 
 def cmd_create(args):
     profile, _, board = open_board()
+    if args.kind and args.kind not in KINDS:
+        fail(3, f"unknown kind '{args.kind}'; the platform knows {', '.join(KINDS)}")
     issue = board.create_issue(
         title=args.title,
         body=read_body(args),
         parent=args.parent,
         status=args.status,
         project_id=args.project or profile.get("project_id"),
+        kind=args.kind,
     )
     print(f"{issue['identifier']}  {issue['url']}")
     print(f"branch: {issue['branchName']}", file=sys.stderr)
@@ -573,6 +596,10 @@ def main():
     p.add_argument("--workspace", help="workspace name, for humans reading the profile")
     p.add_argument("--token-path", help=f"path to the API token (default {DEFAULT_TOKEN_PATH})")
     p.add_argument("--force", action="store_true", help="overwrite an existing profile")
+    p.add_argument("--wiki", help="address of the wiki this project documents itself in")
+    p.add_argument("--kind", nargs=2, action="append", metavar=("KIND", "TYPE"),
+                   help="what this board calls one of our kinds, e.g. --kind pbi "
+                        "'Product Backlog Item'. Repeatable")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("profile", help="show the resolved profile")
@@ -599,6 +626,9 @@ def main():
     p.add_argument("--status", help="initial status")
     p.add_argument("--body", help="description as a literal string")
     p.add_argument("--body-file", help="description read from a file")
+    p.add_argument("--kind", choices=KINDS,
+                   help="what this is: epic, feature, pbi or task. The adapter turns "
+                        "it into whatever the board calls that")
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("update", help="update an issue")
