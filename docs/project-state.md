@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-18T23:10:21Z
+**Generated:** 2026-08-18T23:13:39Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 44 live (1 in progress, 28 done) · 15 archived
+**Issues:** 52 live (1 in progress, 29 done) · 15 archived
 
 ## Project documents
 
@@ -160,7 +160,15 @@ It precedes the pilot: the pilot verifies the process, this milestone gives the 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-109](https://linear.app/krukov-idea-hub/issue/IDE-109/feature-establish-project) | [Feature] Establish project | Backlog | Feature | `krukovden/ide-109-feature-establish-project` | — |
-| [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Backlog | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-93, related IDE-87 |
+| [IDE-115](https://linear.app/krukov-idea-hub/issue/IDE-115/work-item-ide-109-contract-changes-frontmatter-project-adr-template) | [Work Item · IDE-109] Contract changes: frontmatter, project ADR template, lint, state resolver | Backlog | — | `krukovden/ide-115-work-item-ide-109-contract-changes-frontmatter-project-adr` | child of IDE-109, blocks IDE-117, related IDE-110 |
+| [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) | [Work Item · IDE-109] Adapter: work-item kinds and creation by kind | Backlog | — | `krukovden/ide-116-work-item-ide-109-adapter-work-item-kinds-and-creation-by` | child of IDE-109, blocks IDE-120, related IDE-110 |
+| [IDE-117](https://linear.app/krukov-idea-hub/issue/IDE-117/work-item-ide-109-establish-core-state-machine-project-slot-registry) | [Work Item · IDE-109] Establish core: state machine, project slot registry, intake and coverage | Backlog | — | `krukovden/ide-117-work-item-ide-109-establish-core-state-machine-project-slot` | child of IDE-109, blocks IDE-118, related IDE-110 |
+| [IDE-118](https://linear.app/krukov-idea-hub/issue/IDE-118/work-item-ide-109-challenge-and-traversal-the-falsifiable-verdict) | [Work Item · IDE-109] Challenge and traversal: the falsifiable verdict | Backlog | — | `krukovden/ide-118-work-item-ide-109-challenge-and-traversal-the-falsifiable` | child of IDE-109, blocks IDE-119, related IDE-110 |
+| [IDE-119](https://linear.app/krukov-idea-hub/issue/IDE-119/work-item-ide-109-slicing-the-escalation-rule-and-the-per-feature) | [Work Item · IDE-109] Slicing, the escalation rule and the per-feature review | Backlog | — | `krukovden/ide-119-work-item-ide-109-slicing-the-escalation-rule-and-the-per` | child of IDE-109, blocks IDE-120, related IDE-110 |
+| [IDE-120](https://linear.app/krukov-idea-hub/issue/IDE-120/work-item-ide-109-approval-hashing-and-idempotent-publication) | [Work Item · IDE-109] Approval, hashing and idempotent publication | Backlog | — | `krukovden/ide-120-work-item-ide-109-approval-hashing-and-idempotent` | child of IDE-109, blocks IDE-121, related IDE-110 |
+| [IDE-121](https://linear.app/krukov-idea-hub/issue/IDE-121/work-item-ide-109-wiki-writer-architecture-and-flow-pages-optional) | [Work Item · IDE-109] Wiki writer: architecture and flow pages, optional path | Backlog | — | `krukovden/ide-121-work-item-ide-109-wiki-writer-architecture-and-flow-pages` | child of IDE-109, related IDE-110 |
+| [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) | [Work Item · IDE-109] Documentation: constitution, reference architecture, HUB, CLAUDE.md | Backlog | — | `krukovden/ide-122-work-item-ide-109-documentation-constitution-reference` | child of IDE-109, related IDE-110 |
+| [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Done | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-93, related IDE-87 |
 
 ## How to use this file
 
