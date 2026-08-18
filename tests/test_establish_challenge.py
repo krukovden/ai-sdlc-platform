@@ -29,6 +29,7 @@ INTERACTIONS = [
      "interface": "GET /products"},
 ]
 SCENARIOS = [{"id": "s-1", "title": "a person browses the toys"}]
+EXTERNALS = [{"name": "payments", "absent_behaviour": "the basket cannot be paid for"}]
 TRACE = [
     {"from": "person", "to": "storefront", "interface": "GET /"},
     {"from": "storefront", "to": "catalogue", "interface": "GET /products"},
@@ -69,7 +70,8 @@ class Session(ScriptTestCase):
     def close_coverage(self, components=None, interactions=None, scenarios=None):
         shaped = {"components": components if components is not None else COMPONENTS,
                   "interactions": interactions if interactions is not None else INTERACTIONS,
-                  "scenarios": scenarios if scenarios is not None else SCENARIOS}
+                  "scenarios": scenarios if scenarios is not None else SCENARIOS,
+                  "external_dependencies": EXTERNALS}
         state = establish.load_state(self.slug)
         for slot in state["order"]:
             source = establish.definition(state, slot)["closable_by"][0]

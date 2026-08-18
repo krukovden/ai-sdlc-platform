@@ -26,6 +26,8 @@ SHAPED = {
     "interactions": [{"from": "person", "to": "storefront", "protocol": "HTTP",
                       "interface": "GET /"}],
     "scenarios": [{"id": "s-1", "title": "a person browses the toys"}],
+    "external_dependencies": [{"name": "payments",
+                               "absent_behaviour": "the basket cannot be paid for"}],
 }
 
 ARCHITECTURE = """# Toy shop

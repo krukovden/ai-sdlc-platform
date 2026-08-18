@@ -28,6 +28,8 @@ resumable from state.json alone, never from chat history.
     establish.py challenge run    [--response-file <f>]
     establish.py challenge decide --finding <id> --accept|--reject --note-file <f>
     establish.py traverse  --scenario <id> --trace-file <f>
+    establish.py slice     --file <f>
+    establish.py review    --feature <id> --build|--discovery --note-file <f>
     establish.py validate  [--json]
     establish.py package-path
 
@@ -314,7 +316,8 @@ def transition(state, target):
 # The package
 # ---------------------------------------------------------------------------
 
-def new_package(slug, cid, epic, repository, wiki, architecture_hash):
+def new_package(slug, cid, epic, repository, wiki, architecture_hash,
+                architecture_text):
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "project-establish-package",
@@ -325,6 +328,7 @@ def new_package(slug, cid, epic, repository, wiki, architecture_hash):
         "repository": repository,
         "wiki": wiki,
         "architecture_hash": architecture_hash,
+        "architecture_text": architecture_text,
         "material": {},
         "sources": {},
         "findings": [],
@@ -332,6 +336,7 @@ def new_package(slug, cid, epic, repository, wiki, architecture_hash):
         "traces": {},
         "stages": [],
         "features": [],
+        "divergences": [],
         "approvals": {"architecture": None, "slice": None},
         "provenance": {
             "produced_by": PRODUCED_BY,
@@ -522,6 +527,142 @@ TRACE_SHAPE = {
 
 
 # ---------------------------------------------------------------------------
+# Slicing — stages, features, and the rule that decides which ones can move
+# ---------------------------------------------------------------------------
+
+SLICE_SHAPE = {
+    "type": "object",
+    "required": ["stages", "features"],
+    "additionalProperties": False,
+    "properties": {
+        "stages": {
+            "type": "array", "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["id", "title", "summary"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1},
+                    "summary": {"type": "string", "minLength": 1},
+                },
+            },
+        },
+        "features": {
+            "type": "array", "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["id", "title", "stage", "components", "scenarios",
+                             "external_dependencies", "outcome"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1},
+                    "stage": {"type": "string", "minLength": 1},
+                    "components": {"type": "array", "items": {"type": "string"}},
+                    "scenarios": {"type": "array", "items": {"type": "string"}},
+                    "external_dependencies": {"type": "array",
+                                              "items": {"type": "string"}},
+                    "outcome": {"type": "string", "minLength": 1},
+                    "evidence": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+def components_with_interfaces(material):
+    """Components whose responsibility and interfaces are both closed.
+
+    The shape already guarantees a responsibility; what it cannot guarantee is
+    that anything ever talks to the component. A component nothing reaches has
+    no interface, and a feature built on it is being designed, not sliced.
+    """
+    named = {c["name"] for c in material.get("components", [])}
+    reached = set()
+    for interaction in material.get("interactions", []):
+        if interaction["to"] in named:
+            reached.add(interaction["to"])
+        if interaction["from"] in named:
+            reached.add(interaction["from"])
+    return reached
+
+
+def escalation_facts(feature, package):
+    """The four conditions of IDE-110, each answered yes or no with a reason.
+
+    Written as data rather than as a chain of ifs so that a test can put the
+    sixteen combinations through it, and so that the Product Owner is shown why
+    a feature was blocked rather than only that it was.
+    """
+    material = package["material"]
+    architecture = package.get("architecture_text", "")
+    facts = []
+
+    closed = components_with_interfaces(material)
+    missing = [c for c in feature["components"] if c not in closed]
+    facts.append({
+        "condition": "components_closed",
+        "holds": not missing,
+        "why": "every component it touches has a responsibility and an interface"
+               if not missing else
+               f"these components have no declared interface: {', '.join(missing)}",
+    })
+
+    traced = [s for s in feature["scenarios"] if s in package.get("traces", {})]
+    whole = False
+    for scenario in traced:
+        touched = set()
+        for hop in package["traces"][scenario]:
+            touched.add(hop["from"])
+            touched.add(hop["to"])
+        if set(feature["components"]) <= touched:
+            whole = True
+            break
+    facts.append({
+        "condition": "in_a_traced_scenario",
+        "holds": whole,
+        "why": "it appears whole in a scenario that was traced end to end" if whole else
+               ("none of its scenarios were traced" if not traced else
+                "the traced scenario does not touch every component it claims"),
+    })
+
+    declared = {d["name"] for d in material.get("external_dependencies", [])}
+    unknown = [d for d in feature["external_dependencies"] if d not in declared]
+    facts.append({
+        "condition": "no_new_dependency",
+        "holds": not unknown,
+        "why": "it introduces no external dependency the architecture does not name"
+               if not unknown else
+               f"these dependencies are not in the architecture: {', '.join(unknown)}",
+    })
+
+    evidence = (feature.get("evidence") or "").strip()
+    grounded = bool(evidence) and evidence in architecture
+    facts.append({
+        "condition": "outcome_stated",
+        "holds": grounded,
+        "why": "its outcome is quoted from the architecture, not inferred" if grounded else
+               ("no quote was given, so the outcome is inferred" if not evidence else
+                "the quote does not appear in the architecture as supplied"),
+    })
+    return facts
+
+
+def escalate(feature, package):
+    """`done` only when all four facts hold; `required` otherwise.
+
+    Blocked by default is not caution. To move, a feature needs four facts
+    produced; to stop, it needs nothing produced. That asymmetry is the guard
+    against repeating IDE-6…IDE-20, where acceptance criteria were authored for
+    capabilities whose contracts did not exist.
+    """
+    facts = escalation_facts(feature, package)
+    return ("done" if all(f["holds"] for f in facts) else "required"), facts
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -565,7 +706,7 @@ def cmd_init(args):
         "dismissed": {},
     }
     package = new_package(slug, cid, args.epic, repository["address"], args.wiki,
-                          content_hash({"architecture": text}))
+                          content_hash({"architecture": text}), text)
     package["provenance"]["registry_version"] = registry["registry_version"]
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -830,6 +971,105 @@ def cmd_traverse(args):
     print(f"{args.scenario} traverses {len(trace)} hops without a break")
 
 
+def cmd_slice(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    if state["state"] != "slicing":
+        fail(4, f"slicing belongs to the slicing step; this session is in "
+                f"'{state['state']}'")
+    package = load_package(slug)
+    gateway = reviewer()
+    try:
+        proposal = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(3, f"a slice is JSON: {exc}")
+    problems = gateway.validate(proposal, SLICE_SHAPE, "$slice")
+    if problems:
+        fail(3, "the slice does not fit the shape:\n  " + "\n  ".join(problems))
+
+    stages = proposal["stages"]
+    open_stage = stages[0]["id"]
+    stray = [f["id"] for f in proposal["features"] if f["stage"] != open_stage]
+    if stray:
+        # The depth rule, made mechanical. Later stages live as one line in the
+        # project ADR until their turn; a card for one of them would be authored
+        # blind, which is the failure this whole phase is shaped to avoid.
+        fail(3, f"cards exist only for the open stage '{open_stage}'. These features "
+                f"belong to a later stage and must stay a summary line: "
+                f"{', '.join(stray)}")
+
+    known_scenarios = {s["id"] for s in package["material"].get("scenarios", [])}
+    for feature in proposal["features"]:
+        unknown = [s for s in feature["scenarios"] if s not in known_scenarios]
+        if unknown:
+            fail(3, f"feature '{feature['id']}' names scenarios the session never "
+                    f"established: {', '.join(unknown)}")
+
+    package["stages"] = stages
+    package["features"] = []
+    for feature in proposal["features"]:
+        verdict, facts = escalate(feature, package)
+        package["features"].append({
+            **feature,
+            "discovery": verdict,
+            "recommended": verdict,
+            "facts": facts,
+            "decided": False,
+        })
+    package["divergences"] = []
+    save_package(slug, package)
+    journal(slug, {"event": "slice", "stages": len(stages),
+                   "features": len(package["features"])})
+
+    print(f"open stage:  {stages[0]['id']} — {stages[0]['title']}")
+    for stage in stages[1:]:
+        print(f"later stage: {stage['id']} — {stage['summary']}")
+    print()
+    for feature in package["features"]:
+        mark = "build" if feature["discovery"] == "done" else "DISCOVERY"
+        print(f"  {feature['id']:<10} {mark:<10} {feature['title']}")
+        for fact in feature["facts"]:
+            if not fact["holds"]:
+                print(f"             └─ {fact['why']}")
+
+
+def cmd_review(args):
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    if state["state"] != "review":
+        fail(4, f"the per-feature pass belongs to the review step; this session is "
+                f"in '{state['state']}'")
+    package = load_package(slug)
+    matches = [f for f in package["features"] if f["id"] == args.feature]
+    if not matches:
+        fail(3, f"no feature '{args.feature}'")
+    feature = matches[0]
+
+    note = Path(args.note_file).read_text(encoding="utf-8").strip()
+    if not note:
+        fail(3, "a verdict without a note is a verdict nobody can revisit")
+    decided = "done" if args.build else "required"
+    if decided != feature["recommended"]:
+        # Where the Product Owner overruled the rule. The HUB requires this
+        # under "Recommendation versus decision", and it is the knowledge that
+        # exists nowhere else once the session is over.
+        package["divergences"].append({
+            "feature": feature["id"],
+            "recommended": feature["recommended"],
+            "decided": decided,
+            "note": note,
+            "at": now(),
+        })
+    feature["discovery"] = decided
+    feature["decided"] = True
+    feature["note"] = note
+    save_package(slug, package)
+    journal(slug, {"event": "review", "feature": feature["id"], "decision": decided,
+                   "diverged": decided != feature["recommended"]})
+    print(f"{feature['id']}: {decided}"
+          + ("  (against the rule)" if decided != feature["recommended"] else ""))
+
+
 def cmd_advance(args):
     slug = resolve_slug(args)
     state = load_state(slug)
@@ -877,6 +1117,15 @@ def cmd_advance(args):
             fail(4, "components no traced scenario reaches: " + ", ".join(lonely)
                     + ". Recorded as findings; decide them, then advance")
         target = "slicing"
+    elif step == "slicing":
+        if not package["features"]:
+            fail(4, "nothing has been sliced yet")
+        target = "review"
+    elif step == "review":
+        undecided_features = [f["id"] for f in package["features"] if not f["decided"]]
+        if undecided_features:
+            fail(4, "these features have no verdict: " + ", ".join(undecided_features))
+        target = "approval"
     else:
         fail(4, f"nothing to advance from '{step}' yet")
 
@@ -973,6 +1222,20 @@ def build_parser():
     p.add_argument("--trace-file", required=True)
     p.add_argument("--slug")
     p.set_defaults(func=cmd_traverse)
+
+    p = sub.add_parser("slice", help="stages and the features of the open stage")
+    p.add_argument("--file", required=True)
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_slice)
+
+    p = sub.add_parser("review", help="confirm or overturn the rule, one feature at a time")
+    p.add_argument("--feature", required=True)
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--build", action="store_true")
+    group.add_argument("--discovery", action="store_true")
+    p.add_argument("--note-file", required=True)
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("validate", help="is coverage complete")
     p.add_argument("--slug")

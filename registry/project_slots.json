@@ -20,10 +20,12 @@
     "always the first place to look.",
     "",
     "A slot carrying `shape` is answered with JSON, not prose, and the script",
-    "validates it. Three slots do: components, interactions and scenarios.",
     "They are the three traversal has to check mechanically, and a mechanical",
     "check cannot be run against a sentence. The rest stay prose on purpose -",
-    "structure that nothing reads is a form nobody wanted to fill in."
+    "structure that nothing reads is a form nobody wanted to fill in.",
+    "Four slots carry `shape`: components, interactions and scenarios, which",
+    "traversal checks, and external_dependencies, which the escalation rule",
+    "checks. Structure exists here because something reads it, never for tidiness."
   ],
   "slots": [
     {
@@ -174,7 +176,28 @@
         "architecture",
         "repository"
       ],
-      "closes_when": "every external system is named together with what happens when it is absent"
+      "closes_when": "every external system is named together with what happens when it is absent; an empty list is an answer and means the system depends on nothing outside itself",
+      "shape": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "absent_behaviour"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "absent_behaviour": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
     },
     {
       "id": "deployment_units",
