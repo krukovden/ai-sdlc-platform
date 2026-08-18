@@ -165,7 +165,8 @@ docs/          project-state.md (generated)                                     
 templates/     the four artifact templates: feature, adr, pbi, bug                        ✅
 schemas/       frontmatter.schema.json, reviewer.schema.json                            ✅
 lint/          one markdownlint config per artifact type (MD043 required-headings)        ✅
-skills/        feature-discovery/ — SKILL.md, discovery.py, reviewer.py, publish_linear.py ✅
+               validate.py in scripts/ enforces them plus the content layer            ✅
+skills/        feature-discovery/, design/ (/idp-design), planning/ (/idp-planning)      ✅
 registry/      slots.json (the 15 coverage slots), providers.json                         ✅
 evals/         golden ideas and LLM evaluations
 ```
@@ -207,12 +208,12 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 - **Artifacts and code in English.**
 - **Secrets never enter artifacts, state files, journals or published content.** The Linear personal API key lives at `~/.feature-discovery/linear-token` (mode 0600) or in `LINEAR_API_KEY`.
 - **Linear access from scripts uses GraphQL with that API key**, not MCP. The Linear MCP is an interactive claude.ai connector and cannot run unattended, which would block the autonomous agents later in the pipeline.
-- **Azure DevOps access uses the `az boards` CLI** with an interactive Entra login; an expired login must be reported as a distinct exit code, not a generic failure.
+- **Azure DevOps access uses the `az` CLI** with an interactive Entra login; an expired login must be reported as a distinct exit code (2, naming `! az login`), not a generic failure. Mostly `az boards`, but **not only**: `az boards` cannot upload an attachment at all, so the three attachment operations go through `az devops invoke` — same binary, same extension, same login, same exit-code mapping. The earlier wording said `az boards` and nothing else, which made the approved requirement to attach the full specification as Markdown unimplementable under a literal reading.
 
 ## Known gaps
 
 - **The nine board statuses exist** — `Ready for Design`, `In Design`, `Design Review`, `Ready for Planning`, `In Planning`, `Ready for Development`, `In Development`, `Blocked - Needs Design`, `PR Review` — created by hand in Settings → Teams → IdeaHub → Workflow, because Linear has no API for creating them. **That hand step is the gap**: a foreign team either creates the same nine or maps its existing ones in the profile's phase table, and where a status cannot exist at all the phase is recorded as a comment instead. The profile carries `null` for such a phase and the claim protocol degrades to comment order — at the cost of a board no longer readable by eye.
 - `read_token` reads `LINEAR_API_KEY` regardless of the board named in the profile. Harmless while only the Linear adapter exists; wrong the moment an Azure DevOps adapter appears. Registered as part of **IDE-87**, which writes that adapter — the debt and the thing that triggers it land together.
-- **The content validator is not written.** Templates, frontmatter schema and lint configs exist; nothing yet looks *inside* a section, so a heading followed by `TODO` passes today. The grep layer that checks `Evidence:` lines, resolvable links and the absence of `TODO`/`N/A` is **IDE-102**.
+- **The content validator is written but not yet wired into publication.** `scripts/validate.py` (IDE-102) checks three layers and reports which one failed: the machine header, the required headings, and the content inside sections — empty mandatory bodies, leftover `TODO`/`N/A`/placeholders, missing `Evidence:` lines, links that resolve nowhere. What is mandatory depends on the card's stage. What is missing is the call site: it does not yet run before Discovery publishes a package, so nothing blocks today.
 
 Closed since the last revision, kept here only so a reader who remembers them stops looking: per-agent keys shipped with IDE-100 — the profile's `agents` map holds one token path per agent, and the claim protocol reads them apart in history. IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `Ready for Design` rather than `Todo` with a `stage:*` label, because swapping a label leaves no history for the claim protocol to read.
