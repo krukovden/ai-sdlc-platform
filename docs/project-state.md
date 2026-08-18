@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-18T23:26:49Z
+**Generated:** 2026-08-18T23:32:31Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 54 live (3 in progress, 33 done) · 15 archived
@@ -96,7 +96,7 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-114](https://linear.app/krukov-idea-hub/issue/IDE-114/work-item-pilot-live-verification-of-the-chain-on-azure-devops) | [Work Item · Pilot] Live verification of the chain on Azure DevOps | Backlog | — | `krukovden/ide-114-work-item-pilot-live-verification-of-the-chain-on-azure` | related IDE-103, related IDE-87, related IDE-108, related IDE-107 |
+| [IDE-114](https://linear.app/krukov-idea-hub/issue/IDE-114/work-item-pilot-live-verification-of-the-chain-on-azure-devops) | [Work Item · Pilot] Live verification of the chain on Azure DevOps | Backlog | — | `krukovden/ide-114-work-item-pilot-live-verification-of-the-chain-on-azure` | blocks IDE-88, related IDE-103, related IDE-87, related IDE-108, related IDE-107 |
 | [IDE-98](https://linear.app/krukov-idea-hub/issue/IDE-98/work-item-pilot-run-the-full-process-on-private-ai-knowledge-platform) | [Work Item · Pilot] Run the full process on Private AI Knowledge Platform MVP | Backlog | — | `krukovden/ide-98-work-item-pilot-run-the-full-process-on-private-ai-knowledge` | — |
 | [IDE-18](https://linear.app/krukov-idea-hub/issue/IDE-18/build-documentation-impact-analysis-and-update-workflow) | Build documentation impact analysis and update workflow | Canceled · archived | — | `krukovden/ide-18-build-documentation-impact-analysis-and-update-workflow` | — |
 | [IDE-19](https://linear.app/krukov-idea-hub/issue/IDE-19/run-the-end-to-end-pilot-on-private-ai-knowledge-platform-mvp) | Run the end-to-end pilot on Private AI Knowledge Platform MVP | Canceled · archived | — | `krukovden/ide-19-run-the-end-to-end-pilot-on-private-ai-knowledge-platform` | — |
