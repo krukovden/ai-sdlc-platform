@@ -143,9 +143,11 @@ Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently 
 
 ## Current state
 
-**Milestone 1 has settled the rules and is now building the cross-cutting services.** Six design Spikes are approved and every contract has exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927). Design is finished; three implementation work items under IDE-92 remain open in this milestone — state resolver and `/idp-status` (IDE-94), project memory (IDE-95), installation and onboarding (IDE-99).
+**Milestone 1 is closed** — 18 August 2026. Both of its features are done: IDE-79 settled the rules of the game (six approved design Spikes, every contract with exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927)), and IDE-92 built the cross-cutting services. The gate that blocked every other milestone is lifted.
 
-**One capability has shipped:** the Work Tracking Adapter and Profile Resolution, in `scripts/board.py` and `scripts/sync_linear_state.py`, with 276 tests that never touch the network. It shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
+**Six capabilities have shipped**, all registered on the HUB: Work Tracking Adapter and Profile Resolution (`scripts/board.py`, `scripts/sync_linear_state.py`), State Resolution (`scripts/state.py`), Project Memory (`scripts/memory.py`), Agent Identity, and Platform Installation (`scripts/install.py`) — with 276 tests that never touch the network. The adapter shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
+
+**Milestone 2 is in progress.** Under IDE-80 the design is approved (IDE-68) and three work items are closed — repository structure (IDE-83), the deterministic core (IDE-84), the Linear publishing adapter (IDE-86). Reviewer integration (IDE-85) is in progress. Four remain open: the content validator (IDE-102), the evaluation harness (IDE-88), the Azure DevOps adapter (IDE-87), and skill installation for Codex and Copilot (IDE-101, still a child of IDE-92 but tracked here — there is nothing to install until the first skill exists).
 
 Fifteen archived issues were **cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason. Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
@@ -161,7 +163,7 @@ docs/          project-state.md (generated)                                     
 templates/     the four artifact templates: feature, adr, pbi, bug                        ✅
 schemas/       frontmatter.schema.json, reviewer.schema.json                            ✅
 lint/          one markdownlint config per artifact type (MD043 required-headings)        ✅
-skills/        feature-discovery/ — SKILL.md + discovery.py, the deterministic core       ✅
+skills/        feature-discovery/ — SKILL.md, discovery.py, reviewer.py, publish_linear.py ✅
 registry/      slots.json (the 15 coverage slots), providers.json                         ✅
 evals/         golden ideas and LLM evaluations
 ```
@@ -208,7 +210,7 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 ## Known gaps
 
 - **The nine board statuses exist** — `Ready for Design`, `In Design`, `Design Review`, `Ready for Planning`, `In Planning`, `Ready for Development`, `In Development`, `Blocked - Needs Design`, `PR Review` — created by hand in Settings → Teams → IdeaHub → Workflow, because Linear has no API for creating them. **That hand step is the gap**: a foreign team either creates the same nine or maps its existing ones in the profile's phase table, and where a status cannot exist at all the phase is recorded as a comment instead. The profile carries `null` for such a phase and the claim protocol degrades to comment order — at the cost of a board no longer readable by eye.
-- **Each agent needs its own key.** The claim protocol reads `actor` from status history; three agents sharing one token are indistinguishable and cannot agree on who claimed first. The profile currently holds a single token path.
-- **IDE-68 §8.1 is marked provisional** pending IDE-71, which is now approved. That slice must be reconciled with the nine feature statuses before milestone 2 starts.
-- `read_token` reads `LINEAR_API_KEY` regardless of the board named in the profile. Harmless while only the Linear adapter exists; wrong the moment an Azure DevOps adapter appears.
-- **The content validator is not written.** Templates, frontmatter schema and lint configs exist; the grep layer that checks `Evidence:` lines, resolvable links and the absence of `TODO`/`N/A` is a separate implementation task.
+- `read_token` reads `LINEAR_API_KEY` regardless of the board named in the profile. Harmless while only the Linear adapter exists; wrong the moment an Azure DevOps adapter appears. Registered as part of **IDE-87**, which writes that adapter — the debt and the thing that triggers it land together.
+- **The content validator is not written.** Templates, frontmatter schema and lint configs exist; nothing yet looks *inside* a section, so a heading followed by `TODO` passes today. The grep layer that checks `Evidence:` lines, resolvable links and the absence of `TODO`/`N/A` is **IDE-102**.
+
+Closed since the last revision, kept here only so a reader who remembers them stops looking: per-agent keys shipped with IDE-100 — the profile's `agents` map holds one token path per agent, and the claim protocol reads them apart in history. IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `Ready for Design` rather than `Todo` with a `stage:*` label, because swapping a label leaves no history for the claim protocol to read.
