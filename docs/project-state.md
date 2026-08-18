@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-18T21:04:42Z
+**Generated:** 2026-08-18T21:30:36Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 32 live (2 in progress, 18 done) · 15 archived
+**Issues:** 36 live (2 in progress, 21 done) · 15 archived
 
 ## Project documents
 
@@ -33,14 +33,18 @@
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-101](https://linear.app/krukov-idea-hub/issue/IDE-101/work-item-ide-92-skill-installation-for-claude-codex-and-copilot) | [Work Item · IDE-92] Skill installation for Claude, Codex and Copilot | Backlog | — | `krukovden/ide-101-work-item-ide-92-skill-installation-for-claude-codex-and` | child of IDE-92, related IDE-99 |
+| [IDE-106](https://linear.app/krukov-idea-hub/issue/IDE-106/work-item-ide-92-feature-history-order-and-entry-form-diverge-from-the) | [Work Item · IDE-92] Feature history order and entry form diverge from the contract | Backlog | — | `krukovden/ide-106-work-item-ide-92-feature-history-order-and-entry-form` | child of IDE-92, related IDE-76, related IDE-105 |
 | [IDE-102](https://linear.app/krukov-idea-hub/issue/IDE-102/work-item-ide-80-content-validator-for-the-artifact-standard) | [Work Item · IDE-80] Content validator for the artifact standard | Todo | — | `krukovden/ide-102-work-item-ide-80-content-validator-for-the-artifact-standard` | child of IDE-80, related IDE-78, related IDE-83 |
 | [IDE-87](https://linear.app/krukov-idea-hub/issue/IDE-87/work-item-ide-80-azure-devops-publishing-adapter) | [Work Item · IDE-80] Azure DevOps publishing adapter | Todo | — | `krukovden/ide-87-work-item-ide-80-azure-devops-publishing-adapter` | child of IDE-80, related IDE-76, related IDE-93 |
 | [IDE-88](https://linear.app/krukov-idea-hub/issue/IDE-88/work-item-ide-80-llm-evaluation-harness) | [Work Item · IDE-80] LLM evaluation harness | Todo | — | `krukovden/ide-88-work-item-ide-80-llm-evaluation-harness` | child of IDE-80 |
+| [IDE-105](https://linear.app/krukov-idea-hub/issue/IDE-105/work-item-ide-92-unified-naming-for-memory-files-at-both-levels) | [Work Item · IDE-92] Unified naming for memory files at both levels | In Progress | — | `krukovden/ide-105-work-item-ide-92-unified-naming-for-memory-files-at-both` | child of IDE-92, related IDE-79, related IDE-76, related IDE-80 |
 | [IDE-80](https://linear.app/krukov-idea-hub/issue/IDE-80/feature-feature-discovery-skill) | [Feature] Feature Discovery Skill | In Progress | Feature | `krukovden/ide-80-feature-feature-discovery-skill` | related IDE-101, related IDE-98, related IDE-78, related IDE-92, related IDE-71 |
-| [IDE-85](https://linear.app/krukov-idea-hub/issue/IDE-85/work-item-ide-80-reviewer-integration-and-practice-research) | [Work Item · IDE-80] Reviewer integration and practice research | In Progress | — | `krukovden/ide-85-work-item-ide-80-reviewer-integration-and-practice-research` | child of IDE-80 |
+| [IDE-103](https://linear.app/krukov-idea-hub/issue/IDE-103/work-item-ide-80-reviewer-schema-and-fallback-under-strict-structured) | [Work Item · IDE-80] Reviewer schema and fallback under strict structured output | Done | — | `krukovden/ide-103-work-item-ide-80-reviewer-schema-and-fallback-under-strict` | child of IDE-80, related IDE-85, related IDE-68 |
+| [IDE-104](https://linear.app/krukov-idea-hub/issue/IDE-104/work-item-ide-92-drift-detector-a-container-feature-is-satisfied-by) | [Work Item · IDE-92] Drift detector: a container feature is satisfied by its children | Done | — | `krukovden/ide-104-work-item-ide-92-drift-detector-a-container-feature-is` | child of IDE-92, related IDE-99, related IDE-94, related IDE-76, related IDE-93, related IDE-100, related IDE-95, related IDE-79, related IDE-101 |
 | [IDE-68](https://linear.app/krukov-idea-hub/issue/IDE-68/spike-ide-80-design-the-deterministic-feature-discovery-skill) | [Spike · IDE-80] Design the deterministic Feature Discovery Skill | Done | Spike | `krukovden/ide-68-spike-ide-80-design-the-deterministic-feature-discovery` | child of IDE-80, blocks IDE-69 |
 | [IDE-83](https://linear.app/krukov-idea-hub/issue/IDE-83/work-item-ide-80-repository-structure-for-skills-and-schemas) | [Work Item · IDE-80] Repository structure for skills and schemas | Done | — | `krukovden/ide-83-work-item-ide-80-repository-structure-for-skills-and-schemas` | child of IDE-80, blocks IDE-84 |
 | [IDE-84](https://linear.app/krukov-idea-hub/issue/IDE-84/work-item-ide-80-discovery-core-state-machine-slot-registry-cli) | [Work Item · IDE-80] Discovery core: state machine, slot registry, CLI | Done | — | `krukovden/ide-84-work-item-ide-80-discovery-core-state-machine-slot-registry` | child of IDE-80, blocks IDE-88, blocks IDE-87, blocks IDE-86, blocks IDE-85 |
+| [IDE-85](https://linear.app/krukov-idea-hub/issue/IDE-85/work-item-ide-80-reviewer-integration-and-practice-research) | [Work Item · IDE-80] Reviewer integration and practice research | Done | — | `krukovden/ide-85-work-item-ide-80-reviewer-integration-and-practice-research` | child of IDE-80 |
 | [IDE-86](https://linear.app/krukov-idea-hub/issue/IDE-86/work-item-ide-80-linear-publishing-adapter) | [Work Item · IDE-80] Linear publishing adapter | Done | — | `krukovden/ide-86-work-item-ide-80-linear-publishing-adapter` | child of IDE-80, related IDE-93 |
 | [IDE-10](https://linear.app/krukov-idea-hub/issue/IDE-10/add-grilling-research-and-independent-llm-review) | Add grilling, research, and independent LLM review | Canceled · archived | — | `krukovden/ide-10-add-grilling-research-and-independent-llm-review` | — |
 | [IDE-11](https://linear.app/krukov-idea-hub/issue/IDE-11/generate-and-publish-the-approved-feature-package) | Generate and publish the approved Feature package | Canceled · archived | — | `krukovden/ide-11-generate-and-publish-the-approved-feature-package` | — |

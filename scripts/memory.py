@@ -354,14 +354,87 @@ def seed(issues, recorded_at):
 
 
 # ---------------------------------------------------------------------------
+# What the files are called
+# ---------------------------------------------------------------------------
+#
+# One rule, written once: `[<IDE-nn> · ]<NN> · <Role> — <hint>`. The identifier
+# appears at feature level and not at epic level, because a feature's file gets
+# separated from its feature — downloaded as an ADO attachment, listed among
+# every other document in a Linear workspace — and `History.md` on a disk
+# belongs to nobody.
+#
+# The number fixes the reading order once, instead of leaving it to the
+# alphabet and to whichever language the role happens to be named in. The hint
+# after the dash answers "what is this" for someone seeing the file for the
+# first time and costs nothing to someone who already knows.
+#
+# `02` is always Tried & Rejected. That is the whole thing anybody has to
+# remember, and it is deliberately the same on both levels: the structure of
+# memory repeats across the two levels, so its names repeat too.
+
+EPIC_FILES = {
+    "hub":            ("00", "HUB", "read this before any work"),
+    "registry":       ("01", "Feature Registry", "what exists now"),
+    "tried_rejected": ("02", "Tried & Rejected", "do not re-litigate"),
+}
+
+FEATURE_FILES = {
+    "adr":            ("00", "ADR", "how we build it and what it costs"),
+    "history":        ("01", "History", "what happened to this feature"),
+    "tried_rejected": ("02", "Tried & Rejected", "do not re-litigate"),
+}
+
+
+def _compose(table, role, prefix=None):
+    try:
+        number, name, hint = table[role]
+    except KeyError:
+        known = ", ".join(sorted(table))
+        raise MemoryError_(f"no memory file called '{role}'; there are only: {known}")
+    lead = f"{prefix} · " if prefix else ""
+    return f"{lead}{number} · {name} — {hint}"
+
+
+def epic_file(role):
+    """The name of one of the project's own memory files."""
+    return _compose(EPIC_FILES, role)
+
+
+def feature_file(identifier, role):
+    """The name of one of a feature's files, carrying the feature's identifier."""
+    if not identifier:
+        raise MemoryError_("a feature file without its identifier cannot be "
+                           "told apart from another feature's once it is "
+                           "downloaded or listed alongside them")
+    return _compose(FEATURE_FILES, role, prefix=identifier)
+
+
+def attachment_name(title):
+    """The same string as a filename, for a board that attaches files.
+
+    Azure DevOps has no documents, only attachments, and an attachment is a
+    file. Same name on both boards on purpose: an agent that moved trackers
+    should not have to learn a second vocabulary to find the same thing.
+    """
+    return f"{title}.md"
+
+
+def is_conventional(title):
+    """Whether a title was produced by the convention above."""
+    return any(title == epic_file(role) for role in EPIC_FILES) or bool(
+        MEMORY_FILE_PATTERN.match(title))
+
+
+MEMORY_FILE_PATTERN = re.compile(
+    r"^(?:[A-Z]+-\d+ · )?\d{2} · .+ — .+$")
+
+
+# ---------------------------------------------------------------------------
 # The feature's own history
 # ---------------------------------------------------------------------------
 
-HISTORY_SUFFIX = "— history"
-
-
 def history_title(identifier):
-    return f"{identifier} {HISTORY_SUFFIX}"
+    return feature_file(identifier, "history")
 
 
 def append_entry(existing, entry, on_date, pbi=None):

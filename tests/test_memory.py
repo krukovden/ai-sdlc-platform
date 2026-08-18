@@ -283,7 +283,8 @@ class HistoryTests(ScriptTestCase):
         self.assertIn("records nothing", str(caught.exception))
 
     def test_the_document_title_is_derived_from_the_feature(self):
-        self.assertEqual(memory.history_title("IDE-42"), "IDE-42 — history")
+        self.assertEqual(memory.history_title("IDE-42"),
+                         "IDE-42 · 01 · History — what happened to this feature")
 
 
 class ProcessFeatureTests(ScriptTestCase):
@@ -334,6 +335,62 @@ class ProcessFeatureTests(ScriptTestCase):
     def test_an_unlabelled_closed_feature_is_still_reported(self):
         issues = [issue("IDE-93"), issue("IDE-79", labels=["Feature"])]
         self.assertEqual(self.check(issues)["unregistered"], ["IDE-79"])
+
+
+class NamingTests(ScriptTestCase):
+    """One rule for both levels, so nobody has to remember two.
+
+    The names matter because they are how the files are *found*. A loader that
+    searches for "something that looks like a history" is a loader that will
+    one day open the wrong document and be confident about it.
+    """
+
+    def test_the_epic_carries_three_files_in_a_fixed_order(self):
+        self.assertEqual(
+            [memory.epic_file(r) for r in ("hub", "registry", "tried_rejected")],
+            ["00 · HUB — read this before any work",
+             "01 · Feature Registry — what exists now",
+             "02 · Tried & Rejected — do not re-litigate"])
+
+    def test_a_feature_carries_the_same_shape_plus_its_identifier(self):
+        self.assertEqual(
+            [memory.feature_file("IDE-42", r)
+             for r in ("adr", "history", "tried_rejected")],
+            ["IDE-42 · 00 · ADR — how we build it and what it costs",
+             "IDE-42 · 01 · History — what happened to this feature",
+             "IDE-42 · 02 · Tried & Rejected — do not re-litigate"])
+
+    def test_tried_and_rejected_is_02_on_both_levels(self):
+        """The one thing anybody has to remember."""
+        self.assertTrue(memory.epic_file("tried_rejected").startswith("02 · "))
+        self.assertIn(" 02 · ", memory.feature_file("IDE-42", "tried_rejected"))
+
+    def test_the_existing_hub_document_already_matches(self):
+        """Nothing to migrate: the one file that exists was already named this."""
+        self.assertEqual(memory.epic_file("hub"),
+                         "00 · HUB — read this before any work")
+
+    def test_a_feature_file_without_its_identifier_is_refused(self):
+        with self.assertRaises(memory.MemoryError_) as caught:
+            memory.feature_file("", "history")
+        self.assertIn("downloaded", str(caught.exception))
+
+    def test_an_unknown_role_names_the_roles_that_exist(self):
+        with self.assertRaises(memory.MemoryError_) as caught:
+            memory.feature_file("IDE-42", "changelog")
+        self.assertIn("adr", str(caught.exception))
+        self.assertIn("history", str(caught.exception))
+
+    def test_the_same_name_serves_a_board_that_attaches_files(self):
+        self.assertEqual(
+            memory.attachment_name(memory.feature_file("IDE-42", "history")),
+            "IDE-42 · 01 · History — what happened to this feature.md")
+
+    def test_a_name_from_outside_the_convention_is_recognised_as_such(self):
+        self.assertTrue(memory.is_conventional(memory.epic_file("registry")))
+        self.assertTrue(memory.is_conventional(memory.feature_file("IDE-42", "adr")))
+        self.assertFalse(memory.is_conventional("IDE-42 — history"))
+        self.assertFalse(memory.is_conventional("Notes"))
 
 
 class RepositoryTests(ScriptTestCase):
