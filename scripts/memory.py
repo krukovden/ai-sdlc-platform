@@ -216,7 +216,8 @@ def check_drift(registry, issues, profile, do_fetch=True):
             fetch(repo)
 
     findings = {"unbacked": [], "unregistered": [], "unrecorded_removals": [],
-                "process": [], "repositories": [str(r) for r in repos]}
+                "process": [], "covered_by_children": {},
+                "repositories": [str(r) for r in repos]}
 
     for entry in registry["features"]:
         issue = entry["issue"]
@@ -250,8 +251,16 @@ def check_drift(registry, issues, profile, do_fetch=True):
         if process_label in labels:
             findings["process"].append(feature_id)
             continue                                  # rules, not a capability
-        if feature["status_type"] == "completed" and feature_id not in registered:
+        # A feature is one unit of work, not necessarily one capability. The
+        # registry keys on the card a capability belongs to, and a feature that
+        # carried six of them has its six lines under six child cards. Rule 1
+        # above already descends to children; this one did not, and the first
+        # container feature to close was reported as a hole that was not there.
+        covered = sorted({feature_id, *children.get(feature_id, [])} & registered)
+        if feature["status_type"] == "completed" and not covered:
             findings["unregistered"].append(feature_id)
+        elif covered and feature_id not in registered:
+            findings["covered_by_children"][feature_id] = covered
         elif feature["status_type"] == "canceled" and feature_id not in recorded_removed:
             findings["unrecorded_removals"].append(feature_id)
 
@@ -279,19 +288,22 @@ def describe_drift(findings):
         for issue in findings["unrecorded_removals"]:
             lines.append(f"  {issue}")
         lines.append("  A removal without a recorded reason invites its own reintroduction.")
+    # Stated, not silent. A detector that quietly drops things from its own
+    # scope, or quietly accepts them by a route other than the obvious one, is
+    # indistinguishable from one that missed them.
+    notes = []
+    for issue, covered in sorted(findings["covered_by_children"].items()):
+        notes.append(f"Covered by its children, not by a line of its own: "
+                     f"{issue} — {', '.join(covered)}")
     if findings["process"]:
-        # Stated, not silent. A detector that quietly drops things from its own
-        # scope is indistinguishable from one that missed them.
         skipped = ", ".join(findings["process"])
-        note = f"Skipped as process features, not capabilities: {skipped}"
-        if not lines:
-            repos = ", ".join(findings["repositories"])
-            return f"No drift. Checked against the remote in: {repos}\n{note}"
-        lines.append(note)
+        notes.append(f"Skipped as process features, not capabilities: {skipped}")
 
     if not lines:
         repos = ", ".join(findings["repositories"])
-        return f"No drift. Checked against the remote in: {repos}"
+        clean = f"No drift. Checked against the remote in: {repos}"
+        return "\n".join([clean, *notes]) if notes else clean
+    lines.extend(notes)
     lines.append("")
     lines.append("Nothing was changed. Fix the registry or the commits, then re-run.")
     return "\n".join(lines)

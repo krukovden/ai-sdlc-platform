@@ -177,6 +177,38 @@ class DriftTests(ScriptTestCase):
         findings = self.check({"IDE-93": ["a"]}, ["ABC-1"], [issue("IDE-93")])
         self.assertEqual(findings["unregistered"], [])
 
+    def test_a_container_feature_is_covered_by_a_child_carrying_the_line(self):
+        """One feature is one unit of work, not necessarily one capability.
+
+        IDE-92 carried six of them and each has its own line under its own
+        child card. Reading only the feature's own identifier reported a hole
+        that was not there — and the only ways to silence it were a lie
+        (labelling a capability feature `Process`) or a duplicate entry.
+        """
+        issues = [issue("IDE-92", status_type="completed"),
+                  issue("IDE-93", parent="IDE-92")]
+        findings = self.check({"IDE-93": ["a"]}, ["IDE-93"], issues)
+        self.assertEqual(findings["unregistered"], [])
+
+    def test_being_covered_by_a_child_is_said_out_loud(self):
+        issues = [issue("IDE-92", status_type="completed"),
+                  issue("IDE-93", parent="IDE-92")]
+        findings = self.check({"IDE-93": ["a"]}, ["IDE-93"], issues)
+        text = memory.describe_drift(findings)
+        self.assertIn("No drift", text)
+        self.assertIn("IDE-92", text)
+        self.assertIn("IDE-93", text)
+
+    def test_a_feature_registered_in_its_own_right_needs_no_such_note(self):
+        findings = self.check({"IDE-93": ["a"]}, ["IDE-93"], [issue("IDE-93")])
+        self.assertEqual(findings["covered_by_children"], {})
+
+    def test_a_container_whose_children_are_all_unregistered_is_still_caught(self):
+        issues = [issue("IDE-96", status_type="completed"),
+                  issue("IDE-97", parent="IDE-96")]
+        findings = self.check({"IDE-97": ["a"]}, ["IDE-97"], issues)
+        self.assertEqual(findings["unregistered"], ["IDE-96"])
+
     def test_a_clean_run_says_which_repositories_it_checked(self):
         findings = self.check({"IDE-93": ["a"]}, [], [issue("IDE-93")])
         text = memory.describe_drift(findings)
