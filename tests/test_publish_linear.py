@@ -241,3 +241,47 @@ class DocumentTests(ScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ValidationGateTests(ScriptTestCase):
+    """The standard is applied before publication, not after approval.
+
+    `scripts/validate.py` existed for a day wired to nothing. A checker wired to
+    nothing checks nothing: a feature carrying a placeholder inside a mandatory
+    section reached the board, and the human who approved it had no way to know
+    the standard had never been applied to it.
+    """
+
+    def check(self, package, **kwargs):
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+             contextlib.redirect_stdout(io.StringIO()):
+            publish_linear.check_valid(package, discovery, **kwargs)
+        return err.getvalue()
+
+    def expect_refusal(self, package, **kwargs):
+        def call():
+            with contextlib.redirect_stdout(io.StringIO()):
+                publish_linear.check_valid(package, discovery, **kwargs)
+        return self.assert_exits(3, call)
+
+    def test_a_clean_package_passes(self):
+        self.check(approved_package())
+
+    def test_a_placeholder_left_in_the_text_stops_publication(self):
+        package = approved_package()
+        package["material"]["outcome"] = "TODO"
+        message = self.expect_refusal(package)
+        self.assertIn("problems", message)
+
+    def test_the_refusal_names_the_layer_and_the_rule(self):
+        package = approved_package()
+        package["material"]["outcome"] = "TODO"
+        printed = self.expect_refusal(package)
+        self.assertIn("content", printed)
+        self.assertIn("placeholder", printed)
+
+    def test_the_root_is_the_product_repository_and_not_this_platform(self):
+        """A feature may legitimately mention an IDE-nn this mirror never saw."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as empty:
+            self.check(approved_package(), root=empty)

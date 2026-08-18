@@ -51,6 +51,49 @@ def fail(code, message):
     sys.exit(code)
 
 
+def load_validator():
+    """The artifact standard's own checker, reused rather than re-implemented."""
+    spec = importlib.util.spec_from_file_location("idp_validate",
+                                                  SCRIPTS / "validate.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_validate"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_valid(package, discovery, root=None):
+    """Refuse to publish an artifact that fails the standard it claims to follow.
+
+    The checker existed before this call site did, and a checker wired to
+    nothing checks nothing: a feature carrying `TODO` inside a mandatory
+    section reached the board, and the human who approved it had no way to
+    know the standard had not been applied.
+
+    `root` is the repository the artifact belongs to — the product repo the
+    Product Owner is working in, not this platform. It decides whether a
+    relative link resolves and whether an `IDE-nn` in the text is one this
+    project's mirror has heard of. Pointing it at the platform would block a
+    feature for mentioning an issue that legitimately lives somewhere else.
+    """
+    validator = load_validator()
+    text = discovery.render_markdown(package)
+    try:
+        violations = validator.validate_text(text, artifact_type="feature",
+                                             stage="final",
+                                             root=root or Path.cwd())
+    except validator.ConfigError as exc:
+        fail(6, f"the artifact checker is misconfigured: {exc}")
+
+    if not violations:
+        return
+    for violation in violations:
+        print(f"  {violation.layer:9} {violation.rule:18} {violation.message}",
+              file=sys.stderr)
+    fail(3, f"{len(violations)} problems in the rendered feature. Publishing it "
+            "would put them on the board, where the next reader has no way to "
+            "tell a gap from a decision.")
+
+
 def load_board():
     """Reuse the facade rather than reimplementing it."""
     spec = importlib.util.spec_from_file_location("idp_board", SCRIPTS / "board.py")
@@ -266,12 +309,24 @@ def main(argv=None):
     parser.add_argument("--package", required=True)
     parser.add_argument("--dry-run", action="store_true",
                         help="say what would be written, and write nothing")
+    parser.add_argument("--root", default=None,
+                        help="the repository this feature belongs to; links and "
+                             "IDE-nn are resolved against it. Default: the "
+                             "current directory")
+    parser.add_argument("--skip-validation", action="store_true",
+                        help="publish without checking the artifact against the "
+                             "standard. Journalled, and it is a hole, not a flag")
     args = parser.parse_args(argv)
 
     board_module = load_board()
     discovery = load_discovery()
     package = load_package(args.package)
     check_publishable(package, discovery)
+    if args.skip_validation:
+        print("WARNING: published without checking it against the standard.",
+              file=sys.stderr)
+    else:
+        check_valid(package, discovery, root=args.root)
 
     profile, _, board = board_module.open_board()
     result = publish(board, profile, package, discovery, dry_run=args.dry_run)

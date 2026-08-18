@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-18T23:19:18Z
+**Generated:** 2026-08-18T23:26:49Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 52 live (3 in progress, 30 done) · 15 archived
+**Issues:** 54 live (3 in progress, 33 done) · 15 archived
 
 ## Project documents
 
@@ -33,7 +33,6 @@
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-101](https://linear.app/krukov-idea-hub/issue/IDE-101/work-item-ide-92-skill-installation-for-claude-codex-and-copilot) | [Work Item · IDE-92] Skill installation for Claude, Codex and Copilot | Backlog | — | `krukovden/ide-101-work-item-ide-92-skill-installation-for-claude-codex-and` | child of IDE-92, related IDE-99 |
-| [IDE-111](https://linear.app/krukov-idea-hub/issue/IDE-111/work-item-ide-80-wire-the-content-validator-into-publication) | [Work Item · IDE-80] Wire the content validator into publication | Backlog | — | `krukovden/ide-111-work-item-ide-80-wire-the-content-validator-into-publication` | child of IDE-80, related IDE-102 |
 | [IDE-112](https://linear.app/krukov-idea-hub/issue/IDE-112/work-item-ide-80-spike-as-an-artifact-type-in-schema-lint-and) | [Work Item · IDE-80] Spike as an artifact type in schema, lint and validator | Backlog | — | `krukovden/ide-112-work-item-ide-80-spike-as-an-artifact-type-in-schema-lint` | child of IDE-80, related IDE-102, related IDE-78 |
 | [IDE-113](https://linear.app/krukov-idea-hub/issue/IDE-113/work-item-ide-92-three-consistency-debts-left-by-the-parallel-build) | [Work Item · IDE-92] Three consistency debts left by the parallel build | Backlog | — | `krukovden/ide-113-work-item-ide-92-three-consistency-debts-left-by-the` | child of IDE-92, related IDE-69, related IDE-105 |
 | [IDE-106](https://linear.app/krukov-idea-hub/issue/IDE-106/work-item-ide-92-feature-history-order-and-entry-form-diverge-from-the) | [Work Item · IDE-92] Feature history order and entry form diverge from the contract | Todo | — | `krukovden/ide-106-work-item-ide-92-feature-history-order-and-entry-form` | child of IDE-92, related IDE-76, related IDE-105 |
@@ -43,6 +42,7 @@
 | [IDE-103](https://linear.app/krukov-idea-hub/issue/IDE-103/work-item-ide-80-reviewer-schema-and-fallback-under-strict-structured) | [Work Item · IDE-80] Reviewer schema and fallback under strict structured output | Done | — | `krukovden/ide-103-work-item-ide-80-reviewer-schema-and-fallback-under-strict` | child of IDE-80, related IDE-85, related IDE-68 |
 | [IDE-104](https://linear.app/krukov-idea-hub/issue/IDE-104/work-item-ide-92-drift-detector-a-container-feature-is-satisfied-by) | [Work Item · IDE-92] Drift detector: a container feature is satisfied by its children | Done | — | `krukovden/ide-104-work-item-ide-92-drift-detector-a-container-feature-is` | child of IDE-92, related IDE-99, related IDE-94, related IDE-76, related IDE-93, related IDE-100, related IDE-95, related IDE-79, related IDE-101 |
 | [IDE-105](https://linear.app/krukov-idea-hub/issue/IDE-105/work-item-ide-92-unified-naming-for-memory-files-at-both-levels) | [Work Item · IDE-92] Unified naming for memory files at both levels | Done | — | `krukovden/ide-105-work-item-ide-92-unified-naming-for-memory-files-at-both` | child of IDE-92, related IDE-79, related IDE-76, related IDE-80 |
+| [IDE-111](https://linear.app/krukov-idea-hub/issue/IDE-111/work-item-ide-80-wire-the-content-validator-into-publication) | [Work Item · IDE-80] Wire the content validator into publication | Done | — | `krukovden/ide-111-work-item-ide-80-wire-the-content-validator-into-publication` | child of IDE-80, related IDE-102 |
 | [IDE-68](https://linear.app/krukov-idea-hub/issue/IDE-68/spike-ide-80-design-the-deterministic-feature-discovery-skill) | [Spike · IDE-80] Design the deterministic Feature Discovery Skill | Done | Spike | `krukovden/ide-68-spike-ide-80-design-the-deterministic-feature-discovery` | child of IDE-80, blocks IDE-69 |
 | [IDE-83](https://linear.app/krukov-idea-hub/issue/IDE-83/work-item-ide-80-repository-structure-for-skills-and-schemas) | [Work Item · IDE-80] Repository structure for skills and schemas | Done | — | `krukovden/ide-83-work-item-ide-80-repository-structure-for-skills-and-schemas` | child of IDE-80, blocks IDE-84 |
 | [IDE-84](https://linear.app/krukov-idea-hub/issue/IDE-84/work-item-ide-80-discovery-core-state-machine-slot-registry-cli) | [Work Item · IDE-80] Discovery core: state machine, slot registry, CLI | Done | — | `krukovden/ide-84-work-item-ide-80-discovery-core-state-machine-slot-registry` | child of IDE-80, blocks IDE-88, blocks IDE-87, blocks IDE-86, blocks IDE-85 |
@@ -137,6 +137,8 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
+| [IDE-123](https://linear.app/krukov-idea-hub/issue/IDE-123/work-item-ide-81-idp-design-bug-route-verdict) | [Work Item · IDE-81] /idp-design: bug-route verdict | Backlog | — | `krukovden/ide-123-work-item-ide-81-idp-design-bug-route-verdict` | child of IDE-81, related IDE-107, related IDE-69 |
+| [IDE-124](https://linear.app/krukov-idea-hub/issue/IDE-124/work-item-ide-81-idp-design-reissue-after-escalation-superseding-the) | [Work Item · IDE-81] /idp-design: reissue after escalation, superseding the previous ADR | Backlog | — | `krukovden/ide-124-work-item-ide-81-idp-design-reissue-after-escalation` | child of IDE-81, related IDE-76, related IDE-69 |
 | [IDE-81](https://linear.app/krukov-idea-hub/issue/IDE-81/feature-komanda-idp-design-tehnicheskij-dizajn) | [Feature] Команда /idp-design — технический дизайн | In Progress | Feature | `krukovden/ide-81-feature-komanda-idp-design-tekhnicheskii-dizain` | related IDE-82, related IDE-90 |
 | [IDE-82](https://linear.app/krukov-idea-hub/issue/IDE-82/feature-komanda-idp-planning-dekompoziciya-na-pbi) | [Feature] Команда /idp-planning — декомпозиция на PBI | In Progress | Feature | `krukovden/ide-82-feature-komanda-idp-planning-dekompoziciya-na-pbi` | related IDE-90, related IDE-78 |
 | [IDE-107](https://linear.app/krukov-idea-hub/issue/IDE-107/work-item-ide-81-idp-design-core-subphases-decision-registry) | [Work Item · IDE-81] /idp-design core: subphases, decision registry, alternatives budget | Done | — | `krukovden/ide-107-work-item-ide-81-idp-design-core-subphases-decision-registry` | child of IDE-81, related IDE-69, related IDE-103 |
@@ -160,8 +162,6 @@ It precedes the pilot: the pilot verifies the process, this milestone gives the 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-109](https://linear.app/krukov-idea-hub/issue/IDE-109/feature-establish-project) | [Feature] Establish project | Backlog | Feature | `krukovden/ide-109-feature-establish-project` | — |
-| [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) | [Work Item · IDE-109] Adapter: work-item kinds and creation by kind | Backlog | — | `krukovden/ide-116-work-item-ide-109-adapter-work-item-kinds-and-creation-by` | child of IDE-109, blocks IDE-120, related IDE-110 |
-| [IDE-117](https://linear.app/krukov-idea-hub/issue/IDE-117/work-item-ide-109-establish-core-state-machine-project-slot-registry) | [Work Item · IDE-109] Establish core: state machine, project slot registry, intake and coverage | Backlog | — | `krukovden/ide-117-work-item-ide-109-establish-core-state-machine-project-slot` | child of IDE-109, blocks IDE-118, related IDE-110 |
 | [IDE-118](https://linear.app/krukov-idea-hub/issue/IDE-118/work-item-ide-109-challenge-and-traversal-the-falsifiable-verdict) | [Work Item · IDE-109] Challenge and traversal: the falsifiable verdict | Backlog | — | `krukovden/ide-118-work-item-ide-109-challenge-and-traversal-the-falsifiable` | child of IDE-109, blocks IDE-119, related IDE-110 |
 | [IDE-119](https://linear.app/krukov-idea-hub/issue/IDE-119/work-item-ide-109-slicing-the-escalation-rule-and-the-per-feature) | [Work Item · IDE-109] Slicing, the escalation rule and the per-feature review | Backlog | — | `krukovden/ide-119-work-item-ide-109-slicing-the-escalation-rule-and-the-per` | child of IDE-109, blocks IDE-120, related IDE-110 |
 | [IDE-120](https://linear.app/krukov-idea-hub/issue/IDE-120/work-item-ide-109-approval-hashing-and-idempotent-publication) | [Work Item · IDE-109] Approval, hashing and idempotent publication | Backlog | — | `krukovden/ide-120-work-item-ide-109-approval-hashing-and-idempotent` | child of IDE-109, blocks IDE-121, related IDE-110 |
@@ -169,6 +169,8 @@ It precedes the pilot: the pilot verifies the process, this milestone gives the 
 | [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) | [Work Item · IDE-109] Documentation: constitution, reference architecture, HUB, CLAUDE.md | Backlog | — | `krukovden/ide-122-work-item-ide-109-documentation-constitution-reference` | child of IDE-109, related IDE-110 |
 | [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Done | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-93, related IDE-87 |
 | [IDE-115](https://linear.app/krukov-idea-hub/issue/IDE-115/work-item-ide-109-contract-changes-frontmatter-project-adr-template) | [Work Item · IDE-109] Contract changes: frontmatter, project ADR template, lint, state resolver | Done | — | `krukovden/ide-115-work-item-ide-109-contract-changes-frontmatter-project-adr` | child of IDE-109, blocks IDE-117, related IDE-110 |
+| [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) | [Work Item · IDE-109] Adapter: work-item kinds and creation by kind | Done | — | `krukovden/ide-116-work-item-ide-109-adapter-work-item-kinds-and-creation-by` | child of IDE-109, blocks IDE-120, related IDE-110 |
+| [IDE-117](https://linear.app/krukov-idea-hub/issue/IDE-117/work-item-ide-109-establish-core-state-machine-project-slot-registry) | [Work Item · IDE-109] Establish core: state machine, project slot registry, intake and coverage | Done | — | `krukovden/ide-117-work-item-ide-109-establish-core-state-machine-project-slot` | child of IDE-109, blocks IDE-118, related IDE-110 |
 
 ## How to use this file
 
