@@ -116,6 +116,8 @@ class StubBoard:
     def __init__(self, issue):
         self.issue = issue
         self.started = []
+        self.documents = []
+        self.comments = []
 
     def get_issue(self, identifier):
         return self.issue
@@ -124,6 +126,29 @@ class StubBoard:
         self.started.append((identifier, phase))
         self.issue["status"] = "In Design"
         return {"identifier": identifier, "status": "In Design", "changed": True}
+
+    # -- documents and comments, for publish --------------------------------
+
+    def list_documents(self, project_id):
+        return [{"title": d["title"], "slugId": d["slugId"], "url": d["url"]}
+                for d in self.documents]
+
+    def get_document(self, slug):
+        for d in self.documents:
+            if d["slugId"] == slug:
+                return d
+        raise AssertionError(f"no document {slug}")
+
+    def attach_document(self, title, content, identifier=None, project_id=None):
+        slug = f"slug{len(self.documents)}"
+        self.documents.append({"title": title, "content": content,
+                               "slugId": slug, "url": f"https://board/{slug}",
+                               "issue": identifier})
+        return f"https://board/{slug}"
+
+    def add_comment(self, identifier, body):
+        self.comments.append((identifier, body))
+        return "https://board/comment"
 
 
 class Runner:
@@ -172,7 +197,8 @@ class DesignTestCase(ScriptTestCase):
     # -- seams --------------------------------------------------------------
 
     def open_card(self, identifier):
-        return self.board, {"board": "linear"}, self.issue, self.answer
+        return (self.board, {"board": "linear", "project_id": "p1"},
+                self.issue, self.answer)
 
     def use_provider(self, answers=None):
         runner = Runner(answers)
@@ -1139,3 +1165,77 @@ class JournalTests(DesignTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishTests(DesignTestCase):
+    """Attaching the approved ADR — the seam /idp-planning reads from.
+
+    Planning finds the ADR by asking `memory.feature_file` for an exact title.
+    Nothing produced that title on the board until this command existed, so the
+    chain had a hole a human had to close by typing a name correctly.
+    """
+
+    def approved(self):
+        self.reach_integration()
+        self.run_cli("integrate")
+        return self.state()
+
+    def test_the_title_is_the_convention_and_not_a_literal(self):
+        memory = design.load_sibling(design.SCRIPTS / "memory.py", "idp_memory_check")
+        self.assertEqual(design.adr_title("IDE-42"),
+                         memory.feature_file("IDE-42", "adr"))
+
+    def test_publishing_attaches_the_adr_under_that_title(self):
+        self.approved()
+        self.run_cli("publish", "--approver", "denys")
+        self.assertEqual(len(self.board.documents), 1)
+        self.assertEqual(self.board.documents[0]["title"],
+                         design.adr_title(self.identifier))
+        self.assertEqual(self.board.documents[0]["issue"], self.identifier)
+
+    def test_who_approved_is_recorded_because_the_board_cannot(self):
+        self.approved()
+        self.run_cli("publish", "--approver", "denys")
+        self.assertEqual(len(self.board.comments), 1)
+        body = self.board.comments[0][1]
+        self.assertIn("idp-approval", body)
+        self.assertIn("denys", body)
+
+    def test_a_draft_that_nobody_approved_cannot_be_published(self):
+        """`integrate` says nothing was published; this is what enforces it."""
+        self.start()
+        message = self.expect_exit(4, "publish", "--approver", "denys")
+        self.assertIn("AWAITING_APPROVAL", message)
+        self.assertEqual(self.board.documents, [])
+
+    def test_republishing_the_same_adr_writes_nothing(self):
+        self.approved()
+        self.run_cli("publish", "--approver", "denys")
+        self.run_cli("publish", "--approver", "denys")
+        self.assertEqual(len(self.board.documents), 1)
+        self.assertEqual(len(self.board.comments), 1)
+
+    def test_a_changed_adr_refuses_rather_than_replacing_an_approved_one(self):
+        self.approved()
+        self.run_cli("publish", "--approver", "denys")
+        self.board.documents[0]["content"] = "something a human already approved"
+        message = self.expect_exit(4, "publish", "--approver", "denys")
+        self.assertIn("supersede", message.lower())
+        self.assertEqual(len(self.board.documents), 1)
+
+    def test_a_feature_edited_while_waiting_for_approval_is_exit_7(self):
+        """The gap integrate guards is short. This one has a human reading in it."""
+        self.approved()
+        self.issue["description"] = FEATURE_BODY.replace(
+            "## Что строим", "## Что строим\n\nИ ещё экспорт в PDF.")
+        message = self.expect_exit(7, "publish", "--approver", "denys")
+        self.assertIn("no longer exists", message)
+        self.assertEqual(self.board.documents, [])
+
+    def test_an_approver_is_not_optional(self):
+        self.approved()
+        with contextlib.redirect_stderr(io.StringIO()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                design.main(["publish", "--id", self.identifier])
+        self.assertEqual(self.board.documents, [])

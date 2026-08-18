@@ -33,6 +33,7 @@ so it is not the record.
     design.py integrate
     design.py validate    [--json]
     design.py render      [--out <f>]
+    design.py publish   --id <IDE-nn> --approver <who>
     design.py adr-path
 
 Exit codes, from IDE-69 §3 — the same as board.py and discovery.py, none new:
@@ -1314,6 +1315,93 @@ def cmd_status(args):
         print(f"{key + ':':20} {value}")
 
 
+APPROVAL_BLOCK = "idp-approval"
+
+
+def adr_title(identifier):
+    """The name the convention owns, not one typed at a call site.
+
+    `/idp-planning` finds the ADR by asking `memory.feature_file` for this exact
+    string. Composing it here from the same function is what makes the two ends
+    of the seam agree; a literal typed in either place is a seam that holds
+    until somebody's finger slips.
+    """
+    memory = load_sibling(SCRIPTS / "memory.py", "idp_memory_design")
+    return memory.feature_file(identifier, "adr")
+
+
+def cmd_publish(args):
+    """Attach the approved ADR to the feature.
+
+    Deliberately a separate command from `integrate`, and deliberately requiring
+    an approver. `integrate` produces a draft and says so; only what a human
+    approved reaches the board, and on a board that cannot record who approved
+    what, the record is a comment we write ourselves. Discovery already does
+    exactly this — same block, same reason.
+    """
+    state = load_state(args.id)
+    if state["state"] != "AWAITING_APPROVAL":
+        fail(4, f"{state['identifier']} is {state['state']}, not AWAITING_APPROVAL. "
+                "There is nothing approved to publish yet; run `integrate` first.")
+
+    board, profile, issue, _ = open_card(state["identifier"])
+
+    # The feature may have been edited between integrate and approval, which is
+    # a longer gap than the one integrate guards: a human was reading in it.
+    current = feature_hash(issue.get("description"))
+    if current != state["feature_hash"]:
+        journal(args.id, {"event": "approval_invalidated_at_publish",
+                          "was": state["feature_hash"], "now": current})
+        fail(7, "the feature changed while the ADR was waiting for approval. "
+                f"It hashed to {state['feature_hash']} when the work started and "
+                f"hashes to {current} now, so the approval covers a document "
+                "about a feature that no longer exists. Revise, then ask again.")
+
+    title = adr_title(state["identifier"])
+    text = render_adr(state)
+    project_id = profile.get("project_id")
+    if not project_id:
+        fail(6, "the profile has no project_id, so documents cannot be listed and "
+                "a second ADR could be attached over the first")
+
+    for document in board.list_documents(project_id):
+        if document["title"] != title:
+            continue
+        existing = board.get_document(document["slugId"]).get("content") or ""
+        if existing.strip() == text.strip():
+            journal(args.id, {"event": "publish", "already": document["slugId"]})
+            print(document.get("url") or document["slugId"])
+            print("already attached, unchanged. Nothing was written.",
+                  file=sys.stderr)
+            return
+        fail(4, f"'{title}' is already attached to {state['identifier']} and its "
+                "content differs from this draft. Replacing an approved ADR in "
+                "place would erase the record that the first one was approved — "
+                "a new version supersedes it instead, and that path (IDE-69 \u00a78) "
+                "is not built yet.")
+
+    url = board.attach_document(title, text, identifier=state["identifier"])
+
+    approval = {"approver": args.approver, "at": now(),
+                "content_hash": state["feature_hash"], "artifact": "adr",
+                "identifier": state["identifier"]}
+    body = ("```" + APPROVAL_BLOCK + "\n"
+            + json.dumps(approval, indent=2, ensure_ascii=False) + "\n```"
+            + "\n\nThe board cannot record who approved what, so this comment is "
+              "the record. The hash is of the feature the ADR was written "
+              "against: if the feature moves, the approval stops covering it.")
+    board.add_comment(state["identifier"], body)
+
+    state["published"] = {"title": title, "url": url, "approver": args.approver,
+                          "at": now()}
+    journal(args.id, {"event": "publish", "approver": args.approver, "url": url})
+    save_state(state)
+
+    print(url)
+    print(f"attached as '{title}'. /idp-planning looks for exactly this name.",
+          file=sys.stderr)
+
+
 def cmd_adr_path(args):
     print(session_dir(args.id) / "adr.md")
 
@@ -1423,6 +1511,12 @@ def _make_parser():
     p.add_argument("--id")
     p.add_argument("--out")
     p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("publish", help="attach the approved ADR to the feature")
+    p.add_argument("--id")
+    p.add_argument("--approver", required=True,
+                   help="who approved it; the board cannot record this itself")
+    p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("adr-path")
     p.add_argument("--id")
