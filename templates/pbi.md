@@ -1,7 +1,7 @@
 ---
 type: pbi
 standard: "1.0"
-parent: IDE-<номер фичи>
+parent: IDE-0
 ---
 
 ## Результат

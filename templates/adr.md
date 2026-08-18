@@ -4,7 +4,7 @@ status: proposed
 route: feature
 standard: "1.0"
 cid: <тот же идентификатор корреляции, что у фичи>
-parent: IDE-<номер фичи>
+parent: IDE-0
 ---
 
 ## Зачем

@@ -822,13 +822,15 @@ def validate_text(text, artifact_type=None, stage=None, status=None, template=Fa
     resolved = plain.get("type") or artifact_type
     schema = load_schema(schema_path)
 
-    # A placeholder in a header value is a content failure, not a format one:
-    # `parent: IDE-<номер фичи>` is the template working as designed. In
-    # template mode the value checks step aside for exactly those fields; the
-    # required-field and unknown-field checks never do.
-    skip = frozenset(f"header.{key}" for key, value in plain.items()
-                     if template and is_placeholder(value))
-    for problem_path, message in check_schema(plain, schema, "header", skip):
+    # The header layer has no template mode and needs none. It used to exempt
+    # placeholder-valued fields, because `parent: IDE-<номер фичи>` cannot match
+    # `^IDE-[0-9]+$` and no template could otherwise pass. Product Owner's call
+    # on 18 August: fix the templates rather than the validator. A template now
+    # carries a schema-valid example (`parent: IDE-0`), which costs one comment
+    # per file and buys a validator with one fewer mode to disagree with itself
+    # about. A checker that checks less in some modes is a checker whose green
+    # means different things on different days.
+    for problem_path, message in check_schema(plain, schema, "header"):
         field = problem_path.split(".", 1)[1] if "." in problem_path else None
         violations.append(Violation(LAYER_HEADER, "schema", message,
                                     at_line.get(field, 1)))
