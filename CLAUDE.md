@@ -71,7 +71,14 @@ Note that `project.issues` excludes archived issues by default. Pass `includeArc
 ## The pipeline
 
 ```
-Product Owner
+Product Owner with a whole project already thought through
+   │  /idp-establish
+   ▼  coverage · independent challenge · traversal of end-to-end scenarios
+Project ADR on the epic, stages, feature cards for the open stage
+   │  a feature the architecture said too little about carries `discovery: required`
+   │  and goes to /idp-discovery first — nothing else lifts that block
+   ▼
+Product Owner with one idea
    │  /idp-discovery
    ▼  grilling · evidence · independent second-model review
 Feature card, created by the Product Owner          ← GATE 1 (implicit: creating it approves it)
@@ -112,7 +119,7 @@ Core artifacts: Project Profile · Feature · ADR · PBI · feature history · T
 
 **The artifact chain is `Feature → ADR → PBI`.** The Product Owner creates the feature; the architect picks it up and turns it into an ADR; the human approves the ADR and it is attached to the feature as a file. The word *Spike* no longer means technical design — technical design is the ADR.
 
-Six local commands in the first revision, every phase started by a human: `/idp-setup` → `/idp-discovery` → `/idp-design` → `/idp-planning` → `/idp-development`, plus `/idp-status` at any point. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
+Seven local commands in the first revision, every phase started by a human: `/idp-setup` → `/idp-establish` → `/idp-discovery` → `/idp-design` → `/idp-planning` → `/idp-development`, plus `/idp-status` at any point. `/idp-establish` is the only one that works at the level of a project rather than a feature: it takes an architecture the Product Owner already wrote, proves it can carry the product, and slices it. Everything after it is unchanged. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
 
 **Signal and signal delivery are different things.** The signal — "the ADR is approved" — is part of the contract and never changes. Delivery changes as the platform matures: a human today, board polling or a webhook later. The check itself lives in one shared **state resolver**, so moving to autonomy replaces the caller, not the logic.
 
@@ -140,6 +147,7 @@ These come from the project constitution and are not negotiable inside this repo
 | 3 | Технический дизайн и планирование | `/idp-design` turns a feature into an ADR, the human approves it, `/idp-planning` produces PBIs |
 | 4 | Development | `/idp-development`: one agent per PBI in parallel, the chain inside each PBI, the documenter, two levels of pull request |
 | 5 | Пилот | The whole process run end to end on the pilot project. Not construction — verification |
+| 6 | Establish project | `/idp-establish`: start a whole project rather than a single feature — verify a supplied architecture, slice it into stages and features, block what nobody has thought through |
 
 Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently with zero issues). The project is done when the full process runs successfully on that pilot.
 
@@ -150,6 +158,8 @@ Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently 
 **Six capabilities have shipped**, all registered on the HUB: Work Tracking Adapter and Profile Resolution (`scripts/board.py`, `scripts/sync_linear_state.py`), State Resolution (`scripts/state.py`), Project Memory (`scripts/memory.py`), Agent Identity, and Platform Installation (`scripts/install.py`) — with 276 tests that never touch the network. The adapter shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
 
 **Milestone 2 is in progress.** Under IDE-80 the design is approved (IDE-68) and three work items are closed — repository structure (IDE-83), the deterministic core (IDE-84), the Linear publishing adapter (IDE-86). Reviewer integration (IDE-85) is in progress. Four remain open: the content validator (IDE-102), the evaluation harness (IDE-88), the Azure DevOps adapter (IDE-87), and skill installation for Codex and Copilot (IDE-101, still a child of IDE-92 but tracked here — there is nothing to install until the first skill exists).
+
+**Milestone 6 — `/idp-establish` — is built** and lives in `skills/establish-project/`: the eight-step machine, the project slot registry, the independent challenge, traversal of end-to-end scenarios, the slicing rule and idempotent publication. Its design is [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase); the milestone closes when the documentation check in [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) has run.
 
 Fifteen archived issues were **cancelled, not delivered.** IDE-6 … IDE-20 were a complete implementation plan for the whole platform, written in one pass before anything had been designed, and rejected in full for that reason. Do not mine them for acceptance criteria: they were authored blind, and their content was rejected along with their timing.
 
@@ -162,12 +172,13 @@ scripts/       board.py (front door) + sync_<board>_state.py (one adapter per tr
                state.py (the resolver), memory.py (the registry), install.py             ✅
 tests/         deterministic tests, none touch the network                                ✅
 docs/          project-state.md (generated)                                               ✅
-templates/     the four artifact templates: feature, adr, pbi, bug                        ✅
-schemas/       frontmatter.schema.json, reviewer.schema.json                            ✅
-lint/          one markdownlint config per artifact type (MD043 required-headings)        ✅
+templates/     five artifact templates: feature, adr, adr.project, pbi, bug         ✅
+schemas/       frontmatter, reviewer, practice, alternatives, challenge              ✅
+lint/          one markdownlint config per artifact structure (MD043)                  ✅
                validate.py in scripts/ enforces them plus the content layer            ✅
-skills/        feature-discovery/, design/ (/idp-design), planning/ (/idp-planning)      ✅
-registry/      slots.json (the 15 coverage slots), providers.json                         ✅
+skills/        feature-discovery/, design/, planning/, establish-project/              ✅
+registry/      slots.json (feature coverage), project_slots.json (project coverage)    ✅
+               providers.json                                                          ✅
 evals/         golden ideas and LLM evaluations
 ```
 
@@ -181,6 +192,7 @@ Skills are developed here and symlinked into `~/.claude/skills/` for local use �
 
 ```bash
 ln -sfn "$(pwd)/skills/feature-discovery" ~/.claude/skills/feature-discovery
+ln -sfn "$(pwd)/skills/establish-project" ~/.claude/skills/establish-project
 ```
 
 Verified after installing: Claude Code lists `feature-discovery` among its skills. Codex and Copilot read skills from their own locations in their own formats; installing there is [IDE-101](https://linear.app/krukov-idea-hub/issue/IDE-101/work-item-ide-92-skill-installation-for-claude-codex-and-copilot), and those formats are to be confirmed on the live tools rather than inferred from documentation.
@@ -201,6 +213,8 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 
 ## Conventions
 
+- **Two JSON Schema validators exist, and neither is complete.** `skills/feature-discovery/reviewer.py` covers the reviewer schema's keywords; `tests/test_artifact_contracts.py` carries a second covering `allOf`, `if`/`then`, `const`, `pattern` and `not`, which the frontmatter schema needs. Merging them is [IDE-102](https://linear.app/krukov-idea-hub/issue/IDE-102/work-item-ide-80-content-validator-for-the-artifact-standard).
+- **Which board entity each artifact becomes** — `epic`, `feature`, `pbi`, `task` — is defined on [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) and nowhere else. On Linear an epic is the **project**, a feature is a top-level issue and a PBI is a sub-issue; on Azure DevOps all four are real work item types. Everything else links there rather than restating it.
 - **Python 3, standard library only.** The local Python is a python.org framework build with no guaranteed third-party packages, and Node lives under nvm where its path is shell-dependent. No `requests`, no `PyYAML`.
 - **HTTPS from Python needs an explicit CA bundle.** The python.org build ships without one, so `urllib` fails with `CERTIFICATE_VERIFY_FAILED` out of the box. Fall back to `/etc/ssl/cert.pem` — never disable verification. See `build_ssl_context()` in `scripts/sync_linear_state.py` for the pattern to copy.
 - **Linear rejects queries above complexity 10000.** Bound every nested connection (`labels(first: 10)`, not `labels`), or the query is refused outright.
@@ -217,3 +231,5 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 - **The content validator is written but not yet wired into publication.** `scripts/validate.py` (IDE-102) checks three layers and reports which one failed: the machine header, the required headings, and the content inside sections — empty mandatory bodies, leftover `TODO`/`N/A`/placeholders, missing `Evidence:` lines, links that resolve nowhere. What is mandatory depends on the card's stage. What is missing is the call site: it does not yet run before Discovery publishes a package, so nothing blocks today.
 
 Closed since the last revision, kept here only so a reader who remembers them stops looking: per-agent keys shipped with IDE-100 — the profile's `agents` map holds one token path per agent, and the claim protocol reads them apart in history. IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `Ready for Design` rather than `Todo` with a `stage:*` label, because swapping a label leaves no history for the claim protocol to read.
+
+- **The clean-session check on the establish documentation has not been run.** [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) requires that a session given only the documentation describes `/idp-establish` correctly without reading the milestone's issues. Until it runs, the documentation is written but unverified.
