@@ -9,7 +9,10 @@ Nothing here shells out to git — every git call goes through three functions,
 and the tests replace them.
 """
 
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from support import ScriptTestCase, board
@@ -249,6 +252,64 @@ class WordBoundaryTests(ScriptTestCase):
         with mock.patch.object(memory, "run_git", fake_run):
             memory.commits_mentioning("/repo", "IDE-93")
         self.assertIn(memory.word_pattern("IDE-93"), seen["args"])
+
+
+class StaleDocumentationTests(ScriptTestCase):
+    """A summary of the code is a claim about the code, and claims rot (IDE-131)."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        (self.repo / "CLAUDE.md").write_text("# summary\n", encoding="utf-8")
+        self.addCleanup(shutil.rmtree, self.repo, True)
+
+    def with_git(self, anchor, behind):
+        def fake_run(args, cwd):
+            if args[:2] == ["log", "HEAD"] and args[-1] == "CLAUDE.md":
+                return 0, anchor, ""
+            if args[1].endswith("..HEAD"):
+                return 0, behind, ""
+            raise AssertionError(args)
+        return mock.patch.object(memory, "run_git", fake_run)
+
+    def test_reports_the_commits_that_landed_after_the_summary_was_written(self):
+        with self.with_git("abc123\0IDE-1: the summary",
+                           "def456\0IDE-2: closed a gap\nfed321\0IDE-3: closed another"):
+            findings = memory.stale_documentation(self.repo)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["document"], "CLAUDE.md")
+        self.assertEqual([e["sha"] for e in findings[0]["behind"]], ["def456", "fed321"])
+        text = memory.describe_stale(findings)
+        self.assertIn("older than the code it describes", text)
+        self.assertIn("IDE-2: closed a gap", text)
+
+    def test_a_summary_newer_than_the_code_says_nothing_at_all(self):
+        # A check that speaks when there is nothing to say is a check that gets
+        # ignored, which is how the drift went unnoticed in the first place.
+        with self.with_git("abc123\0IDE-1: the summary", ""):
+            findings = memory.stale_documentation(self.repo)
+        self.assertEqual(findings, [])
+        self.assertEqual(memory.describe_stale(findings), "")
+
+    def test_a_repository_without_the_document_is_not_a_finding(self):
+        (self.repo / "CLAUDE.md").unlink()
+        with mock.patch.object(memory, "run_git",
+                               side_effect=AssertionError("git must not be run")):
+            self.assertEqual(memory.stale_documentation(self.repo), [])
+
+    def test_it_reads_head_not_the_remote(self):
+        # The point is to notice before the change is pushed. `check_drift` asks
+        # origin/main because it is asking a different question.
+        seen = []
+
+        def fake_run(args, cwd):
+            seen.append(args)
+            return 0, "", ""
+
+        with mock.patch.object(memory, "run_git", fake_run):
+            memory.stale_documentation(self.repo)
+        self.assertTrue(seen)
+        self.assertNotIn("origin/main", [a for args in seen for a in args])
 
 
 class HistoryTests(ScriptTestCase):

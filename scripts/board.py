@@ -560,6 +560,15 @@ def cmd_memory(args):
             findings = memory.check_drift(registry, issues, profile,
                                           do_fetch=not args.no_fetch)
             print(memory.describe_drift(findings))
+            # The same question asked of the documentation: does what is written
+            # down still hold? A warning, never an exit code — most commits under
+            # scripts/ change nothing CLAUDE.md claims, and a check that cried
+            # wolf would be ignored inside a week (IDE-131).
+            for repository in memory.repositories(profile):
+                warning = memory.describe_stale(memory.stale_documentation(repository))
+                if warning:
+                    print("", file=sys.stderr)
+                    print(warning, file=sys.stderr)
             if any(findings[k] for k in ("unbacked", "unregistered",
                                           "unrecorded_removals")):
                 sys.exit(1)

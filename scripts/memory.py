@@ -194,6 +194,89 @@ def repositories(profile):
 # Drift
 # ---------------------------------------------------------------------------
 
+# What each hand-maintained summary claims to describe.
+#
+# A summary of the code is a claim about the code, and this project had one that
+# nothing checked: `CLAUDE.md` is the first thing a fresh session reads, and it
+# spent four commits telling every reader that two gaps were open after they had
+# been closed. Read cold, it sent a session hunting a credential bug that was
+# already fixed. The failure mode is not carelessness — the file drifts by
+# exactly one commit at a time, and no single commit looks like the one that
+# broke it (IDE-131).
+#
+# This is a warning, never a refusal. Most commits under `scripts/` change
+# nothing the summary says, and a check that cried wolf would be deleted inside
+# a week. What it can honestly say is: these landed after you last looked.
+DOCUMENTED_PATHS = {
+    "CLAUDE.md": ("scripts", "skills", "schemas", "templates", "lint", "registry"),
+}
+
+
+def last_commit(repository, paths, ref="HEAD"):
+    """The newest commit touching any of these paths, or None."""
+    code, out, err = run_git(
+        ["log", ref, "-1", "--format=%H%x00%s", "--", *paths], repository)
+    if code != 0:
+        raise MemoryError_(f"git log failed in {repository}: {err or 'unknown reason'}")
+    if not out:
+        return None
+    sha, _, subject = out.partition("\0")
+    return {"sha": sha, "subject": subject}
+
+
+def commits_between(repository, start_sha, paths, ref="HEAD"):
+    """Commits touching these paths after `start_sha`, newest first."""
+    code, out, err = run_git(
+        ["log", f"{start_sha}..{ref}", "--format=%H%x00%s", "--", *paths], repository)
+    if code != 0:
+        raise MemoryError_(f"git log failed in {repository}: {err or 'unknown reason'}")
+    entries = []
+    for line in out.splitlines():
+        sha, _, subject = line.partition("\0")
+        if sha:
+            entries.append({"sha": sha, "subject": subject})
+    return entries
+
+
+def stale_documentation(repository, documented=None, ref="HEAD"):
+    """Which hand-written summaries are older than the code they describe.
+
+    Reports, never edits — the same rule `check_drift` follows, and for the same
+    reason: a detector that repairs the thing it checks can only ever agree with
+    itself. Answered against the local `HEAD`, not the remote, because the point
+    is to notice before the change is pushed rather than after.
+    """
+    findings = []
+    for document, paths in (documented or DOCUMENTED_PATHS).items():
+        if not (Path(repository) / document).exists():
+            continue
+        anchor = last_commit(repository, [document], ref=ref)
+        if anchor is None:
+            continue
+        behind = commits_between(repository, anchor["sha"], paths, ref=ref)
+        if behind:
+            findings.append({"document": document, "since": anchor, "behind": behind,
+                             "repository": str(repository)})
+    return findings
+
+
+def describe_stale(findings):
+    """The warning, or nothing at all when there is nothing to warn about."""
+    lines = []
+    for finding in findings:
+        count = len(finding["behind"])
+        lines.append(f"{finding['document']} is older than the code it describes: "
+                     f"{count} commit{'s' if count != 1 else ''} since "
+                     f"{finding['since']['sha'][:7]} — {finding['since']['subject']}")
+        for entry in finding["behind"][:10]:
+            lines.append(f"  {entry['sha'][:7]}  {entry['subject']}")
+        if count > 10:
+            lines.append(f"  … and {count - 10} more")
+        lines.append("  A summary nothing checks drifts one commit at a time. Read the "
+                     "claims it makes about these, then correct or re-date it.")
+    return "\n".join(lines)
+
+
 def check_drift(registry, issues, profile, do_fetch=True):
     """Two questions, both answered against the remote.
 
