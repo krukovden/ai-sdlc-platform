@@ -280,3 +280,69 @@ class PublicationTests(Session):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WikiTests(Session):
+    """The wiki is optional, and 'optional' has to be tested, not asserted."""
+
+    def setUp(self):
+        super().setUp()
+        self.reach_publish()
+        self.board = FakePublisher()
+
+    def publish_with(self, wiki=None, supports=True):
+        package = establish.load_package(self.slug)
+        package["wiki"] = wiki
+        establish.save_package(self.slug, package)
+        state = establish.load_state(self.slug)
+        if supports:
+            pages = {}
+            self.board.write_wiki_page = (
+                lambda address, title, content: pages.__setitem__(address, content))
+            self.board.wiki_page_exists = lambda address: address in pages
+            self.pages = pages
+        publish.run(self.board, state, package,
+                    save=lambda: establish.save_package(self.slug, package))
+        establish.save_package(self.slug, package)
+        return establish.load_package(self.slug)["published"]
+
+    def test_without_a_wiki_the_phase_completes_unchanged(self):
+        published = self.publish_with(wiki=None)
+        self.assertIn("no wiki was given", published["wiki"]["skipped"])
+        self.assertEqual(sorted(published), sorted(publish.STEPS))
+
+    def test_a_board_that_cannot_write_a_wiki_does_not_fail_the_phase(self):
+        published = self.publish_with(wiki="https://wiki/toy", supports=False)
+        self.assertIn("unsupported", published["wiki"])
+        self.assertTrue(published["verify"]["checked"])
+
+    def test_both_pages_are_written_and_point_at_the_adr(self):
+        published = self.publish_with(wiki="https://wiki/toy")
+        self.assertEqual(sorted(published["wiki"]["written"]), ["architecture", "flow"])
+        adr_url = published["adr"]["url"]
+        for content in self.pages.values():
+            self.assertIn(adr_url, content)
+
+    def test_the_adr_points_at_both_pages(self):
+        published = self.publish_with(wiki="https://wiki/toy")
+        adr = self.board.documents[published["adr"]["slug"]]["content"]
+        self.assertIn("https://wiki/toy/architecture", adr)
+        self.assertIn("https://wiki/toy/flow", adr)
+
+    def test_the_pages_say_how_it_is_now_and_never_why(self):
+        # The boundary that keeps the wiki and the ADR from diverging.
+        self.publish_with(wiki="https://wiki/toy")
+        architecture = self.pages["https://wiki/toy/architecture"]
+        self.assertIn("сейчас", architecture)
+        self.assertIn("Почему решили именно так", architecture)
+
+    def test_a_wiki_page_that_does_not_resolve_stops_the_run(self):
+        package = establish.load_package(self.slug)
+        package["wiki"] = "https://wiki/toy"
+        establish.save_package(self.slug, package)
+        state = establish.load_state(self.slug)
+        self.board.write_wiki_page = lambda address, title, content: None
+        self.board.wiki_page_exists = lambda address: False
+        with self.assertRaises(publish.PublishError) as caught:
+            publish.run(self.board, state, package)
+        self.assertIn("does not resolve", str(caught.exception))

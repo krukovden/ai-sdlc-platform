@@ -25,6 +25,14 @@ class PublishError(Exception):
     """Raised by a step. The driver records progress before letting it out."""
 
 
+class Unsupported(Exception):
+    """This board cannot do that, and the phase carries on without it.
+
+    Not an error. Azure DevOps has a wiki; Linear does not, and a project whose
+    board has no wiki is not a project that failed to be established.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -97,6 +105,10 @@ def render_project_adr(package):
         "\n".join(criteria) or "- —", "",
         "## Чего этот документ не решает", "",
         material.get("non_goals", ""), "",
+        ("Как система устроена сейчас — на вики, она переписывается при каждом "
+         f"изменении: {wiki_address(package, 'architecture')} и "
+         f"{wiki_address(package, 'flow')}. Этот документ отвечает на «почему "
+         "решили так» и не переписывается.\n" if package.get("wiki") else ""),
         "Решения по отдельным фичам — в их собственных ADR, которые ссылаются сюда "
         "и описывают только дельту.", "",
         "## Чем платим", "",
@@ -213,6 +225,74 @@ def render_schema_file(package, memory_doc):
 # The steps
 # ---------------------------------------------------------------------------
 
+WIKI_PAGES = ("architecture", "flow")
+
+
+def wiki_address(package, page):
+    """Deterministic, so the ADR can link to a page before it is written."""
+    return f"{package['wiki'].rstrip('/')}/{page}"
+
+
+def render_wiki_architecture(package, adr_url):
+    """How it is built, now. Short, and never why.
+
+    The ADR answers why we decided this, then, and is not rewritten. This page
+    answers how it is built, now, and is rewritten on every change. While that
+    boundary holds the two do not diverge; the month this page starts explaining
+    a decision is the month they do.
+    """
+    material = package["material"]
+    lines = [
+        f"# {package['slug']} — архитектура",
+        "",
+        "Живая страница: как система устроена **сейчас**. Почему решили именно так — "
+        f"в проектном ADR: {adr_url}",
+        "",
+        "## Компоненты",
+        "",
+        "| Компонент | За что отвечает |",
+        "| -- | -- |",
+    ]
+    for component in material.get("components", []):
+        lines.append(f"| **{component['name']}** | {component['responsibility']} |")
+    lines += ["", "## Кто с кем говорит", ""]
+    for interaction in material.get("interactions", []):
+        lines.append(f"- {interaction['from']} → **{interaction['to']}** — "
+                     f"{interaction['protocol']}, `{interaction['interface']}`")
+    externals = material.get("external_dependencies", [])
+    lines += ["", "## Внешние системы", ""]
+    if externals:
+        for dependency in externals:
+            lines.append(f"- **{dependency['name']}** — без неё: "
+                         f"{dependency['absent_behaviour']}")
+    else:
+        lines.append("Ни одной: система ни от чего снаружи не зависит.")
+    lines += ["", f"Страница потоков: {wiki_address(package, 'flow')}", ""]
+    return "\n".join(lines)
+
+
+def render_wiki_flow(package, adr_url):
+    """What happens, step by step, for each scenario that was traced."""
+    material = package["material"]
+    lines = [
+        f"# {package['slug']} — потоки",
+        "",
+        "Живая страница: что происходит по шагам. Почему устроено так — "
+        f"в проектном ADR: {adr_url}",
+        "",
+    ]
+    for scenario_id, trace in sorted(package["traces"].items()):
+        title = next((s["title"] for s in material.get("scenarios", [])
+                      if s["id"] == scenario_id), scenario_id)
+        lines += [f"## {title}", ""]
+        for number, hop in enumerate(trace, 1):
+            lines.append(f"{number}. **{hop['from']}** → **{hop['to']}** · "
+                         f"`{hop['interface']}`")
+        lines.append("")
+    lines += [f"Страница архитектуры: {wiki_address(package, 'architecture')}", ""]
+    return "\n".join(lines)
+
+
 def step_adr(board, state, package):
     document = board.attach_document(f"{package['slug']} — project architecture",
                                      render_project_adr(package))
@@ -269,11 +349,36 @@ def step_schema_file(board, state, package, published):
     return {"path": str(target)}
 
 
-def step_wiki(board, state, package):
+def step_wiki(board, state, package, published):
+    """Two short pages, if there is a wiki. The phase does not need one.
+
+    A board without a wiki answers `Unsupported` and the run carries on — the
+    wiki is where living documentation goes when a project has somewhere to put
+    it, not a thing a project must have to exist.
+    """
     if not package.get("wiki"):
         return {"skipped": "no wiki was given; the phase runs without one"}
-    return {"deferred": "the wiki writer is IDE-121; the address is recorded and "
-                        "nothing was written"}
+
+    adr_url = published["adr"].get("url") or f"cid {package['correlation_id']}"
+    pages = {
+        "architecture": render_wiki_architecture(package, adr_url),
+        "flow": render_wiki_flow(package, adr_url),
+    }
+    writer = getattr(board, "write_wiki_page", None)
+    if writer is None:
+        # An adapter that never heard of a wiki is answering "unsupported"; it
+        # should not have to carry a stub to say so.
+        return {"unsupported": "this board has no wiki", "address": package["wiki"]}
+
+    written = {}
+    for name in WIKI_PAGES:
+        address = wiki_address(package, name)
+        try:
+            writer(address, f"{package['slug']} — {name}", pages[name])
+        except Unsupported as reason:
+            return {"unsupported": str(reason), "address": package["wiki"]}
+        written[name] = address
+    return {"written": written}
 
 
 def step_verify(board, state, package, published):
@@ -300,12 +405,17 @@ def step_verify(board, state, package, published):
             written = json.loads(profile.read_text(encoding="utf-8"))
             if written.get("memory_doc") != published["registry"]["slug"]:
                 problems.append("the profile does not point at the registry document")
+    for name, address in (published.get("wiki", {}).get("written") or {}).items():
+        if not board.wiki_page_exists(address):
+            problems.append(f"the wiki page '{name}' at {address} does not resolve")
     if problems:
         raise PublishError("; ".join(problems))
     return {"checked": True}
 
 
-STEPS = ("adr", "registry", "features", "profile", "schema_file", "wiki", "verify")
+# The wiki comes after the ADR so its pages can link to a document that
+# exists; the ADR links back by an address that is derived, not looked up.
+STEPS = ("adr", "registry", "features", "wiki", "profile", "schema_file", "verify")
 
 
 def run(board, state, package, dry_run=False, save=lambda: None):
@@ -319,7 +429,7 @@ def run(board, state, package, dry_run=False, save=lambda: None):
         if dry_run:
             lines.append(f"{name}: would run")
             continue
-        if name in ("profile", "schema_file", "verify"):
+        if name in ("profile", "schema_file", "wiki", "verify"):
             result = globals()[f"step_{name}"](board, state, package, published)
         else:
             result = globals()[f"step_{name}"](board, state, package)
@@ -371,3 +481,10 @@ class LinearPublisher:
     def create_feature(self, title, body):
         return self.board.create_issue(title=title, body=body, kind="feature",
                                        project_id=self.project_id)
+
+    def write_wiki_page(self, address, title, content):
+        raise Unsupported("this board has no wiki; on Linear the role is played by "
+                          "the project's own documents, which are already written")
+
+    def wiki_page_exists(self, address):
+        return False
