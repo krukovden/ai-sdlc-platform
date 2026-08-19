@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support import ScriptTestCase, load_script, REPO_ROOT
+from support import ScriptTestCase, load_script, REPO_ROOT, board
 
 establish = load_script("establish", REPO_ROOT / "skills" / "establish-project")
 publish = load_script("publish", REPO_ROOT / "skills" / "establish-project")
@@ -311,6 +311,35 @@ class WikiTests(Session):
         published = self.publish_with(wiki=None)
         self.assertIn("no wiki was given", published["wiki"]["skipped"])
         self.assertEqual(sorted(published), sorted(publish.STEPS))
+
+    def test_an_adapter_that_refuses_in_words_is_still_unsupported(self):
+        """Linear now says no out loud instead of being silently absent.
+
+        The absence of `write_wiki_page` used to *be* the answer, and every
+        adapter gave it — including the one board that has a wiki. The phase must
+        keep carrying on when a board genuinely cannot, and that path is now
+        exercised against a real adapter's real refusal (IDE-133).
+        """
+        linear = board.load_adapter({"board": "linear"})
+        package = establish.load_package(self.slug)
+        package["wiki"] = "https://wiki/toy"
+        establish.save_package(self.slug, package)
+        self.board.write_wiki_page = linear.Board.write_wiki_page.__get__(self.board)
+
+        state = establish.load_state(self.slug)
+        publish.run(self.board, state, package,
+                    save=lambda: establish.save_package(self.slug, package))
+        published = establish.load_package(self.slug)["published"]
+
+        self.assertIn("no wiki", published["wiki"]["unsupported"])
+        self.assertEqual(sorted(published), sorted(publish.STEPS))
+
+    def test_the_pages_are_actually_written_when_a_wiki_is_given(self):
+        # The criterion IDE-121 did not have: an optional capability needs one
+        # assertion that it happens when the option is taken.
+        self.publish_with(wiki="https://wiki/toy")
+        self.assertEqual(sorted(self.pages),
+                         ["https://wiki/toy/architecture", "https://wiki/toy/flow"])
 
     def test_a_board_that_cannot_write_a_wiki_does_not_fail_the_phase(self):
         published = self.publish_with(wiki="https://wiki/toy", supports=False)

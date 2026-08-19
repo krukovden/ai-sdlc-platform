@@ -435,6 +435,18 @@ class Board:
                 "role is played by the project's own documents, which the platform "
                 "already writes; leave --wiki unset")
 
+    def write_wiki_page(self, address, title, content):
+        """Linear has no wiki, and says so rather than being silently absent.
+
+        The method exists precisely because its absence used to be the answer:
+        `step_wiki` asked with `getattr` and every adapter came back `None`, so
+        "this board has no wiki" was what the board with a wiki said too
+        (IDE-133). An adapter that cannot do this raises; one that can, does.
+        """
+        raise NotImplementedError(
+            "Linear has no wiki. The role is played by the project's own "
+            "documents, which the platform already writes.")
+
     def check_kind(self, kind, parent):
         """Refuse before creating, naming the kind and the board."""
         if kind in KIND_REFUSALS and not (self.profile.get("kinds") or {}).get(kind):

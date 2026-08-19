@@ -344,24 +344,35 @@ def build_ssl_context():
 
 
 def rest_call(url, method="GET", body=None, content_type=None, authorization=None,
-              timeout=DEFAULT_TIMEOUT, parse_json=True, auth_hint=None):
+              timeout=DEFAULT_TIMEOUT, parse_json=True, auth_hint=None,
+              extra_headers=None, soft=False, want_etag=False):
     """One Azure DevOps REST request, with the CLI's exit codes.
 
     `body` is bytes and is sent unchanged — that is the whole point of this door.
     Nothing here inspects or re-encodes it.
+
+    `soft` turns a 404 into `None` instead of exit 3, for the one caller that
+    asks "is this there yet?" — writing a wiki page has to know whether it is
+    creating or updating. `want_etag` returns `(payload, etag)`: Azure DevOps
+    requires the current version of a wiki page in `If-Match` before it will
+    overwrite it, which is what makes the write idempotent rather than a
+    conflict.
     """
     headers = {"Accept": "application/json"}
     if authorization:
         headers["Authorization"] = authorization
     if content_type:
         headers["Content-Type"] = content_type
+    headers.update(extra_headers or {})
 
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    etag = None
     try:
         with urllib.request.urlopen(request, timeout=timeout,
                                     context=build_ssl_context()) as response:
             payload = response.read()
             status = response.status
+            etag = response.headers.get("ETag")
             # Azure DevOps answers an unauthenticated request with 203 and a
             # sign-in page rather than a 401, which reads as success to anything
             # that only checks for an exception.
@@ -378,6 +389,8 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
             fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps said {exc.code} "
                     f"for {method} {url}")
         if exc.code == 404:
+            if soft:
+                return (None, None) if want_etag else None
             fail(3, f"{method} {url}: not found. {said}")
         fail(2, f"{method} {url} failed with {exc.code}: {said}")
     except urllib.error.URLError as exc:
@@ -385,11 +398,12 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
 
     text = payload.decode("utf-8", "replace")
     if not parse_json:
-        return text
+        return (text, etag) if want_etag else text
     if not text.strip():
-        return None
+        return (None, etag) if want_etag else None
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        return (parsed, etag) if want_etag else parsed
     except json.JSONDecodeError:
         # The sign-in page again, this time behind a 200.
         if "<html" in text[:200].casefold():
@@ -784,7 +798,7 @@ class Board:
         return self._authorization_header
 
     def _rest(self, path, method="GET", body=None, content_type=None, query=None,
-              project=None, parse_json=True):
+              project=None, parse_json=True, **kwargs):
         """One REST call, addressed the way the CLI addresses the same thing."""
         parameters = dict(query or {})
         parameters["api-version"] = API_VERSION
@@ -795,7 +809,7 @@ class Board:
                f"?{urllib.parse.urlencode(parameters)}")
         return rest_call(url, method=method, body=body, content_type=content_type,
                          authorization=self._authorization(),
-                         auth_hint=self.auth_hint, parse_json=parse_json)
+                         auth_hint=self.auth_hint, parse_json=parse_json, **kwargs)
 
     def work_item_type(self, kind):
         configured = dict(DEFAULT_WORK_ITEM_TYPES)
@@ -1301,6 +1315,49 @@ class Board:
         return {"title": title, "content": content,
                 "url": f"{self.organization}/_apis/wit/attachments/{slug}"}
 
+    # -- the wiki, which this board has and Linear does not -----------------
+
+    def verify_wiki(self, address):
+        """Prove the wiki exists before a profile naming it is written.
+
+        Same rule as everything else in `board.py init`: a profile that was never
+        checked is a file that lies, and it lies at the least convenient moment.
+        """
+        identifier, _ = _wiki_parts(address)
+        found = self._rest(f"wiki/wikis/{urllib.parse.quote(identifier)}", soft=True)
+        if not found:
+            fail(6, f"no wiki named {identifier!r} in project "
+                    f"{self._project()!r}. `az devops wiki list` shows what there is.")
+        return {"identifier": found.get("name") or identifier,
+                "url": found.get("remoteUrl") or found.get("url")}
+
+    def write_wiki_page(self, address, title, content):
+        """Create or overwrite one wiki page. Idempotent, which needs the ETag.
+
+        **This is what IDE-121 was accepted without.** `step_wiki` asked the
+        board for `write_wiki_page` and no adapter had one, so `getattr` returned
+        `None` every time and the phase quietly reported "this board has no wiki"
+        — on the one board that has one. Every acceptance criterion on that card
+        passed against a world where no page could ever be written, because none
+        of them required a page to exist.
+
+        Azure DevOps refuses to overwrite a page without the current version in
+        `If-Match`, so a write is a read then a write: absent means create,
+        present means replace at the version we just read.
+        """
+        identifier, path = _wiki_parts(address, title)
+        wiki = urllib.parse.quote(identifier)
+        existing, etag = self._rest(f"wiki/wikis/{wiki}/pages", query={"path": path},
+                                    soft=True, want_etag=True)
+        headers = {"If-Match": etag} if existing and etag else {}
+        page = self._rest(
+            f"wiki/wikis/{wiki}/pages", method="PUT", query={"path": path},
+            body=json.dumps({"content": content}).encode("utf-8"),
+            content_type="application/json", extra_headers=headers) or {}
+        return {"address": address, "path": path,
+                "created": existing is None,
+                "url": page.get("remoteUrl") or page.get("url")}
+
     # -- phase transitions --------------------------------------------------
 
     def phase_states(self):
@@ -1531,6 +1588,31 @@ def _header_route(body):
     """`route:` out of the same header. Which phases this card passes through."""
     match = re.search(r'"?\broute"?\s*:\s*"?([A-Za-z-]+)"?', body or "")
     return match.group(1).casefold() if match else None
+
+
+def _wiki_parts(address, title=None):
+    """Split a wiki address into the wiki and the page path inside it.
+
+    Accepts what the profile carries — `Contoso.wiki/Projects/Intake` — and what
+    a person pastes, a full `_wiki/wikis/...` URL. The page path is what Azure
+    DevOps addresses a page by; it always starts with `/`.
+    """
+    raw = str(address or "").strip().rstrip("/")
+    if not raw:
+        fail(3, "a wiki page needs an address; none was given")
+
+    marker = "/_wiki/wikis/"
+    if marker in raw:
+        raw = raw.split(marker, 1)[1]
+    elif raw.startswith("http://") or raw.startswith("https://"):
+        raw = raw.split("/")[-1]
+
+    identifier, _, path = raw.partition("/")
+    if not path:
+        path = str(title or "").strip()
+    if not path:
+        fail(3, f"the wiki address {address!r} names a wiki but no page")
+    return identifier, "/" + path.strip("/")
 
 
 def attachment_name(title):

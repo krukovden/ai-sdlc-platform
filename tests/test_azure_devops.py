@@ -58,6 +58,8 @@ class FakeAz:
         self.next_id = next_id
         self.attachment_url = "https://dev.azure.com/contoso/_apis/wit/attachments/att-1"
         self.access_token = "bearer-from-az"
+        self.wikis = {"Contoso.wiki"}
+        self.pages = {}
 
     # -- what a test asks it afterwards -------------------------------------
 
@@ -159,12 +161,16 @@ class FakeAz:
         raise AssertionError(f"unexpected az call: {args!r}")
 
     def rest(self, url, method="GET", body=None, content_type=None,
-             authorization=None, timeout=None, parse_json=True, auth_hint=None):
+             authorization=None, timeout=None, parse_json=True, auth_hint=None,
+             extra_headers=None, soft=False, want_etag=False):
         """The REST door, addressed as `rest_call` is addressed."""
+        kwargs = {"soft": soft, "want_etag": want_etag,
+                  "extra_headers": extra_headers or {}}
         self.rest_calls.append({"url": url, "method": method, "body": body,
                                 "content_type": content_type,
                                 "authorization": authorization,
-                                "auth_hint": auth_hint})
+                                "auth_hint": auth_hint,
+                                "headers": extra_headers or {}})
         path = url.split("/_apis/", 1)[1] if "/_apis/" in url else url
         if path.startswith("wit/attachments"):
             if method == "POST":
@@ -172,7 +178,27 @@ class FakeAz:
             return "downloaded markdown"
         if path.startswith("wit/workitems"):
             return self.patch_work_item(path, body)
+        if path.startswith("wiki/wikis"):
+            return self.wiki(path, method, body, kwargs)
         raise AssertionError(f"unexpected REST call: {method} {url}")
+
+    def wiki(self, path, method, body, kwargs):
+        """A small in-memory wiki: pages by path, each with a version."""
+        if "/pages" not in path:
+            name = path.split("/")[-1].split("?")[0]
+            return {"name": name, "remoteUrl": f"https://wiki/{name}"} \
+                if name in self.wikis else None
+        page_path = _query_of(path).get("path")
+        known = self.pages.get(page_path)
+        if method == "GET":
+            if known is None:
+                return (None, None) if kwargs.get("want_etag") else None
+            return (known, known["etag"]) if kwargs.get("want_etag") else known
+        content = json.loads(body.decode("utf-8"))["content"]
+        self.pages[page_path] = {"path": page_path, "content": content,
+                                 "etag": f"v{len(self.pages) + 1}",
+                                 "remoteUrl": f"https://wiki/page{page_path}"}
+        return self.pages[page_path]
 
     def patch_work_item(self, path, body):
         """Apply a JSON patch the way the service does, so a test sees the result.
@@ -260,6 +286,11 @@ def stub(fake):
     with mock.patch.object(azure, "run_az", fake), \
          mock.patch.object(azure, "rest_call", fake.rest):
         yield fake
+
+
+def _query_of(path):
+    from urllib.parse import parse_qs, urlparse
+    return {k: v[0] for k, v in parse_qs(urlparse(path).query).items()}
 
 
 def merge_tags(existing, incoming):
@@ -1051,6 +1082,7 @@ class RestTransportTests(ScriptTestCase):
         class Response:
             def __init__(self):
                 self.status = status
+                self.headers = {"ETag": "etag-1"}
 
             def read(self):
                 return payload
@@ -1138,6 +1170,74 @@ class RestTransportTests(ScriptTestCase):
         context = azure.build_ssl_context()
         self.assertTrue(context.verify_mode)
         self.assertTrue(context.check_hostname)
+
+
+class WikiTests(ScriptTestCase):
+    """A page is written, which is the criterion IDE-121 never had.
+
+    Its three criteria all passed against a world where no adapter could write:
+    "with no wiki address the phase completes", "an adapter that cannot write
+    returns unsupported", "both pages link back to the ADR". Nothing required a
+    page to exist anywhere, so a feature named *wiki writer* shipped with no
+    writer (IDE-133). An optional capability needs one criterion asserting the
+    capability happens when the option is taken.
+    """
+
+    def board(self, fake=None):
+        return azure.Board("pat-secret", dict(PROFILE, wiki="Contoso.wiki")), \
+            (fake or FakeAz())
+
+    def test_a_page_is_created_where_the_address_says(self):
+        handle, fake = self.board()
+        with stub(fake):
+            result = handle.write_wiki_page("Contoso.wiki/Projects/Intake",
+                                            "Intake", "# Architecture\n")
+        self.assertTrue(result["created"])
+        self.assertEqual(fake.pages["/Projects/Intake"]["content"], "# Architecture\n")
+
+    def test_writing_the_same_page_twice_updates_it_rather_than_failing(self):
+        # Idempotent publication is the whole contract of this phase, and Azure
+        # DevOps refuses an overwrite without the current version in `If-Match`.
+        handle, fake = self.board()
+        with stub(fake):
+            handle.write_wiki_page("Contoso.wiki/Flow", "Flow", "first\n")
+            second = handle.write_wiki_page("Contoso.wiki/Flow", "Flow", "second\n")
+
+        self.assertFalse(second["created"])
+        self.assertEqual(fake.pages["/Flow"]["content"], "second\n")
+        put = [c for c in fake.rest_calls if c["method"] == "PUT"][-1]
+        self.assertIn("If-Match", put["headers"])
+
+    def test_the_first_write_sends_no_version_because_there_is_none(self):
+        handle, fake = self.board()
+        with stub(fake):
+            handle.write_wiki_page("Contoso.wiki/New", "New", "x")
+        put = [c for c in fake.rest_calls if c["method"] == "PUT"][0]
+        self.assertEqual(put["headers"], {})
+
+    def test_a_full_url_and_a_bare_address_mean_the_same_page(self):
+        self.assertEqual(
+            azure._wiki_parts("https://dev.azure.com/c/p/_wiki/wikis/Contoso.wiki/A/B"),
+            ("Contoso.wiki", "/A/B"))
+        self.assertEqual(azure._wiki_parts("Contoso.wiki/A/B"), ("Contoso.wiki", "/A/B"))
+
+    def test_an_address_naming_no_page_falls_back_to_the_title(self):
+        self.assertEqual(azure._wiki_parts("Contoso.wiki", "Architecture"),
+                         ("Contoso.wiki", "/Architecture"))
+
+    def test_a_wiki_the_project_does_not_have_is_refused_before_the_profile(self):
+        handle, fake = self.board()
+        with stub(fake):
+            message = self.assert_exits(6, handle.verify_wiki, "Nope.wiki/Page")
+        self.assertIn("Nope.wiki", message)
+
+    def test_every_adapter_answers_the_question_one_way_or_the_other(self):
+        """The absence of the method used to *be* the answer, on every board."""
+        linear = board.load_adapter({"board": "linear"})
+        self.assertTrue(hasattr(linear.Board, "write_wiki_page"))
+        self.assertTrue(hasattr(azure.Board, "write_wiki_page"))
+        self.assertTrue(hasattr(linear.Board, "verify_wiki"))
+        self.assertTrue(hasattr(azure.Board, "verify_wiki"))
 
 
 class SecretTests(ScriptTestCase):

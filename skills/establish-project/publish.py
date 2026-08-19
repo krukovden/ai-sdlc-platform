@@ -406,8 +406,11 @@ def step_wiki(board, state, package, published):
     }
     writer = getattr(board, "write_wiki_page", None)
     if writer is None:
-        # An adapter that never heard of a wiki is answering "unsupported"; it
-        # should not have to carry a stub to say so.
+        # Kept as a floor for an adapter written before this contract existed —
+        # but it is no longer how a board *says* it has no wiki. It was, and
+        # that is exactly how a "wiki writer" shipped with no writer behind it:
+        # every adapter answered `None` here, including the one board that has a
+        # wiki, and no acceptance criterion required a page to exist (IDE-133).
         return {"unsupported": "this board has no wiki", "address": package["wiki"]}
 
     written = {}
@@ -415,7 +418,7 @@ def step_wiki(board, state, package, published):
         address = wiki_address(package, name)
         try:
             writer(address, f"{package['slug']} — {name}", pages[name])
-        except Unsupported as reason:
+        except (Unsupported, NotImplementedError) as reason:
             return {"unsupported": str(reason), "address": package["wiki"]}
         written[name] = address
     return {"written": written}
