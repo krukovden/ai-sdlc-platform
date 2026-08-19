@@ -259,5 +259,69 @@ class MachineTests(SessionTestCase):
                            "--value-file", self.write("v.md", "x")])
 
 
+class RepositoryArrivesLaterTests(ScriptTestCase):
+    """A project in design has an epic and no code (IDE-141).
+
+    That is the state this phase exists to move a project out of, and it was the
+    one state in which the phase refused to start. The address is checked at
+    `init` and used only at `publish`; nothing between them touches it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name)
+        for name, value in (("HOME", home), ("SESSIONS", home / "sessions"),
+                            ("CURRENT", home / "current")):
+            original = getattr(establish, name)
+            setattr(establish, name, value)
+            self.addCleanup(setattr, establish, name, original)
+        self.home = home
+        self.architecture = home / "a.md"
+        self.architecture.write_text("# system\n\nIt does a thing.\n", encoding="utf-8")
+
+    def run_cli(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            establish.main(list(argv))
+        return out.getvalue()
+
+    def test_init_runs_with_no_repository_at_all(self):
+        out = self.run_cli(["init", "--architecture-file", str(self.architecture),
+                            "--epic", "EPIC-1"])
+        self.assertIn("none yet", out)
+        state = establish.load_state(establish.current_slug())
+        self.assertEqual(state["repository"]["kind"], "none")
+
+    def test_the_address_can_be_named_once_the_repository_exists(self):
+        self.run_cli(["init", "--architecture-file", str(self.architecture),
+                      "--epic", "EPIC-1"])
+        repo = self.home / "repo"
+        (repo / ".git").mkdir(parents=True)
+
+        self.run_cli(["repository", str(repo)])
+        state = establish.load_state(establish.current_slug())
+        self.assertEqual(state["repository"]["kind"], "local")
+        self.assertEqual(state["repository"]["address"], str(repo.resolve()))
+
+    def test_asking_without_an_address_reports_what_is_recorded(self):
+        self.run_cli(["init", "--architecture-file", str(self.architecture),
+                      "--epic", "EPIC-1"])
+        self.assertIn("none yet", self.run_cli(["repository"]))
+
+    def test_an_address_that_is_not_a_repository_is_still_refused(self):
+        self.run_cli(["init", "--architecture-file", str(self.architecture),
+                      "--epic", "EPIC-1"])
+        self.assert_exits(6, self.run_cli, ["repository", str(self.home / "nope")])
+
+    def test_publication_is_where_the_absence_is_refused(self):
+        # Named, and with the command that fixes it — not a stack trace.
+        publish = load_script("publish", REPO_ROOT / "skills" / "establish-project")
+        state = {"repository": {"kind": "none", "address": None}}
+        with self.assertRaises(publish.PublishError) as caught:
+            publish.step_profile(None, state, {}, {})
+        self.assertIn("establish.py repository", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -53,6 +53,7 @@ class FakePublisher:
         self.created = []
         self.break_on = None
         self.counter = 0
+        self.epic_description = None
 
     def _maybe_break(self, what):
         if self.break_on == what:
@@ -281,6 +282,58 @@ class PublicationTests(Session):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EpicDescriptionTests(Session):
+    """The epic's own card, which is the first thing anyone opens (IDE-142).
+
+    Publication hung two attachments on it and left the description blank. On
+    Azure DevOps the description *is* the card and the attachments are a list of
+    file names below it, so a blank epic made the whole tree look unowned.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.reach_publish()
+        self.board = FakePublisher()
+
+    def describe(self):
+        self.board.describe_epic = (
+            lambda text: setattr(self.board, "epic_description", text))
+        package = establish.load_package(self.slug)
+        state = establish.load_state(self.slug)
+        publish.run(self.board, state, package,
+                    save=lambda: establish.save_package(self.slug, package))
+        establish.save_package(self.slug, package)
+        return self.board.epic_description
+
+    def test_the_description_says_what_the_system_is(self):
+        text = self.describe()
+        self.assertTrue(text)
+        self.assertIn(establish.load_package(self.slug)["material"]["system"][:20], text)
+
+    def test_it_names_what_is_in_scope_and_what_is_not(self):
+        text = self.describe()
+        self.assertIn(WORDS.phrase("label-in-scope"), text)
+        self.assertIn(WORDS.phrase("label-out-of-scope"), text)
+
+    def test_it_points_at_the_documentation_rather_than_repeating_it(self):
+        text = self.describe()
+        self.assertIn(WORDS.phrase("label-documentation"), text)
+        self.assertIn("https://board/doc-1", text)
+        # Six sentences, not the ADR again.
+        self.assertLess(len(text.splitlines()), 30)
+
+    def test_a_board_whose_epic_has_no_description_is_not_a_failure(self):
+        package = establish.load_package(self.slug)
+        state = establish.load_state(self.slug)
+        publish.run(self.board, state, package,
+                    save=lambda: establish.save_package(self.slug, package))
+        establish.save_package(self.slug, package)
+        published = establish.load_package(self.slug)["published"]
+
+        self.assertIn("unsupported", published["epic"])
+        self.assertEqual(sorted(published), sorted(publish.STEPS))
 
 
 class WikiTests(Session):

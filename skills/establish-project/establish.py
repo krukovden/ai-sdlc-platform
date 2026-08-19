@@ -247,10 +247,20 @@ def check_epic(board, epic):
 def check_repository(repository):
     """A local checkout must exist and be a repository; a remote must parse.
 
+    `None` is a legitimate answer, and the common one on day one: a project in
+    design has an epic and an architecture and no code yet, which is exactly the
+    state this phase exists to move it out of. The address is needed at
+    publication, not before — nothing between `init` and `publish` touches it
+    (IDE-141).
+
     Deliberately not proven reachable here: proving it means a network call,
     and a session that cannot start offline is a session that cannot start on
     a train. Publication proves it, and publication is where it matters.
     """
+    if not repository:
+        return {"kind": "none", "address": None,
+                "verified": "not given yet; publication will ask for it"}
+
     parsed = urlparse(repository)
     if parsed.scheme in ("http", "https", "ssh", "git"):
         if not parsed.netloc:
@@ -782,7 +792,7 @@ def cmd_init(args):
         "order": order,
         "dismissed": {},
     }
-    package = new_package(slug, cid, args.epic, repository["address"], args.wiki,
+    package = new_package(slug, cid, args.epic, repository["address"] or "", args.wiki,
                           content_hash({"architecture": text}), text,
                           language=args.language)
     package["provenance"]["registry_version"] = registry["registry_version"]
@@ -799,10 +809,36 @@ def cmd_init(args):
     print(f"session:     {slug}")
     print(f"correlation: {cid}")
     print(f"epic:        {args.epic}")
-    print(f"repository:  {repository['address']} ({repository['verified']})")
+    print(f"repository:  {repository['address'] or '— none yet'} "
+          f"({repository['verified']})")
     print(f"wiki:        {args.wiki or '— none; the phase runs without one'}")
     print(f"language:    {package['language']}")
     print(f"slots:       {len(order)} in registry {registry['registry_version']}")
+
+
+def cmd_repository(args):
+    """Name the repository once it exists, or say where it is now.
+
+    The address arrives hours or days after the epic does, and until IDE-141 the
+    phase that establishes a project was the one thing that could not run while
+    a project was being established.
+    """
+    slug = resolve_slug(args)
+    state = load_state(slug)
+    package = load_package(slug)
+
+    if not args.address:
+        current = state["repository"]
+        print(f"{current['address'] or '— none yet'} ({current['verified']})")
+        return
+
+    state["repository"] = check_repository(args.address)
+    package["repository"] = state["repository"]["address"]
+    save_state(state)
+    save_package(slug, package)
+    journal(slug, {"event": "repository", "address": state["repository"]["address"]})
+    print(f"repository:  {state['repository']['address']} "
+          f"({state['repository']['verified']})")
 
 
 def cmd_status(args):
@@ -1327,7 +1363,9 @@ def build_parser():
     p = sub.add_parser("init", help="start a session against an architecture")
     p.add_argument("--architecture-file", required=True)
     p.add_argument("--epic", required=True, help="address of the epic the human created")
-    p.add_argument("--repository", required=True)
+    p.add_argument("--repository",
+                   help="where the code will live. Optional: a project in design "
+                        "has no repository yet, and publication is what needs one")
     p.add_argument("--wiki", help="address of the wiki, if this project has one")
     p.add_argument("--language",
                    help="what this project's artifacts are written in; a property of "
@@ -1336,6 +1374,12 @@ def build_parser():
     p.add_argument("--registry", help="override the project slot registry")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("repository",
+                       help="name the repository once it exists, or show it")
+    p.add_argument("address", nargs="?")
+    p.add_argument("--slug")
+    p.set_defaults(func=cmd_repository)
 
     p = sub.add_parser("status", help="where this session is")
     p.add_argument("--slug")

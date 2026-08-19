@@ -512,6 +512,30 @@
     "history-preamble": {
       "en": "Appended when a PBI merges into the feature branch. Appended only: this document answers \"how it came to be this way\", not \"how it should look now\".",
       "ru": "Дописывается при мерже PBI в ветку фичи. Только дописывается: документ отвечает на вопрос «как это стало таким», а не «как это должно выглядеть сейчас»."
+    },
+    "label-in-scope": {
+      "en": "**In scope**",
+      "ru": "**В работе**"
+    },
+    "label-out-of-scope": {
+      "en": "**Out of scope**",
+      "ru": "**Вне работы**"
+    },
+    "label-documentation": {
+      "en": "**Where the documentation lives**",
+      "ru": "**Где лежит документация**"
+    },
+    "epic-open-stage": {
+      "en": "Stage {stage} is open, with {features} features on it; {stages} stages in all.",
+      "ru": "Открыт этап {stage}, в нём {features} фич; всего этапов {stages}."
+    },
+    "epic-adr-is": {
+      "en": "The project ADR — why it is built this way: {adr}",
+      "ru": "Проектный ADR — почему устроено так: {adr}"
+    },
+    "epic-wiki-is": {
+      "en": "The wiki — how it is built now: {address}",
+      "ru": "Вики — как это устроено сейчас: {address}"
     }
   },
   "candidate_artifacts": {

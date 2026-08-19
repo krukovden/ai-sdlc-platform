@@ -175,6 +175,52 @@ def render_registry(package):
     ])
 
 
+def render_epic_description(package, published):
+    """Six sentences on the epic itself, which is the first thing anyone reads.
+
+    Publication used to hang two Markdown attachments on the epic and leave the
+    card blank. On Azure DevOps the description *is* the card — the attachments
+    are a list of file names under it — so everyone who opens the backlog opened
+    a blank epic, and a blank epic makes the whole tree look unowned (IDE-142).
+
+    Nothing new is asked of anybody: this is the `system`, `boundaries` and
+    `non_goals` the phase already collected, rendered short.
+    """
+    words = load_sections()
+    language = package.get("language")
+    material = package["material"]
+    stages = package.get("stages", [])
+    features = package.get("features", [])
+
+    lines = [material.get("system", "").strip(), ""]
+    if material.get("boundaries"):
+        lines += [material["boundaries"].strip(), ""]
+
+    lines += [words.phrase("label-in-scope", language), ""]
+    open_stage = stages[0]["title"] if stages else None
+    lines += [words.phrase("epic-open-stage", language, stage=open_stage,
+                           features=len([f for f in features
+                                         if not stages or f["stage"] == stages[0]["id"]]),
+                           stages=len(stages)), ""]
+
+    if material.get("non_goals"):
+        lines += [words.phrase("label-out-of-scope", language), "",
+                  material["non_goals"].strip(), ""]
+
+    where = []
+    adr = (published.get("adr") or {}).get("url") or (published.get("adr") or {}).get("slug")
+    if adr:
+        where.append(words.phrase("epic-adr-is", language, adr=adr))
+    written = (published.get("wiki") or {}).get("written") or {}
+    if written:
+        where.append(words.phrase("epic-wiki-is", language,
+                                  address=written.get("architecture", "")))
+    if where:
+        lines += [words.phrase("label-documentation", language), ""] + where + [""]
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def feature_cid(package, feature):
     """Identity of one card. What makes re-publication safe."""
     return f"{package['correlation_id']}#{feature['id']}"
@@ -357,6 +403,10 @@ def step_features(board, state, package):
 
 def step_profile(board, state, package, published):
     """The profile, written into the repository the human created."""
+    if state["repository"]["kind"] == "none":
+        raise PublishError(
+            "this session has no repository, and the profile is written into it. "
+            "Create the repository, then: establish.py repository <address>")
     if state["repository"]["kind"] != "local":
         return {"skipped": "the repository is remote; clone it and re-run to write "
                            "the profile into it"}
@@ -381,12 +431,28 @@ def step_profile(board, state, package, published):
 
 
 def step_schema_file(board, state, package, published):
+    if state["repository"]["kind"] == "none":
+        raise PublishError(
+            "this session has no repository, and the root file is written into it. "
+            "Create the repository, then: establish.py repository <address>")
     if state["repository"]["kind"] != "local":
         return {"skipped": "the repository is remote"}
     target = Path(state["repository"]["address"]) / "PROJECT.md"
     target.write_text(render_schema_file(package, published["registry"]["slug"]),
                       encoding="utf-8")
     return {"path": str(target)}
+
+
+def step_epic(board, state, package, published):
+    """The epic's own description. A board that has no such field says so."""
+    describe = getattr(board, "describe_epic", None)
+    if describe is None:
+        return {"unsupported": "this board's epic carries no description"}
+    try:
+        describe(render_epic_description(package, published))
+    except (Unsupported, NotImplementedError) as reason:
+        return {"unsupported": str(reason)}
+    return {"described": package["epic"]}
 
 
 def step_wiki(board, state, package, published):
@@ -458,7 +524,10 @@ def step_verify(board, state, package, published):
 
 # The wiki comes after the ADR so its pages can link to a document that
 # exists; the ADR links back by an address that is derived, not looked up.
-STEPS = ("adr", "registry", "features", "wiki", "profile", "schema_file", "verify")
+# `epic` comes after `wiki`, because the description points at both the ADR and
+# the wiki pages, and can only name what has already been written.
+STEPS = ("adr", "registry", "features", "wiki", "epic", "profile", "schema_file",
+         "verify")
 
 
 def run(board, state, package, dry_run=False, save=lambda: None):
@@ -472,7 +541,7 @@ def run(board, state, package, dry_run=False, save=lambda: None):
         if dry_run:
             lines.append(f"{name}: would run")
             continue
-        if name in ("profile", "schema_file", "wiki", "verify"):
+        if name in ("profile", "schema_file", "wiki", "epic", "verify"):
             result = globals()[f"step_{name}"](board, state, package, published)
         else:
             result = globals()[f"step_{name}"](board, state, package)
@@ -525,9 +594,22 @@ class LinearPublisher:
         return self.board.create_issue(title=title, body=body, kind="feature",
                                        project_id=self.project_id)
 
+    def describe_epic(self, text):
+        """Write the epic's own description, where the epic is a work item.
+
+        On Linear the epic *is* the project, whose overview is a document the
+        Product Owner owns; the platform does not overwrite it.
+        """
+        if (self.profile.get("board") or "linear") == "linear":
+            raise Unsupported("on Linear the epic is the project, and its overview "
+                              "belongs to the Product Owner")
+        return self.board.update_issue(self.project_id, body=text)
+
     def write_wiki_page(self, address, title, content):
-        raise Unsupported("this board has no wiki; on Linear the role is played by "
-                          "the project's own documents, which are already written")
+        writer = getattr(self.board, "write_wiki_page", None)
+        if writer is None:
+            raise Unsupported("this board has no wiki")
+        return writer(address, title, content)
 
     def wiki_page_exists(self, address):
         return False
