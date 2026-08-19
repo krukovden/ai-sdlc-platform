@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-19T15:22:36Z
+**Generated:** 2026-08-19T18:15:30Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 61 live (5 in progress, 38 done) · 15 archived
+**Issues:** 63 live (9 in progress, 38 done) · 15 archived
 
 ## Project documents
 
@@ -67,7 +67,6 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
-| [IDE-126](https://linear.app/krukov-idea-hub/issue/IDE-126/work-item-ide-92-azure-devops-phase-positions-carried-by-tags) | [Work Item · IDE-92] Azure DevOps: phase positions carried by tags | In Development | — | `krukovden/ide-126-work-item-ide-92-azure-devops-phase-positions-carried-by` | child of IDE-92 |
 | [IDE-100](https://linear.app/krukov-idea-hub/issue/IDE-100/work-item-ide-92-a-key-per-agent-identity-in-the-profile) | [Work Item · IDE-92] A key per agent: identity in the profile | Done | — | `krukovden/ide-100-work-item-ide-92-a-key-per-agent-identity-in-the-profile` | child of IDE-92, related IDE-71 |
 | [IDE-125](https://linear.app/krukov-idea-hub/issue/IDE-125/work-item-ide-92-phase-positions-carried-by-tags-where-a-board-has-no) | [Work Item · IDE-92] Phase positions carried by tags where a board has no status | Done | — | `krukovden/ide-125-work-item-ide-92-phase-positions-carried-by-tags-where-a` | child of IDE-92, blocks IDE-126, related IDE-87, related IDE-71 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
@@ -187,10 +186,13 @@ The milestone is not the fix queue for the platform's known debt — only for wh
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-127](https://linear.app/krukov-idea-hub/issue/IDE-127/fit-bugs) | FIT: bugs | Backlog | — | `krukovden/ide-127-fit-bugs` | — |
-| [IDE-128](https://linear.app/krukov-idea-hub/issue/IDE-128/ide-125-is-done-and-its-code-is-not-on-main) | IDE-125 is Done and its code is not on main | Backlog | — | `krukovden/ide-128-ide-125-is-done-and-its-code-is-not-on-main` | child of IDE-127, related IDE-126, related IDE-125 |
-| [IDE-129](https://linear.app/krukov-idea-hub/issue/IDE-129/azure-devops-phase-defaults-are-linear-status-names) | Azure DevOps phase defaults are Linear status names | Backlog | — | `krukovden/ide-129-azure-devops-phase-defaults-are-linear-status-names` | child of IDE-127, related IDE-126 |
-| [IDE-130](https://linear.app/krukov-idea-hub/issue/IDE-130/azure-devops-under-a-pat-the-profile-cannot-say-where-it-is-and-an) | Azure DevOps under a PAT: the profile cannot say where it is, and an expired one gives the wrong advice | Backlog | — | `krukovden/ide-130-azure-devops-under-a-pat-the-profile-cannot-say-where-it-is` | child of IDE-127 |
-| [IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed) | CLAUDE.md Known gaps lists two gaps that are closed | Backlog | — | `krukovden/ide-131-claudemd-known-gaps-lists-two-gaps-that-are-closed` | child of IDE-127, related IDE-111, related IDE-128, related IDE-125 |
+| [IDE-132](https://linear.app/krukov-idea-hub/issue/IDE-132/every-artifact-the-platform-produces-is-russian-only-and-the-validator) | Every artifact the platform produces is Russian-only, and the validator enforces it | Backlog | — | `krukovden/ide-132-every-artifact-the-platform-produces-is-russian-only-and-the` | child of IDE-127, related IDE-111 |
+| [IDE-133](https://linear.app/krukov-idea-hub/issue/IDE-133/the-wiki-writer-writes-nothing-no-adapter-implements-write-wiki-page) | The wiki writer writes nothing: no adapter implements write_wiki_page | Backlog | — | `krukovden/ide-133-the-wiki-writer-writes-nothing-no-adapter-implements` | child of IDE-127, related IDE-121, related IDE-128 |
+| [IDE-126](https://linear.app/krukov-idea-hub/issue/IDE-126/work-item-ide-92-azure-devops-phase-positions-carried-by-tags) | [Work Item · IDE-92] Azure DevOps: phase positions carried by tags | In Development | — | `krukovden/ide-126-work-item-ide-92-azure-devops-phase-positions-carried-by` | child of IDE-92, related IDE-127 |
+| [IDE-128](https://linear.app/krukov-idea-hub/issue/IDE-128/ide-125-is-done-and-its-code-is-not-on-main) | IDE-125 is Done and its code is not on main | In Development | — | `krukovden/ide-128-ide-125-is-done-and-its-code-is-not-on-main` | child of IDE-127, related IDE-71, related IDE-126, related IDE-125 |
+| [IDE-129](https://linear.app/krukov-idea-hub/issue/IDE-129/azure-devops-phase-defaults-are-linear-status-names) | Azure DevOps phase defaults are Linear status names | In Development | — | `krukovden/ide-129-azure-devops-phase-defaults-are-linear-status-names` | child of IDE-127, related IDE-125, related IDE-126 |
+| [IDE-130](https://linear.app/krukov-idea-hub/issue/IDE-130/azure-devops-under-a-pat-the-profile-cannot-say-where-it-is-and-an) | Azure DevOps under a PAT: the profile cannot say where it is, and an expired one gives the wrong advice | In Development | — | `krukovden/ide-130-azure-devops-under-a-pat-the-profile-cannot-say-where-it-is` | child of IDE-127, related IDE-100 |
+| [IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed) | CLAUDE.md Known gaps lists two gaps that are closed | In Development | — | `krukovden/ide-131-claudemd-known-gaps-lists-two-gaps-that-are-closed` | child of IDE-127, related IDE-130, related IDE-111, related IDE-128, related IDE-125 |
 
 ## How to use this file
 
