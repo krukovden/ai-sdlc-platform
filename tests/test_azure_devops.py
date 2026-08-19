@@ -50,6 +50,7 @@ class FakeAz:
     def __init__(self, items=None, next_id=500):
         self.calls = []
         self.tokens = []
+        self.auth_hints = []
         self.files = []          # every --in-file payload, already parsed
         self.items = {str(k): v for k, v in (items or {}).items()}
         self.next_id = next_id
@@ -96,10 +97,12 @@ class FakeAz:
 
     # -- the seam -----------------------------------------------------------
 
-    def __call__(self, args, parse_json=True, token=None, timeout=None, soft=False):
+    def __call__(self, args, parse_json=True, token=None, timeout=None, soft=False,
+                 auth_hint=None):
         args = list(args)
         self.calls.append(args)
         self.tokens.append(token)
+        self.auth_hints.append(auth_hint)
         if "--in-file" in args:
             path = args[args.index("--in-file") + 1]
             with open(path, encoding="utf-8") as handle:
@@ -271,6 +274,54 @@ class ExpiredLoginTests(ScriptTestCase):
              mock.patch.object(azure.subprocess, "run", fake_run):
             message = self.assert_exits(2, azure.run_az, ["devops", "invoke"], soft=True)
         self.assertIn("! az login", message)
+
+    def test_a_rejected_pat_is_not_told_to_run_az_login(self):
+        """`az login` cannot renew a personal access token (IDE-130).
+
+        The field case is an organisation this machine has no Entra account in
+        at all: the sign-in the hint offers to repair does not exist, and the
+        credential that was actually rejected is a file the profile names.
+        """
+        profile = dict(PROFILE, token_path="~/.hanwha/ado-pat")
+        fake = FakeAz()
+
+        def refuse(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "TF400813: rejected")
+
+        with mock.patch.object(azure.shutil, "which", return_value="/usr/bin/az"), \
+             mock.patch.object(azure.subprocess, "run", refuse):
+            message = self.assert_exits(2, azure.Board("pat-secret", profile).get_issue, "42")
+
+        self.assertIn("personal access token", message)
+        self.assertIn("~/.hanwha/ado-pat", message)
+        self.assertIn("_usersSettings/tokens", message)
+        self.assertNotIn("! az login", message)
+        self.assertNotIn("pat-secret", message)
+
+    def test_a_rejected_sign_in_still_says_az_login(self):
+        # No token: this process really is running under an interactive login,
+        # and renewing it is the thing that fixes the failure.
+        def refuse(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "TF400813: rejected")
+
+        with mock.patch.object(azure.shutil, "which", return_value="/usr/bin/az"), \
+             mock.patch.object(azure.subprocess, "run", refuse):
+            message = self.assert_exits(2, azure.Board(None, PROFILE).get_issue, "42")
+
+        self.assertIn("! az login", message)
+
+    def test_the_hint_names_the_agents_own_token_file(self):
+        # Per-agent keys (IDE-100): the one that expired is the one to replace.
+        profile = dict(PROFILE, agents={"claude": "~/.idp/claude-pat",
+                                        "codex": "~/.idp/codex-pat"})
+        with mock.patch.dict(azure.os.environ, {"IDP_AGENT": "codex"}):
+            hint = azure.Board("pat-secret", profile).auth_hint
+        self.assertIn("~/.idp/codex-pat", hint)
+        self.assertNotIn("~/.idp/claude-pat", hint)
+
+    def test_the_environment_is_named_when_that_is_where_the_token_came_from(self):
+        hint = azure.Board("pat-secret", PROFILE).auth_hint
+        self.assertIn("AZURE_DEVOPS_EXT_PAT", hint)
 
     def test_a_missing_cli_exits_2_and_says_how_to_install_it(self):
         with mock.patch.object(azure.shutil, "which", return_value=None):

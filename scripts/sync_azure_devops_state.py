@@ -8,10 +8,13 @@ calls, and it is defined by `scripts/sync_linear_state.py`; nothing in
 `board.py`, `state.py`, `memory.py` or `publish_linear.py` changes when a
 project moves from Linear to Azure DevOps.
 
-Access is through the `az` CLI under an interactive Entra login, never a raw
-REST call with a hand-held token. **An expired login is exit code 2 with the
-instruction to run `! az login`**, not a generic failure — a person who is
-merely signed out must not be told their board is broken.
+Access is through the `az` CLI, never a raw REST call. It authenticates one of
+two ways and the difference matters to whoever has to fix it: an interactive
+Entra login, or a personal access token the profile points at with `token_path`
+— the case for an organisation this machine has no Entra account in. **Either
+way a rejected credential is exit code 2 with the instruction that actually
+repairs it**, not a generic failure and not `az login` at somebody holding an
+expired PAT, which `az login` cannot renew (IDE-130).
 
     Scope widening, recorded deliberately (IDE-87, gateway Q4)
     ---------------------------------------------------------
@@ -96,6 +99,30 @@ AUTH_HINT = (
     "Azure DevOps rejected the request — the sign-in has most likely expired.\n"
     "Sign in again, then retry:  ! az login"
 )
+
+
+def credential_source(profile):
+    """Where the personal access token this process used came from.
+
+    Named for a human who has to replace it. The precedence is board.py's, and
+    only the last two rungs of it are reproduced — enough to name a file.
+    """
+    agents = (profile or {}).get("agents") or {}
+    name = os.environ.get("IDP_AGENT", "").strip()
+    if name and name in agents:
+        return f"the token file for agent '{name}', {agents[name]}"
+    if (profile or {}).get("token_path"):
+        return f"the token file the profile names, {profile['token_path']}"
+    return "AZURE_DEVOPS_EXT_PAT in the environment"
+
+
+def pat_hint(source, organization):
+    """What to do when the credential that was rejected is a token, not a login."""
+    return ("Azure DevOps rejected the request — this process authenticated with a "
+            "personal access token, which has most likely expired or been revoked.\n"
+            f"It came from {source}.\n"
+            f"`az login` will not repair it. Issue a new token at "
+            f"{organization}/_usersSettings/tokens and replace it there.")
 
 # A request for something that is not there is a malformed request (exit 3),
 # not an unreachable board (exit 2). The distinction matters to the caller:
@@ -252,7 +279,8 @@ def _state_module():
 # Transport: one door to the CLI, so tests have exactly one seam to stub
 # ---------------------------------------------------------------------------
 
-def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=False):
+def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=False,
+           auth_hint=None):
     """Run one `az` command as an argument list and return its parsed output.
 
     Never a shell string: the HTML we send carries newlines and quotes, and a
@@ -261,6 +289,9 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
     A personal access token, when the profile configures one, is handed to the
     child through the environment variable the extension already reads. It
     must never appear on argv, where every `ps` on the machine can read it.
+    `auth_hint` is what a rejected credential should tell the caller to do:
+    the caller knows which credential it handed over, and this function does
+    not.
 
     `soft` suppresses ordinary failures and returns None — for the few calls
     that have a defensible fallback. An expired login is never softened: it is
@@ -286,7 +317,7 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
                 "have been applied; check the work item before retrying a write.")
 
     if proc.returncode != 0:
-        return _classify_failure(args, proc, soft=soft)
+        return _classify_failure(args, proc, soft=soft, auth_hint=auth_hint)
 
     output = (proc.stdout or "").strip()
     if not parse_json or not output:
@@ -299,13 +330,13 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
         fail(2, f"az returned output that is not JSON: {output[:300]}")
 
 
-def _classify_failure(args, proc, soft=False):
+def _classify_failure(args, proc, soft=False, auth_hint=None):
     """Turn a non-zero `az` into the right exit code, or into None when soft."""
     said = (proc.stderr or proc.stdout or "").strip()
     lowered = said.casefold()
 
     if any(marker in lowered for marker in AUTH_MARKERS):
-        fail(2, f"{AUTH_HINT}\n\naz said:\n{said}")
+        fail(2, f"{auth_hint or AUTH_HINT}\n\naz said:\n{said}")
     if soft:
         return None
     if any(marker in lowered for marker in NOT_FOUND_MARKERS):
@@ -519,9 +550,15 @@ class Board:
     def __init__(self, token, profile):
         self.token = token or None
         self.profile = profile or {}
+        # Which credential a rejection is about is settled here, once, while it
+        # is still known. Telling somebody holding an expired PAT to run
+        # `az login` costs them the afternoon it was meant to save.
+        self.auth_hint = None
         self.organization = organization_url(self.profile)
         self.project = self.profile.get("project_id")
         self.team_key = self.profile.get("team_key")
+        if self.token:
+            self.auth_hint = pat_hint(credential_source(self.profile), self.organization)
 
     # -- plumbing -----------------------------------------------------------
 
@@ -539,7 +576,7 @@ class Board:
         return project
 
     def _az(self, args, **kwargs):
-        return run_az(args, token=self.token, **kwargs)
+        return run_az(args, token=self.token, auth_hint=self.auth_hint, **kwargs)
 
     def work_item_type(self, kind):
         configured = dict(DEFAULT_WORK_ITEM_TYPES)

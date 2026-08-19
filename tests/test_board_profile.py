@@ -134,6 +134,35 @@ class ReadTokenTests(ScriptTestCase):
 
         self.assertEqual(token, "from-the-env")
 
+    def test_azure_devops_reads_a_pat_from_the_path_the_profile_names(self):
+        """A PAT is a secret like any other: the profile records where, not what.
+
+        Before IDE-130 the only way in was the environment, which nothing
+        records — and an `az` call without it does not fail, it quietly runs
+        against whatever organisation `az devops configure` defaults to.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_token_file(tmp, 0o600, "pat-from-the-file\n")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                token = board.read_token({"board": "azure-devops",
+                                          "token_path": str(path)})
+        self.assertEqual(token, "pat-from-the-file")
+
+    def test_an_azure_pat_file_gets_the_same_0600_check_as_a_linear_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_token_file(tmp, 0o644)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                message = self.assert_exits(6, board.read_token,
+                                            {"board": "azure-devops",
+                                             "token_path": str(path)})
+        self.assertIn("must be mode 0600", message)
+
+    def test_azure_devops_without_a_pat_anywhere_is_an_interactive_login(self):
+        # Not a failure: it is how `az login` is expressed. Guessing a default
+        # file here would turn every interactive machine into an error.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(board.read_token({"board": "azure-devops"}))
+
     def test_reads_a_0600_token_file_and_strips_whitespace(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.make_token_file(tmp, 0o600)

@@ -15,7 +15,8 @@ The profile lives in .idp/profile.json and is committed. Secrets are not:
 the profile records the *path* to a token, never the token itself.
 
 Usage:
-    board.py init --team IDE --project <id>     create and verify a profile
+    board.py init --team IDE --project <id> [--token-path P]
+                                                create and verify a profile
     board.py profile                            show the resolved profile
     board.py states                             list the statuses this team has
     board.py show IDE-90 [--body]               print one issue
@@ -75,6 +76,15 @@ DEFAULT_BOARD = "linear"
 # this board does not authenticate with a file at all. Azure DevOps signs in
 # interactively with `az login`, so there is no secret for us to hold, and
 # `read_token` returning None is the correct answer rather than a failure.
+# How each board is authenticated: the environment variable its tooling already
+# reads, and the file a profile falls back to when the environment is empty.
+#
+# Azure DevOps has **no default path** and that is not the same as having no
+# path. It signs in two ways — an interactive Entra login, where there is no
+# secret for this process to hold, or a personal access token. Guessing a
+# default file would turn the first case into an error on every machine, so a
+# profile that uses a PAT says where it lives with `token_path`, and the 0600
+# check applies to it exactly as it does to Linear's key (IDE-130).
 CREDENTIALS = {
     "linear": {"env": "LINEAR_API_KEY", "path": DEFAULT_TOKEN_PATH},
     "azure-devops": {"env": "AZURE_DEVOPS_EXT_PAT", "path": None},
@@ -205,9 +215,14 @@ def credentials_for(profile):
 def read_token(profile):
     """The secret this board needs, or None when it does not use one.
 
-    Azure DevOps is the None case: the adapter runs under an interactive
-    `az login`, and there is nothing here to read. Returning None is not a
-    failure and must not be reported as one.
+    Three answers, in this order: the board's environment variable when it
+    carries one, then the token file the profile names, then None.
+
+    None is not a failure and must not be reported as one — it is how an
+    interactive sign-in is expressed. Azure DevOps is the board that has both
+    shapes: a machine with `az login` needs nothing here, while a machine
+    reaching another organisation with a personal access token records the path
+    to it in the profile and gets the same 0600 check as Linear (IDE-130).
     """
     _, credentials = credentials_for(profile)
     variable = credentials["env"] if credentials else None
@@ -349,6 +364,13 @@ def cmd_init(args):
         print(f"  project: {facts['project_name']}")
     if profile.get("token_path"):
         print(f"  token:   {profile['token_path']} (path only, never the secret)")
+    elif os.environ.get((CREDENTIALS.get(profile["board"]) or {}).get("env") or ""):
+        # Recorded nowhere, so the next command run without it fails — and on
+        # Azure DevOps it fails by quietly reaching whatever organisation
+        # `az devops configure` defaults to, which may be another company's.
+        variable = CREDENTIALS[profile["board"]]["env"]
+        print(f"  token:   {variable} from the environment — not recorded in the "
+              f"profile.\n           Pass --token-path so every later run finds it.")
     else:
         print("  token:   none — this board signs in interactively")
     if profile.get("wiki"):
