@@ -318,6 +318,14 @@ def cmd_init(args):
     if args.wiki:
         profile["wiki"] = args.wiki
 
+    if profile.get("phases"):
+        # Verified before writing, like everything else in a profile: a phase
+        # map that cannot be read fails at `init`, not on the first claim.
+        try:
+            state.phase_map(profile, {})
+        except state.PhaseMapError as exc:
+            fail(6, str(exc))
+
     for kind in profile.get("kinds", {}):
         if kind not in KINDS:
             fail(6, f"the profile maps a kind the platform does not know: '{kind}'; "
@@ -452,7 +460,11 @@ def cmd_doc(args):
 
 def cmd_status(args):
     profile, _, board = open_board()
-    answer = state.resolve(board, profile, args.id)
+    try:
+        answer = state.resolve(board, profile, args.id)
+    except state.PhaseMapError as exc:
+        # A phase map that cannot be read is a configuration fault, not a crash.
+        fail(6, str(exc))
     print(state.describe(answer))
     # A card nobody can act on is not an error, but a caller that scripts this
     # needs to tell "waiting on a human" from "run this now" without parsing.

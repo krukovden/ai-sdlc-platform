@@ -84,6 +84,48 @@ def parse_machine_header(text):
     return header
 
 
+# Positions a board cannot express as a status are carried by a tag instead.
+# The namespace is what makes them readable as one thing: everything under
+# `idp:` is a phase position, and two of them on one card is a fault rather
+# than two positions (IDE-125).
+TAG_PREFIX = "idp:"
+
+
+class PhaseMapError(ValueError):
+    """A phase map that cannot be read. Named so a caller can turn it into an
+    exit code instead of a traceback."""
+
+
+def as_marker(value):
+    """One cell of the phase map, in one shape.
+
+    A bare string is a status. That is what every profile written before tags
+    existed says, and it keeps meaning exactly that — the new form is a second
+    option, never a migration.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return {"status": value}
+    if isinstance(value, dict) and len(value) == 1:
+        carrier, name = next(iter(value.items()))
+        if carrier in ("status", "tag") and isinstance(name, str) and name:
+            if carrier == "tag" and not name.startswith(TAG_PREFIX):
+                raise PhaseMapError(
+                    f"phase tag '{name}' must start with '{TAG_PREFIX}': the prefix is "
+                    "how the resolver tells a phase position from a label somebody "
+                    "put on the card for their own reasons")
+            return {carrier: name}
+    raise PhaseMapError(
+        f"a phase position is a status name or {{'status': ...}} or {{'tag': ...}}; "
+        f"got {value!r}")
+
+
+def phase_tags(labels):
+    """The `idp:` labels on a card, in the order the board gave them."""
+    return [label for label in (labels or []) if label.startswith(TAG_PREFIX)]
+
+
 def phase_map(profile, adapter_default):
     """The status names this board uses, per phase and position.
 
@@ -91,26 +133,45 @@ def phase_map(profile, adapter_default):
     of creating nine new ones. A phase whose status is null on that board is
     recorded as a comment instead — see the fallback in IDE-71.
     """
-    configured = profile.get("phases")
-    if not configured:
-        return adapter_default
+    configured = profile.get("phases") or adapter_default
 
     merged = {}
     for phase, positions in configured.items():
-        merged[phase] = {k: v for k, v in positions.items() if v is not None}
+        cells = {}
+        for position, value in positions.items():
+            marker = as_marker(value)
+            if marker is not None:
+                cells[position] = marker
+        merged[phase] = cells
     return merged
 
 
-def locate(status, phases):
-    """Reverse the phase map: which phase and position is this status?"""
-    if not status:
-        return None, None
-    wanted = status.casefold()
-    for position in POSITION_ORDER:
-        for phase, positions in phases.items():
-            name = positions.get(position)
-            if name and name.casefold() == wanted:
-                return phase, position
+def locate(status, phases, tags=()):
+    """Reverse the phase map: which phase and position is this card in?
+
+    **A tag beats a status.** The ordinary case on a board that cannot express
+    a phase is a card sitting in whatever coarse status it started in — which
+    maps to `ready` — while a tag says the work is `active`. Reading the status
+    first would report every claimed card as free, which is the one answer that
+    breaks the claim protocol.
+    """
+    carried = phase_tags(tags)
+    if len(carried) > 1:
+        raise PhaseMapError(
+            f"this card carries {len(carried)} phase tags: {', '.join(sorted(carried))}. "
+            "One card is in one position; pick which, then re-run")
+
+    for source, wanted in (("tag", carried[0] if carried else None),
+                           ("status", status)):
+        if not wanted:
+            continue
+        folded = wanted.casefold()
+        for position in POSITION_ORDER:
+            for phase, positions in phases.items():
+                marker = positions.get(position) or {}
+                name = marker.get(source)
+                if name and name.casefold() == folded:
+                    return phase, position
     return None, None
 
 
@@ -126,7 +187,7 @@ def resolve(board, profile, identifier, phases=None):
         route = DEFAULT_ROUTE
 
     status = issue.get("status")
-    phase, position = locate(status, phases)
+    phase, position = locate(status, phases, issue.get("labels") or ())
 
     answer = {
         "identifier": issue["identifier"],
@@ -174,13 +235,17 @@ def resolve(board, profile, identifier, phases=None):
             return answer
 
         first = ROUTES[route][0]
-        opens = phases.get(first, {}).get("ready")
+        opens = phases.get(first, {}).get("ready") or {}
         answer["waiting_on"] = "human"
         answer["reason"] = (f"status '{status}' is not on any phase of this board's map, "
                             f"so the card has not joined the '{route}' route yet")
-        answer["next"] = (f"move {identifier} to '{opens}'" if opens
-                          else f"the '{first}' phase has no status on this board; "
-                               "record it as a comment instead")
+        if opens.get("status"):
+            answer["next"] = f"move {identifier} to '{opens['status']}'"
+        elif opens.get("tag"):
+            answer["next"] = f"tag {identifier} with '{opens['tag']}'"
+        else:
+            answer["next"] = (f"the '{first}' phase has no status and no tag on this "
+                              "board; record it as a comment instead")
         return answer
 
     if kind != "pbi" and phase not in ROUTES[route]:

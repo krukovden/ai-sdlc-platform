@@ -94,6 +94,24 @@ def fail(code, message):
     sys.exit(code)
 
 
+def _state_module():
+    """The phase-map vocabulary lives with the resolver; borrow it, do not copy.
+
+    Two definitions of what `{"tag": ...}` means is one definition too many,
+    and the one that rots is always the copy.
+    """
+    existing = sys.modules.get("idp_state")
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / "state.py"
+    spec = importlib.util.spec_from_file_location("idp_state", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_state"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
@@ -301,6 +319,73 @@ class Board:
         known = ", ".join(sorted(s["name"] for s in self.team["states"]["nodes"]))
         fail(3, f"no status named '{name}' in team {self.team['key']}. Known: {known}")
 
+    def resolve_label(self, name):
+        """The id of a label, creating it if this team does not have it yet.
+
+        Labels are created through the API on both boards; statuses are not.
+        That asymmetry is the entire reason a phase position can be carried by
+        a tag at all.
+        """
+        wanted = name.strip().casefold()
+        for label in self.team_labels():
+            if label["name"].casefold() == wanted:
+                return label["id"]
+
+        mutation = """
+        mutation Label($input: IssueLabelCreateInput!) {
+          issueLabelCreate(input: $input) { success issueLabel { id name } }
+        }
+        """
+        result = query(self.token, mutation,
+                       {"input": {"teamId": self.team["id"], "name": name}})
+        result = result["issueLabelCreate"]
+        if not result["success"]:
+            fail(3, f"Linear refused to create the label '{name}'")
+        self._labels = None
+        return result["issueLabel"]["id"]
+
+    def team_labels(self):
+        if getattr(self, "_labels", None) is None:
+            q = """
+            query Labels($id: String!) {
+              team(id: $id) { labels(first: 100) { nodes { id name } } }
+            }
+            """
+            self._labels = query(self.token, q,
+                                 {"id": self.team["id"]})["team"]["labels"]["nodes"]
+        return self._labels
+
+    def set_phase_tag(self, identifier, tag):
+        """Put the card in one phase position, in one write.
+
+        Removing the old tag and adding the new one as two writes leaves a
+        window in which the card has no position at all, and a second agent
+        reads that window as an unclaimed card. One mutation, or the claim
+        protocol has a race in it.
+        """
+        state = _state_module()
+        issue = self.get_issue(identifier)
+        keep = [name for name in issue["labels"] if not name.startswith(state.TAG_PREFIX)]
+        wanted = keep + ([tag] if tag else [])
+        label_ids = [self.resolve_label(name) for name in wanted]
+
+        mutation = """
+        mutation Retag($id: String!, $input: IssueUpdateInput!) {
+          issueUpdate(id: $id, input: $input) {
+            success issue { identifier state { name } labels(first: 10) { nodes { name } } }
+          }
+        }
+        """
+        result = query(self.token, mutation,
+                       {"id": issue["id"], "input": {"labelIds": label_ids}})["issueUpdate"]
+        if not result["success"]:
+            fail(3, "Linear refused the label change")
+        return {
+            "identifier": result["issue"]["identifier"],
+            "status": result["issue"]["state"]["name"],
+            "labels": [l["name"] for l in result["issue"]["labels"]["nodes"]],
+        }
+
     def get_issue(self, identifier):
         issue = query(self.token, ISSUE_QUERY, {"id": identifier})["issue"]
         if not issue:
@@ -502,8 +587,44 @@ class Board:
                     slot[position] = name
         return merged
 
+    def phase_marker(self, phase, kind):
+        """What carries this position on this board: a status, or a tag."""
+        return _state_module().as_marker(self.phase_status(phase, kind))
+
+    def position_of(self, issue, phase, kind):
+        """Is the card in this position right now?
+
+        A carried tag decides on its own, and the status is not consulted. The
+        resolver already works this way and the two must not disagree: a card
+        tagged `idp:design-review` while still sitting in `New` is at `next`,
+        and a claim that read the status instead would happily start design on
+        work somebody had already finished.
+        """
+        marker = self.phase_marker(phase, kind)
+        carried = _state_module().phase_tags(issue["labels"])
+        if len(carried) > 1:
+            fail(3, f"{issue['identifier']} carries {len(carried)} phase tags: "
+                    f"{', '.join(sorted(carried))}. One card is in one position; "
+                    "pick which, then re-run. Nothing was changed.")
+        if carried:
+            return marker.get("tag") == carried[0]
+        return bool(marker.get("status")) and \
+            issue["status"].casefold() == marker["status"].casefold()
+
+    def describe_marker(self, marker):
+        """How a position reads in a message. Quoted, so a name with a space
+        does not silently become two words."""
+        if "tag" in marker:
+            return f"tag '{marker['tag']}'"
+        return f"'{marker['status']}'"
+
+    def apply_marker(self, identifier, marker):
+        if "tag" in marker:
+            return self.set_phase_tag(identifier, marker["tag"])
+        return self.update_issue(identifier, status=marker["status"])
+
     def phase_status(self, phase, kind):
-        """Translate an abstract state into this board's status name."""
+        """Translate an abstract state into whatever this board calls it."""
         states_by_phase = self.phase_states()
         if phase not in states_by_phase:
             known = ", ".join(sorted(states_by_phase))
@@ -529,32 +650,37 @@ class Board:
         refuses instead of guessing.
         """
         issue = self.get_issue(identifier)
-        ready = self.phase_status(phase, "ready")
-        active = self.phase_status(phase, "active")
+        ready = self.phase_marker(phase, "ready")
+        active = self.phase_marker(phase, "active")
 
-        if issue["status"].casefold() == active.casefold():
-            print(f"{identifier} is already in '{active}'", file=sys.stderr)
+        if self.position_of(issue, phase, "active"):
+            print(f"{identifier} is already in {self.describe_marker(active)}",
+                  file=sys.stderr)
             return {"identifier": identifier, "status": issue["status"], "changed": False}
 
-        if issue["status"].casefold() != ready.casefold():
-            fail(3, f"{identifier} is in '{issue['status']}', but phase '{phase}' "
-                    f"starts from '{ready}'. Nothing was changed.")
+        if not self.position_of(issue, phase, "ready"):
+            fail(3, f"{identifier} is in '{issue['status']}'"
+                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
+                    + f", but phase '{phase}' starts from "
+                      f"{self.describe_marker(ready)}. Nothing was changed.")
 
-        result = self.update_issue(identifier, status=active)
+        result = self.apply_marker(identifier, active)
         result["changed"] = True
         return result
 
     def finish_phase(self, identifier, phase, kind="next"):
         """Hand the card on: from `active` to whatever comes next."""
         issue = self.get_issue(identifier)
-        active = self.phase_status(phase, "active")
-        target = self.phase_status(phase, kind)
+        active = self.phase_marker(phase, "active")
+        target = self.phase_marker(phase, kind)
 
-        if issue["status"].casefold() != active.casefold():
-            fail(3, f"{identifier} is in '{issue['status']}', but phase '{phase}' "
-                    f"finishes from '{active}'. Nothing was changed.")
+        if not self.position_of(issue, phase, "active"):
+            fail(3, f"{identifier} is in '{issue['status']}'"
+                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
+                    + f", but phase '{phase}' finishes from "
+                      f"{self.describe_marker(active)}. Nothing was changed.")
 
-        result = self.update_issue(identifier, status=target)
+        result = self.apply_marker(identifier, target)
         result["changed"] = True
         return result
 

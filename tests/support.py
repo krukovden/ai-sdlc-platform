@@ -133,6 +133,10 @@ class FakeLinear:
     def __init__(self, issue):
         self.issue = issue
         self.calls = []
+        # Labels a team already has. Anything else is created on demand, which
+        # is the asymmetry that lets a tag carry a phase where a status cannot:
+        # labels are API-creatable, statuses are not.
+        self.labels = [{"id": "lbl-feature", "name": "Feature"}]
 
     @property
     def mutations(self):
@@ -144,15 +148,32 @@ class FakeLinear:
                 return state["name"]
         raise AssertionError(f"unknown state id {state_id}")
 
+    def label_name(self, label_id):
+        for label in self.labels:
+            if label["id"] == label_id:
+                return label["name"]
+        raise AssertionError(f"unknown label id {label_id}")
+
     def __call__(self, token, document, variables=None):
         self.calls.append((document, variables))
+        if "query Labels" in document:
+            return {"team": {"labels": {"nodes": list(self.labels)}}}
+        if "issueLabelCreate" in document:
+            created = {"id": f"lbl-{len(self.labels)}", "name": variables["input"]["name"]}
+            self.labels.append(created)
+            return {"issueLabelCreate": {"success": True, "issueLabel": created}}
         if "issueUpdate" in document:
             new_state = variables["input"].get("stateId")
             if new_state:
                 self.issue["state"] = {"name": self.state_name(new_state), "type": "started"}
+            label_ids = variables["input"].get("labelIds")
+            if label_ids is not None:
+                self.issue["labels"] = {"nodes": [{"name": self.label_name(i)}
+                                                  for i in label_ids]}
             return {"issueUpdate": {"success": True, "issue": {
                 "identifier": self.issue["identifier"],
                 "state": {"name": self.issue["state"]["name"]},
+                "labels": self.issue.get("labels", {"nodes": []}),
             }}}
         if "issueCreate" in document:
             return {"issueCreate": {"success": True, "issue": {
