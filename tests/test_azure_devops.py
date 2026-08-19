@@ -867,3 +867,100 @@ class CredentialRoutingTests(ScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+
+MIXED_PHASES = dict(PROFILE, phases={
+    "design": {"ready": {"status": "New"},
+               "active": {"tag": "idp:in-design"},
+               "next": {"tag": "idp:design-review"}},
+    "planning": {"ready": "New", "active": "Active", "next": "Resolved"},
+})
+
+
+class TagCarriedPhaseTests(ScriptTestCase):
+    """A phase position carried by a tag, which is why this board needs the feature.
+
+    Azure DevOps states belong to the work item type: adding the nine means an
+    inherited process and an administrator. Tags need neither. What is pinned
+    here is our side — the argv, the refusals, and that the correlation id
+    survives a swap. Whether Azure DevOps attributes a `System.Tags` change to
+    an actor in the revision history is AC-6 on IDE-126 and can only be
+    answered against a live organization.
+    """
+
+    def board_with(self, tags="", state="New"):
+        fake = FakeAz(work_item(state=state, tags=tags))
+        handle, _ = make_board(MIXED_PHASES)
+        return handle, fake
+
+    def test_claiming_sets_the_tag_in_one_revision(self):
+        handle, fake = self.board_with()
+        with stub(fake):
+            result = handle.start_phase("42", "design")
+        self.assertIn("idp:in-design", result["labels"])
+        # One write, not two. Two would leave a window in which the work item
+        # has no position and a second agent reads it as unclaimed.
+        self.assertEqual(len(fake.writes), 1)
+        self.assertEqual(fake.fields(fake.writes[0]),
+                         {"System.Tags": "idp:in-design"})
+
+    def test_the_correlation_id_survives_the_swap(self):
+        # Idempotent publication finds work items by this tag. Losing it here
+        # would break a subsystem that has nothing to do with phases.
+        handle, fake = self.board_with(tags="sdlc:cid=fp_abc123; idp:in-design")
+        with stub(fake):
+            result = handle.finish_phase("42", "design")
+        self.assertIn("sdlc:cid=fp_abc123", result["labels"])
+        self.assertIn("idp:design-review", result["labels"])
+        self.assertNotIn("idp:in-design", result["labels"])
+
+    def test_a_tag_decides_the_position_even_when_the_state_says_otherwise(self):
+        # The item never left 'New', which the map calls `ready`, but it carries
+        # the `next` tag. Starting design on it would start work somebody had
+        # already finished.
+        handle, fake = self.board_with(tags="idp:design-review")
+        with stub(fake):
+            self.assert_exits(3, handle.start_phase, "42", "design")
+        self.assertEqual(fake.writes, [])
+
+    def test_two_phase_tags_are_refused_with_both_named_and_nothing_written(self):
+        handle, fake = self.board_with(tags="idp:in-design; idp:design-review")
+        with stub(fake):
+            message = self.assert_exits(3, handle.start_phase, "42", "design")
+        self.assertIn("idp:in-design", message)
+        self.assertIn("idp:design-review", message)
+        self.assertEqual(fake.writes, [])
+
+    def test_an_already_tagged_item_is_a_no_op(self):
+        handle, fake = self.board_with(tags="idp:in-design")
+        with stub(fake):
+            result = handle.start_phase("42", "design")
+        self.assertFalse(result["changed"])
+        self.assertEqual(fake.writes, [])
+
+    def test_a_phase_still_carried_by_states_behaves_exactly_as_before(self):
+        # Mixed maps are the expected shape here: keep New/Active/Resolved where
+        # they exist, tag the positions the process cannot express.
+        handle, fake = self.board_with()
+        with stub(fake):
+            handle.start_phase("42", "planning")
+        self.assertEqual(fake.flag(fake.writes[0], "--state"), "Active")
+        self.assertNotIn("--fields", fake.writes[0])
+
+    def test_a_tag_marker_no_longer_raises_where_a_status_was_assumed(self):
+        # Before IDE-126 this path called .casefold() on a dict: a crash in the
+        # claim protocol rather than a refusal, hit mid-handoff.
+        handle, fake = self.board_with(state="Closed")
+        with stub(fake):
+            message = self.assert_exits(3, handle.start_phase, "42", "design")
+        self.assertIn("starts from 'New'", message)
+
+    def test_the_ready_for_design_tag_is_still_derived_from_a_status(self):
+        # tags_for compares a status name against the design/ready cell, which
+        # may now be a marker. It must read the status out of it, not stringify
+        # the whole dict.
+        handle, _ = make_board(MIXED_PHASES)
+        self.assertIn(azure.TAG_READY_FOR_DESIGN,
+                      handle.tags_for("---\ntype: feature\n---\n", "New", None))

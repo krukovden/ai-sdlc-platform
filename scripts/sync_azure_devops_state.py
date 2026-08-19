@@ -198,6 +198,24 @@ def fail(code, message):
     sys.exit(code)
 
 
+def _state_module():
+    """The phase-map vocabulary lives with the resolver; borrow it, do not copy.
+
+    Two definitions of what `{"tag": ...}` means is one too many, and the copy
+    is always the one that rots. The Linear adapter borrows the same module.
+    """
+    existing = sys.modules.get("idp_state")
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / "state.py"
+    spec = importlib.util.spec_from_file_location("idp_state", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_state"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 # ---------------------------------------------------------------------------
 # Transport: one door to the CLI, so tests have exactly one seam to stub
 # ---------------------------------------------------------------------------
@@ -669,8 +687,9 @@ class Board:
         header_type = _header_type(body)
         if header_type == "feature" or (header_type is None and not parent):
             tags.append(TAG_FEATURE_PACKAGE)
-        if status and status.casefold() == str(
-                self.phase_states().get("design", {}).get("ready") or "").casefold():
+        opens_design = _state_module().as_marker(
+            self.phase_states().get("design", {}).get("ready")) or {}
+        if status and status.casefold() == str(opens_design.get("status") or "").casefold():
             tags.append(TAG_READY_FOR_DESIGN)
         cid = read_cid(body)
         if cid:
@@ -973,8 +992,73 @@ class Board:
                     slot[position] = name
         return merged
 
+    def phase_marker(self, phase, kind):
+        """What carries this position here: a state, or a tag.
+
+        Azure DevOps is where this matters most. Its states belong to the work
+        item type, so adding the nine means an inherited process and an
+        administrator; tags need neither, which is the whole reason a position
+        may be carried by one (IDE-125).
+        """
+        return _state_module().as_marker(self.phase_status(phase, kind))
+
+    def position_of(self, issue, phase, kind):
+        """Is the work item in this position right now?
+
+        A carried tag decides on its own and the state is not consulted, which
+        is what the resolver does. If the two disagreed, a claim would start
+        design on work somebody had already finished.
+        """
+        marker = self.phase_marker(phase, kind)
+        carried = _state_module().phase_tags(issue["labels"])
+        if len(carried) > 1:
+            fail(3, f"{issue['identifier']} carries {len(carried)} phase tags: "
+                    f"{', '.join(sorted(carried))}. One work item is in one position; "
+                    "pick which, then re-run. Nothing was changed.")
+        if carried:
+            return marker.get("tag") == carried[0]
+        return bool(marker.get("status")) and \
+            issue["status"].casefold() == marker["status"].casefold()
+
+    def describe_marker(self, marker):
+        if "tag" in marker:
+            return f"tag '{marker['tag']}'"
+        return f"'{marker['status']}'"
+
+    def apply_marker(self, identifier, marker):
+        if "tag" in marker:
+            return self.set_phase_tag(identifier, marker["tag"])
+        return self.update_issue(identifier, status=marker["status"])
+
+    def set_phase_tag(self, identifier, tag):
+        """Move the work item to one phase position, in one revision.
+
+        `System.Tags` is a single semicolon-separated field, so the swap is a
+        read-modify-write of it — and it must be **one** write. Two would leave
+        a window in which the item has no position and a second agent would read
+        it as unclaimed.
+
+        Everything outside the `idp:` namespace survives untouched. The
+        correlation id lives in this same field and idempotent publication finds
+        work items by it; losing it here would break a different subsystem
+        entirely.
+        """
+        state = _state_module()
+        issue = self.get_issue(identifier)
+        keep = [name for name in issue["labels"] if not name.startswith(state.TAG_PREFIX)]
+        wanted = keep + ([tag] if tag else [])
+
+        work_item_id = str(_as_id(identifier))
+        updated = self._az(["boards", "work-item", "update", "--id", work_item_id,
+                            "--org", self.organization, "-o", "json",
+                            "--fields", f"System.Tags={'; '.join(wanted)}"])
+        fields = (updated or {}).get("fields") or {}
+        return {"identifier": work_item_id,
+                "status": fields.get("System.State"),
+                "labels": _tags_of(fields) or wanted}
+
     def phase_status(self, phase, kind):
-        """Translate an abstract state into this board's status name."""
+        """Translate an abstract state into whatever this board calls it."""
         states_by_phase = self.phase_states()
         if phase not in states_by_phase:
             known = ", ".join(sorted(states_by_phase))
@@ -991,33 +1075,38 @@ class Board:
     def start_phase(self, identifier, phase):
         """Claim the work item for a phase, or refuse and say why."""
         issue = self.get_issue(identifier)
-        ready = self.phase_status(phase, "ready")
-        active = self.phase_status(phase, "active")
+        ready = self.phase_marker(phase, "ready")
+        active = self.phase_marker(phase, "active")
 
-        if issue["status"].casefold() == active.casefold():
-            print(f"{identifier} is already in '{active}'", file=sys.stderr)
+        if self.position_of(issue, phase, "active"):
+            print(f"{identifier} is already in {self.describe_marker(active)}",
+                  file=sys.stderr)
             return {"identifier": issue["identifier"], "status": issue["status"],
                     "changed": False}
 
-        if issue["status"].casefold() != ready.casefold():
-            fail(3, f"{identifier} is in '{issue['status']}', but phase '{phase}' "
-                    f"starts from '{ready}'. Nothing was changed.")
+        if not self.position_of(issue, phase, "ready"):
+            fail(3, f"{identifier} is in '{issue['status']}'"
+                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
+                    + f", but phase '{phase}' starts from "
+                      f"{self.describe_marker(ready)}. Nothing was changed.")
 
-        result = self.update_issue(identifier, status=active)
+        result = self.apply_marker(identifier, active)
         result["changed"] = True
         return result
 
     def finish_phase(self, identifier, phase, kind="next"):
         """Hand the work item on: from `active` to whatever comes next."""
         issue = self.get_issue(identifier)
-        active = self.phase_status(phase, "active")
-        target = self.phase_status(phase, kind)
+        active = self.phase_marker(phase, "active")
+        target = self.phase_marker(phase, kind)
 
-        if issue["status"].casefold() != active.casefold():
-            fail(3, f"{identifier} is in '{issue['status']}', but phase '{phase}' "
-                    f"finishes from '{active}'. Nothing was changed.")
+        if not self.position_of(issue, phase, "active"):
+            fail(3, f"{identifier} is in '{issue['status']}'"
+                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
+                    + f", but phase '{phase}' finishes from "
+                      f"{self.describe_marker(active)}. Nothing was changed.")
 
-        result = self.update_issue(identifier, status=target)
+        result = self.apply_marker(identifier, target)
         result["changed"] = True
         return result
 
