@@ -4,7 +4,7 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-19T13:25:26Z
+**Generated:** 2026-08-19T13:26:44Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
 **Issues:** 55 live (4 in progress, 38 done) · 15 archived
@@ -164,9 +164,9 @@ It precedes the pilot: the pilot verifies the process, this milestone gives the 
 |---|---|---|---|---|---|
 | [IDE-109](https://linear.app/krukov-idea-hub/issue/IDE-109/feature-establish-project) | [Feature] Establish project | Backlog | Feature | `krukovden/ide-109-feature-establish-project` | — |
 | [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) | [Work Item · IDE-109] Documentation: constitution, reference architecture, HUB, CLAUDE.md | In Development | — | `krukovden/ide-122-work-item-ide-109-documentation-constitution-reference` | child of IDE-109, related IDE-110 |
-| [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Done | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-93, related IDE-87 |
-| [IDE-115](https://linear.app/krukov-idea-hub/issue/IDE-115/work-item-ide-109-contract-changes-frontmatter-project-adr-template) | [Work Item · IDE-109] Contract changes: frontmatter, project ADR template, lint, state resolver | Done | — | `krukovden/ide-115-work-item-ide-109-contract-changes-frontmatter-project-adr` | child of IDE-109, blocks IDE-117, related IDE-110 |
-| [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) | [Work Item · IDE-109] Adapter: work-item kinds and creation by kind | Done | — | `krukovden/ide-116-work-item-ide-109-adapter-work-item-kinds-and-creation-by` | child of IDE-109, blocks IDE-120, related IDE-110 |
+| [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Done | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-102, related IDE-93, related IDE-87 |
+| [IDE-115](https://linear.app/krukov-idea-hub/issue/IDE-115/work-item-ide-109-contract-changes-frontmatter-project-adr-template) | [Work Item · IDE-109] Contract changes: frontmatter, project ADR template, lint, state resolver | Done | — | `krukovden/ide-115-work-item-ide-109-contract-changes-frontmatter-project-adr` | child of IDE-109, related IDE-102, blocks IDE-117, related IDE-110 |
+| [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) | [Work Item · IDE-109] Adapter: work-item kinds and creation by kind | Done | — | `krukovden/ide-116-work-item-ide-109-adapter-work-item-kinds-and-creation-by` | child of IDE-109, related IDE-102, blocks IDE-120, related IDE-110 |
 | [IDE-117](https://linear.app/krukov-idea-hub/issue/IDE-117/work-item-ide-109-establish-core-state-machine-project-slot-registry) | [Work Item · IDE-109] Establish core: state machine, project slot registry, intake and coverage | Done | — | `krukovden/ide-117-work-item-ide-109-establish-core-state-machine-project-slot` | child of IDE-109, blocks IDE-118, related IDE-110 |
 | [IDE-118](https://linear.app/krukov-idea-hub/issue/IDE-118/work-item-ide-109-challenge-and-traversal-the-falsifiable-verdict) | [Work Item · IDE-109] Challenge and traversal: the falsifiable verdict | Done | — | `krukovden/ide-118-work-item-ide-109-challenge-and-traversal-the-falsifiable` | child of IDE-109, blocks IDE-119, related IDE-110 |
 | [IDE-119](https://linear.app/krukov-idea-hub/issue/IDE-119/work-item-ide-109-slicing-the-escalation-rule-and-the-per-feature) | [Work Item · IDE-109] Slicing, the escalation rule and the per-feature review | Done | — | `krukovden/ide-119-work-item-ide-109-slicing-the-escalation-rule-and-the-per` | child of IDE-109, blocks IDE-120, related IDE-110 |

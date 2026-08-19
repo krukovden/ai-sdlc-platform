@@ -155,7 +155,9 @@ Deterministically and without the network, like the existing 294 tests:
 
 ## Known limits
 
-The Azure DevOps adapter does not exist yet (IDE-87, Todo). Until it does, `/idp-establish` runs against Linear only. This is stated here rather than left to be discovered.
+**Corrected on 19 August 2026.** This section said the Azure DevOps adapter did not exist and that `/idp-establish` would run against Linear only. That was true of the branch this was written on and false of `main`: [IDE-87](https://linear.app/krukov-idea-hub/issue/IDE-87/work-item-ide-80-azure-devops-publishing-adapter) shipped `scripts/sync_azure_devops_state.py` in the meantime. The same applies to the content validator — [IDE-102](https://linear.app/krukov-idea-hub/issue/IDE-102/work-item-ide-80-content-validator-for-the-artifact-standard) shipped `scripts/validate.py`, so the "two partial validators" noted during implementation is now one.
+
+What remains true is narrower and worth keeping: the publisher's Azure DevOps side is **untried**. `publish.py` speaks a publisher protocol and only its Linear implementation has been exercised; the kind vocabulary (IDE-116) was added to the adapter contract, not to the Azure DevOps adapter, and the wiki writer has no Azure DevOps implementation at all. Running the phase against Azure DevOps is work that has not been done, which is a different claim from the one this section used to make.
 
 ## Rejected along the way
 
