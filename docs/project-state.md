@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-19T21:29:54Z
+**Generated:** 2026-08-19T21:41:03Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 75 live (22 in progress, 38 done) · 15 archived
+**Issues:** 75 live (23 in progress, 38 done) · 15 archived
 
 ## Project documents
 
@@ -186,7 +186,6 @@ The milestone is not the fix queue for the platform's known debt — only for wh
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-127](https://linear.app/krukov-idea-hub/issue/IDE-127/fit-bugs) | FIT: bugs | Backlog | — | `krukovden/ide-127-fit-bugs` | — |
-| [IDE-145](https://linear.app/krukov-idea-hub/issue/IDE-145/the-practice-research-pass-can-never-run-its-schema-is-invalid-for-the) | The practice research pass can never run: its schema is invalid for the configured provider | Backlog | — | `krukovden/ide-145-the-practice-research-pass-can-never-run-its-schema-is` | child of IDE-127, related IDE-69 |
 | [IDE-126](https://linear.app/krukov-idea-hub/issue/IDE-126/work-item-ide-92-azure-devops-phase-positions-carried-by-tags) | [Work Item · IDE-92] Azure DevOps: phase positions carried by tags | In Development | — | `krukovden/ide-126-work-item-ide-92-azure-devops-phase-positions-carried-by` | child of IDE-92, related IDE-127 |
 | [IDE-128](https://linear.app/krukov-idea-hub/issue/IDE-128/ide-125-is-done-and-its-code-is-not-on-main) | IDE-125 is Done and its code is not on main | In Development | — | `krukovden/ide-128-ide-125-is-done-and-its-code-is-not-on-main` | child of IDE-127, related IDE-71, related IDE-126, related IDE-125 |
 | [IDE-129](https://linear.app/krukov-idea-hub/issue/IDE-129/azure-devops-phase-defaults-are-linear-status-names) | Azure DevOps phase defaults are Linear status names | In Development | — | `krukovden/ide-129-azure-devops-phase-defaults-are-linear-status-names` | child of IDE-127, related IDE-125, related IDE-126 |
@@ -205,6 +204,7 @@ The milestone is not the fix queue for the platform's known debt — only for wh
 | [IDE-142](https://linear.app/krukov-idea-hub/issue/IDE-142/nothing-covers-the-epics-own-description-which-is-the-first-thing) | Nothing covers the epic's own description, which is the first thing anyone reads | In Development | — | `krukovden/ide-142-nothing-covers-the-epics-own-description-which-is-the-first` | child of IDE-127 |
 | [IDE-143](https://linear.app/krukov-idea-hub/issue/IDE-143/a-published-card-is-tagged-sdlccidnull-which-breaks-idempotent) | A published card is tagged sdlc:cid=null, which breaks idempotent publication | In Development | — | `krukovden/ide-143-a-published-card-is-tagged-sdlccidnull-which-breaks` | child of IDE-127 |
 | [IDE-144](https://linear.app/krukov-idea-hub/issue/IDE-144/a-pbi-is-tagged-ready-for-design-on-a-route-that-has-no-design-phase) | A PBI is tagged ready-for-design on a route that has no design phase | In Development | — | `krukovden/ide-144-a-pbi-is-tagged-ready-for-design-on-a-route-that-has-no` | child of IDE-127, related IDE-135, related IDE-134 |
+| [IDE-145](https://linear.app/krukov-idea-hub/issue/IDE-145/the-practice-research-pass-can-never-run-its-schema-is-invalid-for-the) | The practice research pass can never run: its schema is invalid for the configured provider | In Development | — | `krukovden/ide-145-the-practice-research-pass-can-never-run-its-schema-is` | child of IDE-127, related IDE-69 |
 
 ## How to use this file
 
