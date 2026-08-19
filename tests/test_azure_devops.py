@@ -14,6 +14,7 @@ live organization, so flag names, JSON shapes and the behaviour of the ADO
 HTML sanitiser are asserted against this stub only.
 """
 
+import base64
 import contextlib
 import io
 import json
@@ -51,10 +52,12 @@ class FakeAz:
         self.calls = []
         self.tokens = []
         self.auth_hints = []
+        self.rest_calls = []
         self.files = []          # every --in-file payload, already parsed
         self.items = {str(k): v for k, v in (items or {}).items()}
         self.next_id = next_id
         self.attachment_url = "https://dev.azure.com/contoso/_apis/wit/attachments/att-1"
+        self.access_token = "bearer-from-az"
 
     # -- what a test asks it afterwards -------------------------------------
 
@@ -138,11 +141,33 @@ class FakeAz:
             return self.run_query(self.flag(args, "--wiql"))
         if args[:2] == ["devops", "invoke"]:
             return self.invoke(args, parse_json)
+        if args[:2] == ["account", "get-access-token"]:
+            return {"accessToken": self.access_token}
         if args[:3] == ["devops", "project", "show"]:
             return {"name": self.flag(args, "--project")}
         if args[:3] == ["devops", "team", "show"]:
             return {"name": self.flag(args, "--team")}
         raise AssertionError(f"unexpected az call: {args!r}")
+
+    def rest(self, url, method="GET", body=None, content_type=None,
+             authorization=None, timeout=None, parse_json=True, auth_hint=None):
+        """The REST door, addressed as `rest_call` is addressed."""
+        self.rest_calls.append({"url": url, "method": method, "body": body,
+                                "content_type": content_type,
+                                "authorization": authorization,
+                                "auth_hint": auth_hint})
+        path = url.split("/_apis/", 1)[1] if "/_apis/" in url else url
+        if path.startswith("wit/attachments"):
+            if method == "POST":
+                return {"id": "att-1", "url": self.attachment_url}
+            return "downloaded markdown"
+        if path.startswith("wit/workitems"):
+            return {"id": 1}
+        raise AssertionError(f"unexpected REST call: {method} {url}")
+
+    def rest_matching(self, method, fragment):
+        return [c for c in self.rest_calls
+                if c["method"] == method and fragment in c["url"]]
 
     def run_query(self, wiql):
         rows = []
@@ -194,7 +219,11 @@ def work_item(identifier="42", title="Feature: offline search", state="New",
 
 @contextlib.contextmanager
 def stub(fake):
-    with mock.patch.object(azure, "run_az", fake):
+    # Both doors, always. `rest_call` reaches the network exactly as `run_az`
+    # reaches the CLI, and a test that stubbed only one would be one refactor
+    # away from talking to a live organization.
+    with mock.patch.object(azure, "run_az", fake), \
+         mock.patch.object(azure, "rest_call", fake.rest):
         yield fake
 
 
@@ -627,12 +656,14 @@ class T9ForAzureDevOps(ScriptTestCase):
         self.assertIn("sdlc:cid=fp_abc123def456", tags)
 
     def test_the_specification_is_attached_as_markdown(self):
+        """IDE-87's criterion, and the one IDE-137 found could not pass as built."""
         fake = self.publish_twice()
-        posts = [c for c in fake.matching("devops", "invoke")
-                 if "attachments" in c and "POST" in c]
+        posts = fake.rest_matching("POST", "wit/attachments")
         self.assertTrue(posts)
-        name = fake.flag(posts[0], "--query-parameters")
-        self.assertTrue(name.endswith(".md"), name)
+        self.assertIn(".md", posts[0]["url"])
+        # Markdown, sent as Markdown. The CLI would have tried to parse it.
+        self.assertTrue(posts[0]["body"].startswith(b"#"))
+        self.assertEqual(posts[0]["content_type"], "application/octet-stream")
 
     def test_the_approval_is_recorded_as_a_discussion_comment(self):
         fake = self.publish_twice()
@@ -727,23 +758,76 @@ class AttachmentTests(ScriptTestCase):
     def test_an_attachment_is_uploaded_and_then_linked(self):
         fake = FakeAz(work_item())
         with stub(fake):
-            url = azure.Board(None, PROFILE).attach_document(
+            document = azure.Board("pat-secret", PROFILE).attach_document(
                 "offline-search — specification", "# spec\n", identifier="42")
 
-        invokes = fake.matching("devops", "invoke")
-        self.assertEqual(fake.flag(invokes[0], "--http-method"), "POST")
-        self.assertEqual(fake.flag(invokes[0], "--resource"), "attachments")
-        self.assertEqual(fake.flag(invokes[1], "--http-method"), "PATCH")
-        self.assertEqual(url, fake.attachment_url)
+        upload, patch = fake.rest_calls
+        self.assertEqual(upload["method"], "POST")
+        self.assertIn("wit/attachments", upload["url"])
+        self.assertEqual(patch["method"], "PATCH")
+        self.assertIn("wit/workitems/42", patch["url"])
+        # `{url, slugId}`, the shape the Linear adapter answers in and the one
+        # `board.py doc` indexes into.
+        self.assertEqual(document["url"], fake.attachment_url)
+        self.assertEqual(document["slugId"], "att-1")
+
+    def test_the_markdown_is_sent_as_bytes_and_never_through_the_cli(self):
+        """The bug this replaced: `az devops invoke` runs json.loads on --in-file.
+
+        Markdown is not JSON, so every upload failed with `Expecting value: line
+        1 column 1` — and attaching Markdown is the only reason this method
+        exists. What is pinned here is that the body reaches the transport
+        unparsed and that no CLI call carries it (IDE-137).
+        """
+        body = "# spec\n\nне JSON, и не должен быть\n"
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat-secret", PROFILE).attach_document("s", body,
+                                                               identifier="42")
+
+        upload = fake.rest_calls[0]
+        self.assertEqual(upload["body"], body.encode("utf-8"))
+        self.assertEqual(upload["content_type"], "application/octet-stream")
+        self.assertIn("fileName=s.md", upload["url"])
+        self.assertFalse([c for c in fake.calls if "--in-file" in c])
 
     def test_the_relation_patch_names_the_file_and_the_title(self):
         fake = FakeAz(work_item())
         with stub(fake):
-            azure.Board(None, PROFILE).attach_document("02 · history", "x",
-                                                       identifier="42")
-        patch = fake.files[-1]
+            azure.Board("pat-secret", PROFILE).attach_document("02 · history", "x",
+                                                               identifier="42")
+        patch = json.loads(fake.rest_calls[-1]["body"].decode("utf-8"))
         self.assertEqual(patch[0]["value"]["rel"], "AttachedFile")
         self.assertEqual(patch[0]["value"]["attributes"]["comment"], "02 · history")
+        self.assertEqual(fake.rest_calls[-1]["content_type"],
+                         "application/json-patch+json")
+
+    def test_the_project_is_quoted_because_a_real_one_has_spaces(self):
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat-secret", PROFILE).attach_document("s", "x",
+                                                               identifier="42")
+        self.assertIn("/Contoso%20Platform/_apis/", fake.rest_calls[0]["url"])
+
+    def test_a_pat_is_basic_auth_with_an_empty_user_name(self):
+        # Azure DevOps's own convention, and the reason a PAT works at all here.
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat-secret", PROFILE).attach_document("s", "x",
+                                                               identifier="42")
+        header = fake.rest_calls[0]["authorization"]
+        self.assertEqual(header,
+                         "Basic " + base64.b64encode(b":pat-secret").decode())
+
+    def test_a_machine_with_no_pat_asks_az_for_a_bearer_token(self):
+        # The interactive case: `az` holds the sign-in and this process does not.
+        fake = FakeAz(work_item())
+        fake.access_token = "bearer-from-az"
+        with stub(fake):
+            azure.Board(None, PROFILE).attach_document("s", "x", identifier="42")
+
+        self.assertEqual(fake.rest_calls[0]["authorization"], "Bearer bearer-from-az")
+        self.assertTrue(fake.matching("account", "get-access-token"))
 
     def test_the_filename_keeps_the_convention_memory_py_uses(self):
         self.assertEqual(azure.attachment_name("02 · history"), "02 · history.md")
@@ -752,10 +836,10 @@ class AttachmentTests(ScriptTestCase):
     def test_a_project_level_document_hangs_from_the_epic(self):
         fake = FakeAz(work_item("10"))
         with stub(fake):
-            azure.Board(None, PROFILE).attach_document("registry", "x",
-                                                       project_id="Contoso Platform")
-        patch = [c for c in fake.matching("devops", "invoke") if "PATCH" in c][0]
-        self.assertIn("id=10", patch)
+            azure.Board("pat-secret", PROFILE).attach_document(
+                "registry", "x", project_id="Contoso Platform")
+        patch = fake.rest_matching("PATCH", "wit/workitems/10")
+        self.assertEqual(len(patch), 1)
 
     def test_a_project_level_document_without_an_epic_is_a_configuration_failure(self):
         profile = {k: v for k, v in PROFILE.items() if k != "epic_id"}
@@ -765,6 +849,7 @@ class AttachmentTests(ScriptTestCase):
                                         "registry", "x", project_id="Contoso Platform")
         self.assertIn("epic_id", message)
         self.assertEqual(fake.calls, [])
+        self.assertEqual(fake.rest_calls, [])
 
     def test_documents_are_listed_from_the_relations_of_the_work_items(self):
         items = work_item("10")
@@ -783,15 +868,128 @@ class AttachmentTests(ScriptTestCase):
     def test_a_document_is_downloaded_by_the_id_in_its_url(self):
         fake = FakeAz(work_item("10"))
         with stub(fake):
-            document = azure.Board(None, PROFILE).get_document("att-9")
+            document = azure.Board("pat-secret", PROFILE).get_document("att-9")
 
         self.assertEqual(document["content"], "downloaded markdown")
-        call = [c for c in fake.matching("devops", "invoke") if "GET" in c][0]
-        self.assertIn("id=att-9", call)
+        call = fake.rest_matching("GET", "wit/attachments/att-9")[0]
+        self.assertIn("download=true", call["url"])
+
+
+class RestTransportTests(ScriptTestCase):
+    """The second door, and the failure modes it has to keep answering for.
+
+    Nothing here opens a socket: `urllib.request.urlopen` is replaced in every
+    test. What is pinned is our side — the bytes we send, and the exit code a
+    given answer maps to (IDE-137).
+    """
+
+    def answer(self, payload=b'{"ok": true}', status=200):
+        class Response:
+            def __init__(self):
+                self.status = status
+
+            def read(self):
+                return payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        seen = {}
+
+        def urlopen(request, timeout=None, context=None):
+            seen["request"] = request
+            return Response()
+
+        return seen, mock.patch.object(azure.urllib.request, "urlopen", urlopen)
+
+    def refusal(self, code, body=b"nope"):
+        def urlopen(request, timeout=None, context=None):
+            raise azure.urllib.error.HTTPError(request.full_url, code, "no", {},
+                                               io.BytesIO(body))
+        return mock.patch.object(azure.urllib.request, "urlopen", urlopen)
+
+    def test_the_body_is_sent_exactly_as_given(self):
+        seen, patched = self.answer()
+        with patched:
+            azure.rest_call("https://example.invalid/_apis/wit/attachments",
+                            method="POST", body=b"# not json\n",
+                            content_type="application/octet-stream",
+                            authorization="Basic x")
+        request = seen["request"]
+        self.assertEqual(request.data, b"# not json\n")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.headers["Content-type"], "application/octet-stream")
+        self.assertEqual(request.headers["Authorization"], "Basic x")
+
+    def test_a_401_is_the_expired_credential_contract(self):
+        with self.refusal(401):
+            message = self.assert_exits(2, azure.rest_call,
+                                        "https://example.invalid/_apis/x",
+                                        auth_hint="replace the PAT in ~/.hanwha/pat")
+        self.assertIn("~/.hanwha/pat", message)
+
+    def test_a_203_sign_in_page_is_a_refusal_not_a_success(self):
+        # Azure DevOps answers an unauthenticated request with 203 and a sign-in
+        # page. Anything that only watches for exceptions reads that as success.
+        seen, patched = self.answer(payload=b"<html>Sign In</html>", status=203)
+        with patched:
+            message = self.assert_exits(2, azure.rest_call,
+                                        "https://example.invalid/_apis/x")
+        self.assertIn("203", message)
+
+    def test_a_web_page_behind_a_200_is_a_refusal_too(self):
+        seen, patched = self.answer(payload=b"<html><body>Sign In</body></html>")
+        with patched:
+            message = self.assert_exits(2, azure.rest_call,
+                                        "https://example.invalid/_apis/x")
+        self.assertIn("web page", message)
+
+    def test_a_404_is_a_malformed_request_not_an_outage(self):
+        # Same split `_classify_failure` makes for the CLI: one is worth
+        # retrying, the other never is.
+        with self.refusal(404):
+            self.assert_exits(3, azure.rest_call, "https://example.invalid/_apis/x")
+
+    def test_an_unreachable_host_is_exit_2(self):
+        def urlopen(request, timeout=None, context=None):
+            raise azure.urllib.error.URLError("no route to host")
+        with mock.patch.object(azure.urllib.request, "urlopen", urlopen):
+            message = self.assert_exits(2, azure.rest_call,
+                                        "https://example.invalid/_apis/x")
+        self.assertIn("could not reach", message)
+
+    def test_a_download_is_returned_as_text_not_parsed(self):
+        seen, patched = self.answer(payload="# заголовок\n".encode("utf-8"))
+        with patched:
+            content = azure.rest_call("https://example.invalid/_apis/x",
+                                      parse_json=False)
+        self.assertEqual(content, "# заголовок\n")
+
+    def test_verification_is_never_disabled(self):
+        # The python.org build has no CA bundle, and the tempting fix is the
+        # wrong one. CLAUDE.md names the fallback; this pins that it verifies.
+        context = azure.build_ssl_context()
+        self.assertTrue(context.verify_mode)
+        self.assertTrue(context.check_hostname)
 
 
 class SecretTests(ScriptTestCase):
     """A token on argv is a token in every `ps` on the machine."""
+
+    def test_the_token_never_appears_in_a_rest_url_either(self):
+        # It travels in the Authorization header. A URL is logged, cached and
+        # pasted into bug reports; a header is not.
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat-secret", PROFILE).attach_document("s", "x",
+                                                               identifier="42")
+        for call in fake.rest_calls:
+            self.assertNotIn("pat-secret", call["url"])
+            self.assertIn("pat-secret", base64.b64decode(
+                call["authorization"].split()[1]).decode())
 
     def test_the_token_never_appears_in_any_argv(self):
         fake = FakeAz(work_item())

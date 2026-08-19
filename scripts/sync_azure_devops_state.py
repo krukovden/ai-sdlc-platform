@@ -16,17 +16,27 @@ way a rejected credential is exit code 2 with the instruction that actually
 repairs it**, not a generic failure and not `az login` at somebody holding an
 expired PAT, which `az login` cannot renew (IDE-130).
 
-    Scope widening, recorded deliberately (IDE-87, gateway Q4)
-    ---------------------------------------------------------
+    Scope widening, recorded deliberately (IDE-87 gateway Q4, then IDE-137)
+    ----------------------------------------------------------------------
     `az boards` covers work items, queries and relations, and nothing else:
     it cannot upload an attachment, and `work-item relation add` links work
     items, not files. The approved design nevertheless requires the full
     specification to be attached as Markdown, because Azure DevOps has no
-    documents — only attachments (see `scripts/memory.py`). So three
-    operations reach for `az devops invoke`: uploading an attachment,
-    linking it onto a work item, and downloading it again. That is the same
-    `az` binary, the same `azure-devops` extension and the same `az login`,
-    so the expired-login contract above survives intact.
+    documents — only attachments (see `scripts/memory.py`).
+
+    The first widening reached for `az devops invoke`, on the reasoning that
+    it is the same binary, the same extension and the same login. **In the
+    field that turned out not to work at all**: `az devops invoke` runs
+    `json.loads` on `--in-file` before sending it, whatever `--media-type`
+    says, so every Markdown upload died with `Expecting value: line 1
+    column 1`. The endpoint was never the problem; the wrapper was.
+
+    So the three attachment operations — upload, link, download — go over
+    **REST**, through `rest_call`, with the same credential the CLI uses: a
+    PAT as basic auth, or a bearer token asked of `az` on a machine that
+    signs in interactively. The expired-credential contract came with them:
+    401, 203 and a sign-in page behind a 200 all map to exit code 2 with the
+    same hint `_classify_failure` gives.
 
     What the profile carries
     ------------------------
@@ -61,14 +71,19 @@ Exit codes are defined by board.py and shared by every adapter:
 """
 
 import argparse
+import base64
 import html
 import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -276,8 +291,98 @@ def _state_module():
 
 
 # ---------------------------------------------------------------------------
-# Transport: one door to the CLI, so tests have exactly one seam to stub
+# Transport: two doors, so tests have exactly two seams to stub.
+#
+# `run_az` is the CLI, and it answers for almost everything. `rest_call` is the
+# REST API, and it exists because of one thing the CLI cannot do at all:
+# **`az devops invoke` runs `json.loads` on `--in-file` before sending it**,
+# whatever `--media-type` says. Markdown is not JSON, so every attachment upload
+# failed with `Expecting value: line 1 column 1` — and attaching Markdown is the
+# only reason this adapter has documents at all, because Azure DevOps has none
+# (IDE-137).
+#
+# The scope note in the header reached for `az devops invoke` because `az boards`
+# cannot upload an attachment. It turns out the replacement cannot either. The
+# three attachment operations therefore go over REST with the same credential,
+# and the expired-credential contract comes with them: a 401 or a 203 is the
+# same "your sign-in is gone" that `_classify_failure` maps to exit code 2.
 # ---------------------------------------------------------------------------
+
+# The well-known application id of Azure DevOps, used to ask `az` for a bearer
+# token on a machine that signs in interactively and holds no PAT.
+ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
+
+
+def build_ssl_context():
+    """A verifying context that also works on python.org builds.
+
+    Copied from `sync_linear_state.build_ssl_context` rather than imported: one
+    adapter must not depend on another, and CLAUDE.md names this the pattern to
+    copy. Never disable verification.
+    """
+    context = ssl.create_default_context()
+    if context.get_ca_certs():
+        return context
+    for candidate in ("/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"):
+        if os.path.exists(candidate):
+            return ssl.create_default_context(cafile=candidate)
+    fail(6, "no CA bundle found; run the Install Certificates command for your Python")
+
+
+def rest_call(url, method="GET", body=None, content_type=None, authorization=None,
+              timeout=DEFAULT_TIMEOUT, parse_json=True, auth_hint=None):
+    """One Azure DevOps REST request, with the CLI's exit codes.
+
+    `body` is bytes and is sent unchanged — that is the whole point of this door.
+    Nothing here inspects or re-encodes it.
+    """
+    headers = {"Accept": "application/json"}
+    if authorization:
+        headers["Authorization"] = authorization
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout,
+                                    context=build_ssl_context()) as response:
+            payload = response.read()
+            status = response.status
+            # Azure DevOps answers an unauthenticated request with 203 and a
+            # sign-in page rather than a 401, which reads as success to anything
+            # that only checks for an exception.
+            if status == 203:
+                fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps answered 203 "
+                        f"(a sign-in page) for {method} {url}")
+    except urllib.error.HTTPError as exc:
+        said = ""
+        try:
+            said = exc.read().decode("utf-8", "replace").strip()[:300]
+        except Exception:                                   # noqa: BLE001 - best effort
+            pass
+        if exc.code in (401, 203) or exc.code == 302:
+            fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps said {exc.code} "
+                    f"for {method} {url}")
+        if exc.code == 404:
+            fail(3, f"{method} {url}: not found. {said}")
+        fail(2, f"{method} {url} failed with {exc.code}: {said}")
+    except urllib.error.URLError as exc:
+        fail(2, f"could not reach {url}: {exc.reason}")
+
+    text = payload.decode("utf-8", "replace")
+    if not parse_json:
+        return text
+    if not text.strip():
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # The sign-in page again, this time behind a 200.
+        if "<html" in text[:200].casefold():
+            fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps returned a web page "
+                    f"where {method} {url} should have returned JSON")
+        fail(2, f"{method} {url} returned output that is not JSON: {text[:300]}")
+
 
 def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=False,
            auth_hint=None):
@@ -554,6 +659,7 @@ class Board:
         # is still known. Telling somebody holding an expired PAT to run
         # `az login` costs them the afternoon it was meant to save.
         self.auth_hint = None
+        self._authorization_header = None
         self.organization = organization_url(self.profile)
         self.project = self.profile.get("project_id")
         self.team_key = self.profile.get("team_key")
@@ -577,6 +683,41 @@ class Board:
 
     def _az(self, args, **kwargs):
         return run_az(args, token=self.token, auth_hint=self.auth_hint, **kwargs)
+
+    def _authorization(self):
+        """The same credential the CLI uses, in the header REST wants.
+
+        A PAT is basic auth with an empty user name — that is Azure DevOps's own
+        convention. A machine that signs in interactively holds no PAT at all,
+        so the token is asked of `az`, which is the only thing that has it.
+        """
+        if self._authorization_header is None:
+            if self.token:
+                pair = base64.b64encode(f":{self.token}".encode()).decode()
+                self._authorization_header = f"Basic {pair}"
+            else:
+                data = self._az(["account", "get-access-token",
+                                 "--resource", ADO_RESOURCE_ID, "-o", "json"]) or {}
+                bearer = data.get("accessToken")
+                if not bearer:
+                    fail(2, f"{self.auth_hint or AUTH_HINT}\n\n`az account "
+                            "get-access-token` returned no token")
+                self._authorization_header = f"Bearer {bearer}"
+        return self._authorization_header
+
+    def _rest(self, path, method="GET", body=None, content_type=None, query=None,
+              project=None, parse_json=True):
+        """One REST call, addressed the way the CLI addresses the same thing."""
+        parameters = dict(query or {})
+        parameters["api-version"] = API_VERSION
+        # Project-scoped, like every call this adapter makes. The project name
+        # carries spaces on a real board, so it is quoted rather than trusted.
+        scope = urllib.parse.quote(self._project(project))
+        url = (f"{self.organization}/{scope}/_apis/{path}"
+               f"?{urllib.parse.urlencode(parameters)}")
+        return rest_call(url, method=method, body=body, content_type=content_type,
+                         authorization=self._authorization(),
+                         auth_hint=self.auth_hint, parse_json=parse_json)
 
     def work_item_type(self, kind):
         configured = dict(DEFAULT_WORK_ITEM_TYPES)
@@ -872,7 +1013,9 @@ class Board:
     # -- documents, which Azure DevOps calls attachments ---------------------
 
     def attach_document(self, title, content, identifier=None, project_id=None):
-        """Attach Markdown to a work item. ADO has no documents, only files.
+        """Attach Markdown to a work item, and answer in the shape Linear does.
+
+        Azure DevOps has no documents, only files.
 
         Project-level documents hang from the epic named by the profile
         (IDE-76: the epic carries the feature registry and Tried & Rejected).
@@ -891,49 +1034,40 @@ class Board:
         project = self._project(project_id)
         name = attachment_name(title)
 
-        directory = tempfile.mkdtemp(prefix="idp-attach-")
-        try:
-            payload = Path(directory) / name
-            payload.write_text(content, encoding="utf-8")
-            uploaded = self._az([
-                "devops", "invoke",
-                "--area", "wit", "--resource", "attachments",
-                "--http-method", "POST",
-                "--route-parameters", f"project={project}",
-                "--query-parameters", f"fileName={name}",
-                "--in-file", str(payload),
-                "--media-type", "application/octet-stream",
-                "--api-version", API_VERSION,
-                "--org", self.organization, "-o", "json",
-            ]) or {}
-            attachment_url = uploaded.get("url")
-            if not attachment_url:
-                fail(2, f"Azure DevOps accepted no attachment for '{title}'")
+        # Straight over REST, and no temporary file: `az devops invoke` parses
+        # `--in-file` as JSON before sending it, so Markdown never survived the
+        # trip (IDE-137). The body below is bytes and reaches the service as it
+        # was written.
+        uploaded = self._rest("wit/attachments", method="POST",
+                              body=content.encode("utf-8"),
+                              content_type="application/octet-stream",
+                              query={"fileName": name}, project=project) or {}
+        attachment_url = uploaded.get("url")
+        if not attachment_url:
+            fail(2, f"Azure DevOps accepted no attachment for '{title}'")
 
-            patch = Path(directory) / "relation.json"
-            patch.write_text(json.dumps([{
-                "op": "add",
-                "path": "/relations/-",
-                "value": {
-                    "rel": "AttachedFile",
-                    "url": attachment_url,
-                    "attributes": {"comment": title},
-                },
-            }]), encoding="utf-8")
-            self._az([
-                "devops", "invoke",
-                "--area", "wit", "--resource", "workitems",
-                "--http-method", "PATCH",
-                "--route-parameters", f"project={project}", f"id={work_item_id}",
-                "--in-file", str(patch),
-                "--media-type", "application/json-patch+json",
-                "--api-version", API_VERSION,
-                "--org", self.organization, "-o", "json",
-            ])
-        finally:
-            shutil.rmtree(directory, ignore_errors=True)
+        patch = json.dumps([{
+            "op": "add",
+            "path": "/relations/-",
+            "value": {
+                "rel": "AttachedFile",
+                "url": attachment_url,
+                "attributes": {"comment": title},
+            },
+        }]).encode("utf-8")
+        # This one would have survived the CLI — it really is JSON — but keeping
+        # the three attachment calls on one door beats remembering which is the
+        # exception.
+        self._rest(f"wit/workitems/{work_item_id}", method="PATCH", body=patch,
+                   content_type="application/json-patch+json", project=project)
 
-        return attachment_url
+        # `{url, slugId}`, because that is what the Linear adapter answers and
+        # what `board.py doc` and `board.py memory record` index into. Returning
+        # a bare string here made both of them fail on the line after the upload
+        # they had just been fixed to perform.
+        return {"url": attachment_url, "title": title,
+                "slugId": str(uploaded.get("id")
+                              or attachment_url.rstrip("/").rsplit("/", 1)[-1])}
 
     def _attachments_of(self, identifier):
         item = self._show(identifier, expand="relations")
@@ -1022,15 +1156,9 @@ class Board:
     def get_document(self, slug):
         """Download one attachment by the id in its URL."""
         project = self._project()
-        content = self._az([
-            "devops", "invoke",
-            "--area", "wit", "--resource", "attachments",
-            "--http-method", "GET",
-            "--route-parameters", f"project={project}", f"id={slug}",
-            "--query-parameters", "download=true",
-            "--api-version", API_VERSION,
-            "--org", self.organization,
-        ], parse_json=False)
+        content = self._rest(f"wit/attachments/{urllib.parse.quote(str(slug))}",
+                             query={"download": "true"}, project=project,
+                             parse_json=False)
         if not content:
             fail(3, f"no attachment with id '{slug}'")
 
