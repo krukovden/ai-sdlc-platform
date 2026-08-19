@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-18T23:32:31Z
+**Generated:** 2026-08-19T13:25:26Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 54 live (3 in progress, 33 done) · 15 archived
+**Issues:** 55 live (4 in progress, 38 done) · 15 archived
 
 ## Project documents
 
@@ -68,6 +68,7 @@
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-100](https://linear.app/krukov-idea-hub/issue/IDE-100/work-item-ide-92-a-key-per-agent-identity-in-the-profile) | [Work Item · IDE-92] A key per agent: identity in the profile | Done | — | `krukovden/ide-100-work-item-ide-92-a-key-per-agent-identity-in-the-profile` | child of IDE-92, related IDE-71 |
+| [IDE-125](https://linear.app/krukov-idea-hub/issue/IDE-125/work-item-ide-92-phase-positions-carried-by-tags-where-a-board-has-no) | [Work Item · IDE-92] Phase positions carried by tags where a board has no status | Done | — | `krukovden/ide-125-work-item-ide-92-phase-positions-carried-by-tags-where-a` | child of IDE-92, related IDE-87, related IDE-71 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
 | [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-ide-79-define-linear-workflow-states-approvals-and-agent) | [Spike · IDE-79] Define Linear workflow states, approvals, and agent handoffs | Done | Spike | `krukovden/ide-71-spike-ide-79-define-linear-workflow-states-approvals-and` | child of IDE-79, related IDE-77, blocks IDE-89, blocks IDE-72, blocks IDE-69, related IDE-68 |
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-ide-79-design-the-project-memory-contract) | [Spike · IDE-79] Design the Project Memory contract | Done | Spike | `krukovden/ide-76-spike-ide-79-design-the-project-memory-contract` | child of IDE-79, blocks IDE-89, related IDE-68, related IDE-71 |
@@ -162,15 +163,15 @@ It precedes the pilot: the pilot verifies the process, this milestone gives the 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-109](https://linear.app/krukov-idea-hub/issue/IDE-109/feature-establish-project) | [Feature] Establish project | Backlog | Feature | `krukovden/ide-109-feature-establish-project` | — |
-| [IDE-118](https://linear.app/krukov-idea-hub/issue/IDE-118/work-item-ide-109-challenge-and-traversal-the-falsifiable-verdict) | [Work Item · IDE-109] Challenge and traversal: the falsifiable verdict | Backlog | — | `krukovden/ide-118-work-item-ide-109-challenge-and-traversal-the-falsifiable` | child of IDE-109, blocks IDE-119, related IDE-110 |
-| [IDE-119](https://linear.app/krukov-idea-hub/issue/IDE-119/work-item-ide-109-slicing-the-escalation-rule-and-the-per-feature) | [Work Item · IDE-109] Slicing, the escalation rule and the per-feature review | Backlog | — | `krukovden/ide-119-work-item-ide-109-slicing-the-escalation-rule-and-the-per` | child of IDE-109, blocks IDE-120, related IDE-110 |
-| [IDE-120](https://linear.app/krukov-idea-hub/issue/IDE-120/work-item-ide-109-approval-hashing-and-idempotent-publication) | [Work Item · IDE-109] Approval, hashing and idempotent publication | Backlog | — | `krukovden/ide-120-work-item-ide-109-approval-hashing-and-idempotent` | child of IDE-109, blocks IDE-121, related IDE-110 |
-| [IDE-121](https://linear.app/krukov-idea-hub/issue/IDE-121/work-item-ide-109-wiki-writer-architecture-and-flow-pages-optional) | [Work Item · IDE-109] Wiki writer: architecture and flow pages, optional path | Backlog | — | `krukovden/ide-121-work-item-ide-109-wiki-writer-architecture-and-flow-pages` | child of IDE-109, related IDE-110 |
-| [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) | [Work Item · IDE-109] Documentation: constitution, reference architecture, HUB, CLAUDE.md | Backlog | — | `krukovden/ide-122-work-item-ide-109-documentation-constitution-reference` | child of IDE-109, related IDE-110 |
+| [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) | [Work Item · IDE-109] Documentation: constitution, reference architecture, HUB, CLAUDE.md | In Development | — | `krukovden/ide-122-work-item-ide-109-documentation-constitution-reference` | child of IDE-109, related IDE-110 |
 | [IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase) | [Spike · IDE-109] Design the establish-project phase | Done | Spike | `krukovden/ide-110-spike-ide-109-design-the-establish-project-phase` | child of IDE-109, related IDE-93, related IDE-87 |
 | [IDE-115](https://linear.app/krukov-idea-hub/issue/IDE-115/work-item-ide-109-contract-changes-frontmatter-project-adr-template) | [Work Item · IDE-109] Contract changes: frontmatter, project ADR template, lint, state resolver | Done | — | `krukovden/ide-115-work-item-ide-109-contract-changes-frontmatter-project-adr` | child of IDE-109, blocks IDE-117, related IDE-110 |
 | [IDE-116](https://linear.app/krukov-idea-hub/issue/IDE-116/work-item-ide-109-adapter-work-item-kinds-and-creation-by-kind) | [Work Item · IDE-109] Adapter: work-item kinds and creation by kind | Done | — | `krukovden/ide-116-work-item-ide-109-adapter-work-item-kinds-and-creation-by` | child of IDE-109, blocks IDE-120, related IDE-110 |
 | [IDE-117](https://linear.app/krukov-idea-hub/issue/IDE-117/work-item-ide-109-establish-core-state-machine-project-slot-registry) | [Work Item · IDE-109] Establish core: state machine, project slot registry, intake and coverage | Done | — | `krukovden/ide-117-work-item-ide-109-establish-core-state-machine-project-slot` | child of IDE-109, blocks IDE-118, related IDE-110 |
+| [IDE-118](https://linear.app/krukov-idea-hub/issue/IDE-118/work-item-ide-109-challenge-and-traversal-the-falsifiable-verdict) | [Work Item · IDE-109] Challenge and traversal: the falsifiable verdict | Done | — | `krukovden/ide-118-work-item-ide-109-challenge-and-traversal-the-falsifiable` | child of IDE-109, blocks IDE-119, related IDE-110 |
+| [IDE-119](https://linear.app/krukov-idea-hub/issue/IDE-119/work-item-ide-109-slicing-the-escalation-rule-and-the-per-feature) | [Work Item · IDE-109] Slicing, the escalation rule and the per-feature review | Done | — | `krukovden/ide-119-work-item-ide-109-slicing-the-escalation-rule-and-the-per` | child of IDE-109, blocks IDE-120, related IDE-110 |
+| [IDE-120](https://linear.app/krukov-idea-hub/issue/IDE-120/work-item-ide-109-approval-hashing-and-idempotent-publication) | [Work Item · IDE-109] Approval, hashing and idempotent publication | Done | — | `krukovden/ide-120-work-item-ide-109-approval-hashing-and-idempotent` | child of IDE-109, blocks IDE-121, related IDE-110 |
+| [IDE-121](https://linear.app/krukov-idea-hub/issue/IDE-121/work-item-ide-109-wiki-writer-architecture-and-flow-pages-optional) | [Work Item · IDE-109] Wiki writer: architecture and flow pages, optional path | Done | — | `krukovden/ide-121-work-item-ide-109-wiki-writer-architecture-and-flow-pages` | child of IDE-109, related IDE-110 |
 
 ## How to use this file
 

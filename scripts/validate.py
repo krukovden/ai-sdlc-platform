@@ -243,6 +243,19 @@ def load_schema(path=None):
         raise ConfigError(f"{target} is not readable JSON: {exc}")
 
 
+# Every keyword `check_schema` below actually evaluates. A schema keyword that
+# is not in this set is not ignored safely - `satisfies` reads "no problems" as
+# "matches", so an `if` this cannot evaluate fires its `then` on every artifact.
+# A test walks the frontmatter schema and fails when it grows a keyword that is
+# missing from here.
+SCHEMA_KEYWORDS = frozenset({
+    "const", "enum", "type", "minLength", "pattern", "properties", "required",
+    "additionalProperties", "allOf", "anyOf", "not", "if", "then", "else",
+    # Documentation, not validation: carried by the schema, ignored on purpose.
+    "$schema", "$id", "$comment", "title", "description", "examples",
+})
+
+
 def satisfies(value, schema):
     return not check_schema(value, schema, "header")
 
@@ -255,6 +268,13 @@ def check_schema(value, schema, path="header", skip=frozenset()):
     inside a skill; importing across that boundary to save forty lines would
     tie a validator that must run anywhere to a skill that need not be
     installed. Recorded as debt, not hidden.
+
+    **Every keyword the frontmatter schema uses must be implemented here.** An
+    unimplemented one is not ignored safely: `satisfies` reads "no problems" as
+    "matches", so an `if` this cannot evaluate fires its `then` on every
+    artifact. That is how `anyOf` and `not` arrived - the schema grew them in
+    IDE-115 and every bug and PBI in the repository started failing as a
+    feature.
 
     Returns [(path, message)].
     """
@@ -305,6 +325,14 @@ def check_schema(value, schema, path="header", skip=frozenset()):
             if child in skip:
                 continue
             problems += check_schema(value[field], subschema, child, skip)
+
+    if "not" in schema:
+        if satisfies(value, schema["not"]):
+            problems.append((path, f"{path}: matches a shape the standard forbids here"))
+
+    if "anyOf" in schema:
+        if not any(satisfies(value, option) for option in schema["anyOf"]):
+            problems.append((path, f"{path}: matches none of the permitted shapes"))
 
     for subschema in schema.get("allOf", []):
         problems += check_schema(value, subschema, path, skip)
@@ -366,6 +394,19 @@ def _read_jsonc(path):
         return json.loads(strip_jsonc(path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"{path} is not readable JSONC: {exc}")
+
+
+def lint_name(artifact_type, header):
+    """Which heading list applies: the type, or the type at a scope.
+
+    A project ADR carries a section a feature ADR does not, so `type` alone
+    cannot select its list. It is the only place two header fields choose a
+    config, and the alternative - a wildcard in the feature list wide enough to
+    swallow an extra section - is how a required heading silently stops being
+    required.
+    """
+    scope = (header or {}).get("scope")
+    return f"{artifact_type}-{scope}" if scope else artifact_type
 
 
 def load_lint_config(artifact_type, lint_dir=None):
@@ -850,7 +891,7 @@ def validate_text(text, artifact_type=None, stage=None, status=None, template=Fa
             + ", ".join(TYPES), at_line.get("type", 1)))
         return violations                # nothing selects a config without it
 
-    required = load_lint_config(resolved, lint_dir)
+    required = load_lint_config(lint_name(resolved, plain), lint_dir)
     stage = resolve_stage(header, stage, status)
 
     lines = text.splitlines()

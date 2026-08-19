@@ -19,63 +19,26 @@ import re
 import unittest
 from pathlib import Path
 
-from support import ScriptTestCase, REPO_ROOT
+from support import ScriptTestCase, load_script, REPO_ROOT
+
+validate = load_script("validate")
 
 SCHEMA = json.loads((REPO_ROOT / "schemas" / "frontmatter.schema.json").read_text())
 
-KNOWN = {"$schema", "$id", "$comment", "title", "description", "examples",
-         "type", "properties", "additionalProperties", "required", "enum", "const",
-         "pattern", "minLength", "allOf", "anyOf", "not", "if", "then"}
+def check(instance, schema=None):
+    """Messages from the platform's own validator, not from a second one.
 
-
-def check(schema, instance, path="$"):
-    """Return a list of failures. Empty means valid."""
-    unknown = set(schema) - KNOWN
-    if unknown:
-        raise AssertionError(f"{path}: this validator does not implement {sorted(unknown)}")
-
-    bad = []
-    if "type" in schema:
-        expected = {"object": dict, "string": str}[schema["type"]]
-        if not isinstance(instance, expected):
-            return [f"{path}: not a {schema['type']}"]
-    if "const" in schema and instance != schema["const"]:
-        bad.append(f"{path}: {instance!r} is not {schema['const']!r}")
-    if "enum" in schema and instance not in schema["enum"]:
-        bad.append(f"{path}: {instance!r} not in {schema['enum']}")
-    if "pattern" in schema and isinstance(instance, str):
-        if not re.search(schema["pattern"], instance):
-            bad.append(f"{path}: {instance!r} does not match {schema['pattern']}")
-    if "minLength" in schema and isinstance(instance, str):
-        if len(instance) < schema["minLength"]:
-            bad.append(f"{path}: shorter than {schema['minLength']}")
-
-    if isinstance(instance, dict):
-        for name in schema.get("required", []):
-            if name not in instance:
-                bad.append(f"{path}: missing required '{name}'")
-        properties = schema.get("properties", {})
-        for name, value in instance.items():
-            if name in properties:
-                bad += check(properties[name], value, f"{path}.{name}")
-            elif schema.get("additionalProperties") is False:
-                bad.append(f"{path}: unexpected field '{name}'")
-
-    for i, sub in enumerate(schema.get("allOf", [])):
-        bad += check(sub, instance, f"{path}[allOf {i}]")
-    if "anyOf" in schema:
-        if all(check(sub, instance, path) for sub in schema["anyOf"]):
-            bad.append(f"{path}: matches none of anyOf")
-    if "not" in schema and not check(schema["not"], instance, path):
-        bad.append(f"{path}: matches a forbidden shape")
-    if "if" in schema:
-        if not check(schema["if"], instance, path):
-            bad += check(schema.get("then", {}), instance, path)
-    return bad
+    An earlier revision of this file carried its own JSON Schema subset because
+    `scripts/validate.py` did not implement `allOf`, `if`/`then`, `const`,
+    `pattern` or `not`. It does now — a schema the validator cannot read is a
+    schema that silently validates nothing — so the copy is gone.
+    """
+    return [message for _, message in
+            validate.check_schema(instance, schema or SCHEMA)]
 
 
 def valid(instance):
-    return check(SCHEMA, instance) == []
+    return check(instance) == []
 
 
 def raw_frontmatter(template):
@@ -129,6 +92,38 @@ FEATURE_ADR = {"type": "adr", "status": "proposed", "route": "feature",
                "standard": "1.0", "cid": "abc", "parent": "IDE-42"}
 PROJECT_ADR = {"type": "adr", "scope": "project", "status": "proposed",
                "standard": "1.0", "cid": "abc"}
+
+
+class ValidatorReachTests(ScriptTestCase):
+
+    def test_the_validator_implements_every_keyword_the_schema_uses(self):
+        # The failure this guards against is not loud: `satisfies` reads "no
+        # problems" as "matches", so an `if` the validator cannot evaluate
+        # fires its `then` on every artifact. It happened — `anyOf` and `not`
+        # arrived with `scope`, and every bug and PBI began failing as a
+        # feature.
+        seen = set()
+
+        def walk(node):
+            """Keywords only. Under `properties` the keys are field names, not
+            keywords, so they are stepped over rather than collected."""
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "properties":
+                        for subschema in value.values():
+                            walk(subschema)
+                        continue
+                    seen.add(key)
+                    walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(SCHEMA)
+        unimplemented = seen - validate.SCHEMA_KEYWORDS
+        self.assertEqual(unimplemented, set(),
+                         "the frontmatter schema uses keywords scripts/validate.py "
+                         "does not evaluate; they are ignored, not enforced")
 
 
 class ProjectAdrTests(ScriptTestCase):
@@ -186,16 +181,16 @@ class TemplateTests(ScriptTestCase):
         for template in TEMPLATES:
             with self.subTest(template=template):
                 missing = [re.search(r"'(.+?)'", e).group(1)
-                           for e in check(SCHEMA, frontmatter(template))
-                           if "missing required" in e]
+                           for e in check(frontmatter(template))
+                           if "required field" in e]
                 self.assertTrue(set(missing) <= set(raw_frontmatter(template)),
                                 f"{template} requires {missing} and does not prescribe them")
 
     def test_every_value_a_template_does_fill_is_legal(self):
         for template in TEMPLATES:
             with self.subTest(template=template):
-                wrong = [e for e in check(SCHEMA, frontmatter(template))
-                         if "missing required" not in e]
+                wrong = [e for e in check(frontmatter(template))
+                         if "required field" not in e]
                 self.assertEqual(wrong, [])
 
     def test_the_project_adr_template_declares_its_scope(self):
