@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/practice.schema.json",
   "title": "Practice research output",
-  "description": "Looks outward, at how this is normally solved, while evidence gathering looks inward at the project. Everything here is a recommendation and never a decision: the skill shows what it found and what it would pick, and the Product Owner chooses.",
+  "description": "Looks outward, at how this is normally solved, while evidence gathering looks inward at the project. Everything here is a recommendation and never a decision: the skill shows what it found and what it would pick, and the Product Owner chooses. Written for strict structured output, like reviewer.schema.json: every object lists every one of its properties in `required` and forbids additional ones, and anything optional is optional by being nullable rather than by being absent. It was not, and the provider rejected the request every time, so this pass never ran once (IDE-145).",
   "type": "object",
-  "required": ["approaches"],
+  "required": ["approaches", "prior_art", "failure_modes", "terminology", "contradicts"],
   "additionalProperties": false,
   "properties": {
     "approaches": {
@@ -24,44 +24,44 @@
       }
     },
     "prior_art": {
-      "type": "object",
-      "required": ["exists"],
+      "type": ["object", "null"],
+      "required": ["exists", "known_as", "source"],
       "additionalProperties": false,
       "properties": {
         "exists": {"type": "boolean"},
-        "known_as": {"type": "string"},
-        "source": {"type": "string"}
+        "known_as": {"type": ["string", "null"]},
+        "source": {"type": ["string", "null"]}
       }
     },
     "failure_modes": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "required": ["mistake", "source"],
+        "required": ["mistake", "why_it_happens", "source"],
         "additionalProperties": false,
         "properties": {
           "mistake": {"type": "string", "minLength": 1},
-          "why_it_happens": {"type": "string"},
+          "why_it_happens": {"type": ["string", "null"]},
           "source": {"type": "string", "minLength": 1}
         }
       }
     },
     "terminology": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "required": ["accepted_term", "source"],
+        "required": ["accepted_term", "instead_of", "source"],
         "additionalProperties": false,
         "properties": {
           "accepted_term": {"type": "string", "minLength": 1},
-          "instead_of": {"type": "string"},
+          "instead_of": {"type": ["string", "null"]},
           "source": {"type": "string", "minLength": 1}
         }
       }
     },
     "contradicts": {
       "description": "A finding that contradicts an answer already given. This is the one case where research adds a question rather than removing one: the slot reopens as a product_decision and the interview resumes.",
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
         "required": ["slot", "finding", "source"],

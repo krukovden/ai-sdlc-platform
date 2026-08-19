@@ -138,6 +138,47 @@ def validate(payload, schema, path="$"):
     return problems
 
 
+# The schemas a provider is asked to enforce, as opposed to the ones this
+# platform enforces on its own artifacts. Only these are held to the rules below.
+PROVIDER_SCHEMAS = ("reviewer.schema.json", "practice.schema.json",
+                    "alternatives.schema.json", "challenge.schema.json")
+
+
+def strict_output_problems(schema, path="$"):
+    """Where a schema is valid JSON Schema and invalid for structured output.
+
+    Two different things, and the difference cost the platform every practice
+    research pass it ever ran: `practice.schema.json` was well-formed JSON Schema
+    and the provider rejected it on every call, so the pass always skipped
+    (IDE-145). Structured output requires **every** key in `properties` to appear
+    in `required`, at every level of nesting, and `additionalProperties: false`
+    on every object. Optional means required-and-nullable; there is no other way
+    to say it.
+
+    Checked here rather than by calling a provider: this has to run offline, in
+    a repository that has no CLI installed and no key.
+    """
+    problems = []
+    if isinstance(schema, dict):
+        types = schema.get("type")
+        types = [types] if isinstance(types, str) else list(types or [])
+        if "object" in types or "properties" in schema:
+            properties = set(schema.get("properties") or {})
+            missing = sorted(properties - set(schema.get("required") or []))
+            if missing:
+                problems.append(
+                    f"{path}: 'required' must name every property; missing {missing}. "
+                    "An optional field is required and nullable, not absent.")
+            if schema.get("additionalProperties") is not False:
+                problems.append(f"{path}: 'additionalProperties' must be false")
+        for key, value in schema.items():
+            problems += strict_output_problems(value, f"{path}.{key}")
+    elif isinstance(schema, list):
+        for index, value in enumerate(schema):
+            problems += strict_output_problems(value, f"{path}[{index}]")
+    return problems
+
+
 def load_schema(name):
     path = SCHEMAS / name
     if not path.exists():

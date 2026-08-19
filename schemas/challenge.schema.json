@@ -15,7 +15,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["kind", "claim", "severity"],
+        "required": ["kind", "components", "claim", "severity"],
         "additionalProperties": false,
         "properties": {
           "kind": {
@@ -23,8 +23,8 @@
             "enum": ["contradiction", "gap", "boundary"]
           },
           "components": {
-            "description": "Which components the finding is about. Empty when it is about the whole.",
-            "type": "array",
+            "description": "Which components the finding is about. Empty when it is about the whole. Required and nullable rather than optional, because strict structured output has no other way to say optional (IDE-145).",
+            "type": ["array", "null"],
             "items": {"type": "string", "minLength": 1}
           },
           "claim": {

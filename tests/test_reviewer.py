@@ -297,5 +297,52 @@ class ProviderConfigTests(ScriptTestCase):
         self.assertIn("providers.json", str(caught.exception))
 
 
+class StructuredOutputTests(ScriptTestCase):
+    """A schema can be valid JSON Schema and invalid for the provider (IDE-145).
+
+    `practice.schema.json` was both, so the provider rejected every request and
+    the practice pass skipped every time it has ever run — including on the first
+    real project. The script's behaviour around the failure was right: it
+    recorded `skipped`, printed it, and wrote it into the ADR, so a search that
+    did not happen never read like a search that found nothing. That is why this
+    was a bad schema rather than a silent hole.
+    """
+
+    def test_every_provider_schema_is_valid_for_structured_output(self):
+        for name in reviewer.PROVIDER_SCHEMAS:
+            with self.subTest(schema=name):
+                problems = reviewer.strict_output_problems(reviewer.load_schema(name))
+                self.assertEqual(problems, [], "\n".join(problems))
+
+    def test_a_property_missing_from_required_is_caught(self):
+        # The exact shape of the bug: one nested object, one absent key.
+        broken = {"type": "object", "required": ["a"], "additionalProperties": False,
+                  "properties": {"a": {"type": "string"},
+                                 "b": {"type": "object", "required": [],
+                                       "additionalProperties": False,
+                                       "properties": {"c": {"type": "string"}}}}}
+        problems = reviewer.strict_output_problems(broken)
+        self.assertTrue(any("'b'" in p or "b'" in p for p in problems))
+        self.assertTrue(any("'c'" in p for p in problems))
+
+    def test_additional_properties_must_be_forbidden(self):
+        problems = reviewer.strict_output_problems(
+            {"type": "object", "required": [], "properties": {}})
+        self.assertTrue(any("additionalProperties" in p for p in problems))
+
+    def test_a_nullable_object_is_still_checked(self):
+        # `"type": ["object", "null"]` is how optional is spelled, and the rules
+        # still apply inside it.
+        problems = reviewer.strict_output_problems(
+            {"type": ["object", "null"], "required": [], "additionalProperties": False,
+             "properties": {"x": {"type": "string"}}})
+        self.assertTrue(problems)
+
+    def test_the_artifact_schemas_are_not_held_to_this(self):
+        # frontmatter.schema.json and plan.schema.json are enforced by us, not by
+        # a provider, and they use optionality the ordinary way.
+        self.assertNotIn("frontmatter.schema.json", reviewer.PROVIDER_SCHEMAS)
+
+
 if __name__ == "__main__":
     unittest.main()
