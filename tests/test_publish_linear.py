@@ -139,7 +139,8 @@ class PublishTests(ScriptTestCase):
     def test_attaches_the_specification_as_a_document(self):
         board, _ = self.publish(approved_package())
         self.assertEqual(len(board.documents), 1)
-        self.assertIn("Критерии приёмки", board.documents[0]["content"])
+        self.assertIn(publish_linear.load_sections().text("criteria"),
+                      board.documents[0]["content"])
 
     def test_records_the_approval_as_a_comment_because_linear_cannot(self):
         board, _ = self.publish(approved_package())
@@ -249,14 +250,14 @@ class DocumentTests(ScriptTestCase):
 
     def test_assumptions_are_labelled_as_nobody_having_confirmed_them(self):
         text = publish_linear.specification_document(approved_package())
-        self.assertIn("их никто не подтверждал", text)
+        self.assertIn(publish_linear.load_sections().text("assumptions"), text)
 
     def test_a_truncated_gap_search_is_stated_in_the_document(self):
         package = approved_package()
         package["provenance"]["gap_search_truncated"] = True
         text = publish_linear.specification_document(package)
 
-        self.assertIn("не полный поиск", text)
+        self.assertIn(publish_linear.load_sections().phrase("search-truncated"), text)
 
     def test_the_document_carries_the_correlation_id(self):
         text = publish_linear.specification_document(approved_package())

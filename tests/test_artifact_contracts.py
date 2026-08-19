@@ -21,6 +21,8 @@ from pathlib import Path
 
 from support import ScriptTestCase, load_script, REPO_ROOT
 
+SECTIONS = load_script("sections")
+
 validate = load_script("validate")
 
 SCHEMA = json.loads((REPO_ROOT / "schemas" / "frontmatter.schema.json").read_text())
@@ -206,14 +208,16 @@ class TemplateTests(ScriptTestCase):
 
     def test_the_two_adr_skeletons_are_not_interchangeable(self):
         # The whole reason for a sixth lint config: MD043 holds one heading list
-        # per run, and a project ADR carries Этапы, which a feature ADR does not.
+        # per run, and a project ADR carries a Stages section, which a feature
+        # ADR does not.
+        stages = SECTIONS.heading("stages")
         project = [h for h in required_headings("adr-project.jsonc") if h != "*"]
         feature = [h for h in required_headings("adr.jsonc") if h != "*"]
         self.assertNotEqual(project, feature)
         self.assertNotEqual(headings("adr.project.md"), feature)
         self.assertNotEqual(headings("adr.md"), project)
-        self.assertIn("## Этапы", project)
-        self.assertNotIn("## Этапы", feature)
+        self.assertIn(stages, project)
+        self.assertNotIn(stages, feature)
 
 
 if __name__ == "__main__":

@@ -12,22 +12,29 @@
   // The document title is the attachment title on the epic.
   "MD041": false,
 
+  // GENERATED HEADINGS. The `MD043` list below mirrors `registry/sections.json`,
+  // which is where a section's identity and its wording are defined (IDE-132).
+  // Edit that table, not this list — `scripts/sections.py --check-lint`, and a
+  // test, refuse to let the two disagree. The headings are rendered in the
+  // table's `default_language`; `scripts/validate.py` reads the table directly
+  // and accepts an artifact in any language it defines.
+
   // Placeholders are written in angle brackets and read as inline HTML.
   "MD033": false,
 
   "MD043": {
     "headings": [
-      "## Зачем",
+      "## Why",
       "*",
-      "## Что строим",
+      "## What we build",
       "*",
-      "## Этапы",
+      "## Stages",
       "*",
-      "## Чем подтвердим",
+      "## What proves it",
       "*",
-      "## Чего этот документ не решает",
+      "## What this document does not decide",
       "*",
-      "## Чем платим",
+      "## What it costs us",
       "*"
     ]
   }

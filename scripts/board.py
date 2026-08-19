@@ -281,6 +281,7 @@ def load_sibling(name, alias):
 
 state = load_sibling("state", "idp_state")
 memory = load_sibling("memory", "idp_memory")
+sections = load_sibling("sections", "idp_sections")
 
 
 def open_board():
@@ -332,6 +333,16 @@ def cmd_init(args):
         profile["kinds"] = dict(args.kind)
     if args.wiki:
         profile["wiki"] = args.wiki
+    if args.language:
+        profile["language"] = args.language
+
+    if profile.get("language"):
+        # Verified before writing, like everything else in a profile: a language
+        # the platform has no headings for fails at `init`, not at publication.
+        try:
+            sections.language_of(profile)
+        except sections.SectionError as exc:
+            fail(6, str(exc))
 
     if profile.get("phases"):
         # Verified before writing, like everything else in a profile: a phase
@@ -375,6 +386,7 @@ def cmd_init(args):
         print("  token:   none — this board signs in interactively")
     if profile.get("wiki"):
         print(f"  wiki:    {profile['wiki']}")
+    print(f"  language: {profile.get('language') or 'default'}")
 
 
 def cmd_profile(args):
@@ -641,6 +653,9 @@ def main():
     p.add_argument("--token-path", help=f"path to the API token (default {DEFAULT_TOKEN_PATH})")
     p.add_argument("--force", action="store_true", help="overwrite an existing profile")
     p.add_argument("--wiki", help="address of the wiki this project documents itself in")
+    p.add_argument("--language",
+                   help="what this project's artifacts are written in. A property of "
+                        "who reads them, not of the platform; see registry/sections.json")
     p.add_argument("--kind", nargs=2, action="append", metavar=("KIND", "TYPE"),
                    help="what this board calls one of our kinds, e.g. --kind pbi "
                         "'Product Backlog Item'. Repeatable")

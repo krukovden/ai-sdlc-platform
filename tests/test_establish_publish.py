@@ -17,6 +17,7 @@ from support import ScriptTestCase, load_script, REPO_ROOT
 
 establish = load_script("establish", REPO_ROOT / "skills" / "establish-project")
 publish = load_script("publish", REPO_ROOT / "skills" / "establish-project")
+WORDS = load_script("sections")
 
 ARCHITECTURE = ("A storefront and a catalogue. A person browses the toys and the "
                 "catalogue answers with products it owns.\n")
@@ -218,7 +219,7 @@ class PublicationTests(Session):
         content = self.board.documents[slug]["content"]
         self.assertIn("scope: project", content)
         self.assertIn("status: approved", content)
-        self.assertIn("## Этапы", content)
+        self.assertIn(WORDS.heading("stages"), content)
 
     def test_the_profile_points_at_the_registry_document(self):
         self.publish_now()
@@ -333,8 +334,10 @@ class WikiTests(Session):
         # The boundary that keeps the wiki and the ADR from diverging.
         self.publish_with(wiki="https://wiki/toy")
         architecture = self.pages["https://wiki/toy/architecture"]
-        self.assertIn("сейчас", architecture)
-        self.assertIn("Почему решили именно так", architecture)
+        # "how it is built now" on the page, "why it was decided" pointing away
+        # from it — the boundary is in the words, so the words are the assertion.
+        self.assertIn(WORDS.phrase("wiki-live-architecture", adr="").rstrip(),
+                      architecture)
 
     def test_a_wiki_page_that_does_not_resolve_stops_the_run(self):
         package = establish.load_package(self.slug)

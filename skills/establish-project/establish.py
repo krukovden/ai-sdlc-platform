@@ -62,6 +62,20 @@ SESSIONS = HOME / "sessions"
 CURRENT = HOME / "current"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def load_sections():
+    """`scripts/sections.py`: the one place a section id becomes words (IDE-132)."""
+    import importlib.util
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        "idp_sections", REPO_ROOT / "scripts" / "sections.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
 REGISTRY = REPO_ROOT / "registry" / "project_slots.json"
 
 # The eight steps of IDE-110, plus the state a finished session rests in.
@@ -319,7 +333,7 @@ def transition(state, target):
 # ---------------------------------------------------------------------------
 
 def new_package(slug, cid, epic, repository, wiki, architecture_hash,
-                architecture_text):
+                architecture_text, language=None):
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "project-establish-package",
@@ -329,6 +343,10 @@ def new_package(slug, cid, epic, repository, wiki, architecture_hash,
         "epic": epic,
         "repository": repository,
         "wiki": wiki,
+        # The language the project's artifacts are written in — a property of
+        # who reads them, decided once here and written into the profile this
+        # phase creates, so every later phase inherits it (IDE-132).
+        "language": language or load_sections().default_language(),
         "architecture_hash": architecture_hash,
         "architecture_text": architecture_text,
         "material": {},
@@ -765,7 +783,8 @@ def cmd_init(args):
         "dismissed": {},
     }
     package = new_package(slug, cid, args.epic, repository["address"], args.wiki,
-                          content_hash({"architecture": text}), text)
+                          content_hash({"architecture": text}), text,
+                          language=args.language)
     package["provenance"]["registry_version"] = registry["registry_version"]
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -782,6 +801,7 @@ def cmd_init(args):
     print(f"epic:        {args.epic}")
     print(f"repository:  {repository['address']} ({repository['verified']})")
     print(f"wiki:        {args.wiki or '— none; the phase runs without one'}")
+    print(f"language:    {package['language']}")
     print(f"slots:       {len(order)} in registry {registry['registry_version']}")
 
 
@@ -1309,6 +1329,9 @@ def build_parser():
     p.add_argument("--epic", required=True, help="address of the epic the human created")
     p.add_argument("--repository", required=True)
     p.add_argument("--wiki", help="address of the wiki, if this project has one")
+    p.add_argument("--language",
+                   help="what this project's artifacts are written in; a property of "
+                        "who reads them, not of the platform")
     p.add_argument("--slug")
     p.add_argument("--registry", help="override the project slot registry")
     p.add_argument("--force", action="store_true")

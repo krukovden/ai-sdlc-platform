@@ -23,6 +23,11 @@ from support import ScriptTestCase, REPO_ROOT, load_script
 
 design = load_script("design", REPO_ROOT / "skills" / "design")
 
+# The words an ADR is written in are a table, not literals in this file: the
+# assertions name what a line *is*, and the table says how it reads (IDE-132).
+WORDS = load_script("sections")
+CONTRACTS = dict(WORDS.catalogue("candidate_artifacts"))["contracts"]
+
 # The same module object design.py itself uses, not a second import of the same
 # file: two imports give two ReviewerError classes, and a stub raising the wrong
 # one would sail straight past the fallback logic it is meant to exercise.
@@ -698,8 +703,9 @@ class ProviderSchemaTests(DesignTestCase):
         self.reach_alternatives()
         self.run_cli("alternatives", "--decision", "D-1")
         rendered = self.run_cli("render")
-        self.assertIn("Альтернативы не получены", rendered)
-        self.assertIn("альтернативы D-1: skipped", rendered)
+        self.assertIn(WORDS.phrase("alternatives-skipped"), rendered)
+        self.assertIn(WORDS.phrase("alternatives-line", decision="D-1", mode="skipped"),
+                      rendered)
 
     def test_a_critic_answer_that_fails_the_schema_adds_no_objection(self):
         self.use_provider({"reviewer.schema.json":
@@ -738,7 +744,8 @@ class ProviderSchemaTests(DesignTestCase):
 
         self.assertIn("DEGRADED", stderr.getvalue())
         self.assertEqual(len(self.state()["degradations"]), 1)
-        self.assertIn("деградация", self.run_cli("render"))
+        self.assertIn(WORDS.phrase("degradation", what="").strip(),
+                      self.run_cli("render"))
         self.assertEqual([e["event"] for e in self.journal()].count("degradation"), 1)
 
     def test_the_collision_is_recorded_and_does_not_block_the_run(self):
@@ -811,7 +818,8 @@ class PracticeContradictionTests(DesignTestCase):
 
     def test_the_flag_reaches_the_rendered_registry(self):
         self.contradicted()
-        self.assertIn("внешняя практика противоречит", self.run_cli("render"))
+        self.assertIn(WORDS.phrase("practice-contradicts").strip(),
+                      self.run_cli("render"))
 
     def test_a_skipped_round_leaves_the_finding_visibly_unanswered(self):
         # The obligation of §4.2 is enforced when alternatives exist: a round
@@ -824,8 +832,9 @@ class PracticeContradictionTests(DesignTestCase):
         self.draft()
         self.run_cli("alternatives", "--decision", "D-1")
         rendered = self.run_cli("render")
-        self.assertIn("осталась нерассмотренной", rendered)
-        self.assertIn("альтернативы D-1: skipped", rendered)
+        self.assertIn(WORDS.phrase("practice-unconsidered"), rendered)
+        self.assertIn(WORDS.phrase("alternatives-line", decision="D-1", mode="skipped"),
+                      rendered)
 
     def test_a_finding_against_a_decision_nobody_registered_is_ignored(self):
         self.start()
@@ -962,44 +971,48 @@ class RenderTests(DesignTestCase):
         self.start()
         self.draft()
         self.register()
-        self.run_cli("considered", "--artifact", "Контракты API",
+        self.run_cli("considered", "--artifact", CONTRACTS,
                      "--status", "skipped",
-                     "--reason", "фича не добавляет внешней поверхности")
-        self.assertIn("пропущен — фича не добавляет внешней поверхности",
+                     "--reason", "the feature adds no external surface")
+        self.assertIn(WORDS.phrase("skipped-because",
+                                   reason="the feature adds no external surface"),
                       self.run_cli("render"))
 
     def test_a_skip_without_a_reason_is_refused_at_the_command(self):
         self.start()
-        stderr = self.expect_exit(3, "considered", "--artifact", "Контракты API",
+        stderr = self.expect_exit(3, "considered", "--artifact", CONTRACTS,
                                   "--status", "skipped")
         self.assertIn("forgotten artifact", stderr)
 
     def test_an_artifact_outside_the_candidate_floor_gets_its_own_row(self):
         self.start()
-        self.run_cli("considered", "--artifact", "Модель угроз",
+        self.run_cli("considered", "--artifact", "Threat model",
                      "--status", "written")
-        self.assertIn("| Модель угроз | написан |", self.run_cli("render"))
+        self.assertIn(f"| Threat model | {WORDS.phrase('written')} |",
+                      self.run_cli("render"))
 
     def test_the_alternatives_table_has_exactly_the_five_axes(self):
         text = self.rendered()
+        opening = WORDS.phrase("alternatives-table", axes="").split("|")[1]
         header = next(line for line in text.splitlines()
-                      if line.startswith("| альтернатива |"))
-        for _, russian in design.AXES:
-            self.assertIn(russian, header)
+                      if line.startswith(f"|{opening}|"))
+        for _, name in design.axes():
+            self.assertIn(name, header)
         self.assertEqual(header.count("|"), 9)
 
     def test_a_rejected_objection_is_recorded_rather_than_dropped(self):
         text = self.rendered()
-        self.assertIn("## Рассмотрено и отклонено", text)
+        self.assertIn(WORDS.heading("tried-and-rejected"), text)
         self.assertIn("не описан отказ провайдера 0", text)
         self.assertIn("уже снято альтернативой", text)
 
     def test_the_provenance_names_the_mode_of_every_subphase(self):
         text = self.rendered()
-        self.assertIn("архитектор: claude", text)
+        self.assertIn(WORDS.phrase("architect-line", model="claude"), text)
         self.assertIn("best practice: primary", text)
-        self.assertIn("критик: primary (codex)", text)
-        self.assertIn("альтернативы D-1: primary", text)
+        self.assertIn(WORDS.phrase("critic-line", mode="primary") + " (codex)", text)
+        self.assertIn(WORDS.phrase("alternatives-line", decision="D-1", mode="primary"),
+                      text)
 
     def test_a_pipe_in_model_prose_does_not_split_the_row(self):
         # A live round returned axis text three sentences long. One pipe

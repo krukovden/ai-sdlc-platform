@@ -3,50 +3,49 @@ type: adr
 scope: project
 status: proposed
 standard: "1.0"
-cid: <идентификатор корреляции проекта>
+cid: <the project's correlation id>
 ---
 
-## Зачем
+## Why
 
-<Что за система и зачем она. Одна система — один такой документ. Здесь не
-решение по фиче, а рамка, внутри которой все последующие решения принимаются.>
+<What this system is and what it is for. One system, one document of this kind. Not a decision about
+a feature but the frame every later decision is taken inside.>
 
-## Что строим
+## What we build
 
-<Компоненты, зоны ответственности, направление и протокол каждого
-взаимодействия, владелец каждых данных, поведение при отказе внешней
-зависимости, единица развёртывания. Диаграммы разрешены и приветствуются.>
+<Components, who owns what, the direction and the protocol of every interaction, the owner of every
+piece of data, the behaviour when an external dependency fails, the unit of deployment. Diagrams are
+allowed and welcome.>
 
-## Этапы
+## Stages
 
-<Порядок поставки. Первый этап — сквозной скелет: самый тонкий срез, на котором
-система работает от края до края. Карточки заводятся только под открытый этап;
-остальные живут здесь одной строкой, пока до них не дойдёт очередь.>
+<The order of delivery. Stage one is the end-to-end skeleton: the thinnest slice on which the system
+works from edge to edge. Cards are created only for the open stage; the rest live here as one line
+each until their turn comes.>
 
-- **Этап 1 — <название>** — <что в нём работает от края до края>
-  - <фича> — <одно предложение>
-- **Этап 2 — <название>** — <одна строка, без фич: они появятся, когда этап откроется>
+- **Stage 1 — <name>** — <what works end to end in it>
+  - <feature> — <one sentence>
+- **Stage 2 — <name>** — <one line, no features: they appear when the stage opens>
 
-## Чем подтвердим
+## What proves it
 
-<Сквозные сценарии, проведённые через компоненты. Под каждым — строка Evidence
-с трассировкой: какие компоненты сценарий проходит и на каком интерфейсе каждый
-переход. Сценарий, у которого хотя бы один переход упирается в пустоту, — это не
-критерий, а находка.>
+<End-to-end scenarios traced through the components. Under each one an Evidence: line carrying the
+trace — which components the scenario passes through, and over which interface each hop happens. A
+scenario with even one hop that runs into nothing is not a criterion, it is a finding.>
 
-- **AC-1** — <сценарий> проходит через компоненты без разрывов
-  Evidence: <трассировка: компонент → интерфейс → компонент>
-- **AC-2** — <сценарий> проходит через компоненты без разрывов
-  Evidence: <трассировка>
+- **AC-1** — <scenario> passes through the components with no gaps
+  Evidence: <trace: component → interface → component>
+- **AC-2** — <scenario> passes through the components with no gaps
+  Evidence: <trace>
 
-## Чего этот документ не решает
+## What this document does not decide
 
-<Граница документа. Что осталось за его пределами и где это решается — как
-правило, в ADR отдельных фич, который ссылается сюда и описывает только дельту.>
+<The edge of the document. What is left outside it and where that is decided — as a rule, in the ADR
+of an individual feature, which points back here and describes only the delta.>
 
-- <вопрос вне границы> — <где он решается>
+- <a question outside the edge> — <where it is decided>
 
-## Чем платим
+## What it costs us
 
-<Цена принятой архитектуры: чем расплачиваемся и кто это почувствует. Через два
-года документ читают именно ради этого раздела.>
+<The price of the architecture as adopted: what is being paid, and who will feel it. In two years
+this is the section the document is read for.>

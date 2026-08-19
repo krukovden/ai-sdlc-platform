@@ -4,7 +4,8 @@
 Three layers, and the report always says which one failed:
 
     header    the machine header, against schemas/frontmatter.schema.json
-    sections  the set and order of headings, against lint/<type>.jsonc (MD043)
+    sections  the set and order of headings, against registry/sections.json
+              (mirrored into lint/<type>.jsonc for markdownlint itself)
     content   what is *inside* the sections - the layer that did not exist
 
 The third layer is the reason this program exists. A section that carries a
@@ -23,7 +24,8 @@ What the content layer refuses:
 
 **What is mandatory depends on the stage.** IDE-78: "что обязательно, зависит
 от статуса". An ADR at `proposed` need not have paid for itself yet; an ADR at
-`approved` must carry "Чем платим" and an Evidence line under every criterion.
+`approved` must carry its `cost` section and an Evidence line under every
+criterion.
 The stage is told to this program - by `--stage`, by `--status`, or by the
 artifact's own header - and never fetched: reading the board would put a token
 and a network call inside a validator that has to run in any repository.
@@ -57,6 +59,7 @@ state is claimed, and nothing is published.
 """
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -69,6 +72,25 @@ SCHEMA_PATH = REPO_ROOT / "schemas" / "frontmatter.schema.json"
 LINT_DIR = REPO_ROOT / "lint"
 MIRROR = Path("docs") / "project-state.md"
 
+def _section_table():
+    """`scripts/sections.py`, loaded by path.
+
+    Imported the way the adapters borrow `state.py`: this file is run from
+    anywhere — a skill loads it by path before publishing — so it cannot rely on
+    `scripts/` being importable. The local name avoids the module-level
+    `sections()` function, which slices a document and is a different thing.
+    """
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("idp_sections",
+                                                  SCRIPT_DIR / "sections.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 LAYER_HEADER = "header"
 LAYER_SECTIONS = "sections"
 LAYER_CONTENT = "content"
@@ -77,15 +99,13 @@ LAYERS = (LAYER_HEADER, LAYER_SECTIONS, LAYER_CONTENT)
 TYPES = ("feature", "adr", "pbi", "pbi-agent", "bug")
 STAGES = ("draft", "final")
 
-# Which section holds the acceptance criteria, per type. `pbi-agent` has none
-# and must have none: criteria live on the card, where a human sees them.
-CRITERIA_SECTION = {
-    "feature": "## Чем подтвердим",
-    "adr": "## Чем подтвердим",
-    "pbi": "## Критерии приёмки",
-    "bug": "## Как понять, что починили",
-    "pbi-agent": None,
-}
+# Which section holds the acceptance criteria, and which mandatory sections a
+# draft may leave empty, are both properties of the artifact type — and both used
+# to be spelled here as Russian headings, which is what made an English artifact
+# fail this validator (IDE-132). They are now asked of `registry/sections.json`,
+# in whatever language the document turns out to be written in. `pbi-agent` has
+# no criteria section and must have none: criteria live on the card, where a
+# human sees them.
 
 # The status-dependence of IDE-78, as data rather than as an if-branch.
 #
@@ -94,17 +114,17 @@ CRITERIA_SECTION = {
 # The ADR row is the standard's own example, moved from Spike (which is a card,
 # not one of the five file types) onto the artifact that does have a status
 # field: an ADR at `proposed` has not chosen yet, so it has not paid yet.
-RULES = {
-    ("feature", "draft"): {"deferred": (), "evidence": False},
-    ("feature", "final"): {"deferred": (), "evidence": False},
-    ("adr", "draft"): {"deferred": ("## Чем платим",), "evidence": False},
-    ("adr", "final"): {"deferred": (), "evidence": True},
-    ("pbi", "draft"): {"deferred": (), "evidence": True},
-    ("pbi", "final"): {"deferred": (), "evidence": True},
-    ("pbi-agent", "draft"): {"deferred": (), "evidence": False},
-    ("pbi-agent", "final"): {"deferred": (), "evidence": False},
-    ("bug", "draft"): {"deferred": (), "evidence": True},
-    ("bug", "final"): {"deferred": (), "evidence": True},
+EVIDENCE_REQUIRED = {
+    ("feature", "draft"): False,
+    ("feature", "final"): False,
+    ("adr", "draft"): False,
+    ("adr", "final"): True,
+    ("pbi", "draft"): True,
+    ("pbi", "final"): True,
+    ("pbi-agent", "draft"): False,
+    ("pbi-agent", "final"): False,
+    ("bug", "draft"): True,
+    ("bug", "final"): True,
 }
 
 # A board status is not the contract - the stage is. This table is a
@@ -732,7 +752,13 @@ def check_agent_file(body_sections, code, comment):
     check is mechanical because the rule is.
     """
     violations = []
-    wanted = {value for value in CRITERIA_SECTION.values() if value}
+    # Every language, not only the one this document is written in: a criteria
+    # heading in the agent attachment is wrong whichever words it uses.
+    table = _section_table()
+    wanted = {table.criteria_heading(artifact_type, language)
+              for artifact_type in table.table()["artifacts"]
+              for language in table.languages()}
+    wanted.discard(None)
     for section in body_sections:
         if section.rendered in wanted:
             violations.append(Violation(
@@ -844,7 +870,8 @@ def resolve_stage(header, stage=None, status=None):
 
 
 def validate_text(text, artifact_type=None, stage=None, status=None, template=False,
-                  root=None, path=None, lint_dir=None, schema_path=None):
+                  root=None, path=None, lint_dir=None, schema_path=None,
+                  language=None):
     """Run the three layers over one artifact. Returns a list of Violation.
 
     This is the importable entry point, and it is what a caller wires in front
@@ -852,6 +879,10 @@ def validate_text(text, artifact_type=None, stage=None, status=None, template=Fa
     returns. It raises only for problems that are not the artifact's fault -
     ConfigError when the checker's own configuration is broken, RequestError
     when the request is.
+
+    `language` is only a tie-breaker. The document's own headings decide which
+    language it is held to, and they are better evidence than anything the
+    caller can pass (IDE-132).
     """
     root = Path(root or REPO_ROOT)
     base = Path(path).resolve().parent if path else root
@@ -891,22 +922,40 @@ def validate_text(text, artifact_type=None, stage=None, status=None, template=Fa
             + ", ".join(TYPES), at_line.get("type", 1)))
         return violations                # nothing selects a config without it
 
-    required = load_lint_config(lint_name(resolved, plain), lint_dir)
     stage = resolve_stage(header, stage, status)
-
     lines = text.splitlines()
     code, comment = masks(lines, body_start)
     found = headings(lines, body_start, code, comment)
+
+    # Writing follows the profile; reading follows the document. An artifact is
+    # held to the standard in the language it is written in, so the Russian
+    # cards already on the board keep validating now that English is the
+    # default — no migration, and none needed (IDE-132).
+    table = _section_table()
+    key = lint_name(resolved, plain)
+    try:
+        document_language = table.detect([render(entry) for entry in found], key,
+                                         fallback=language)
+    except (table.SectionError, json.JSONDecodeError, OSError) as exc:
+        # The standard's own table is broken or missing. That is exit 6, the
+        # same as a broken lint config was: the checker cannot check.
+        raise ConfigError(f"registry/sections.json cannot be read: {exc}")
+    if lint_dir is not None:
+        # An explicit lint tree overrides the table. This is the seam a test
+        # points somewhere else; the standard itself lives in the table.
+        required = load_lint_config(key, lint_dir)
+    else:
+        required = table.required_headings(key, document_language)
     violations += check_sections(found, required)
 
     body_sections = sections(lines, found, comment)
     by_heading = {section.rendered: section for section in body_sections}
-    rules = RULES[(resolved, stage)]
+    deferred = table.deferred_headings(key, document_language) if stage == "draft" else ()
     mandatory = [entry for entry in required if entry != "*"]
 
     for entry in mandatory:
         section = by_heading.get(entry)
-        if section is None or entry in rules["deferred"]:
+        if section is None or entry in deferred:
             continue
         empty = check_empty(section)
         if empty:
@@ -919,17 +968,17 @@ def validate_text(text, artifact_type=None, stage=None, status=None, template=Fa
         violations += check_links(section, code, comment, base, root, issues,
                                   check_targets=not template)
 
-    criteria_heading = CRITERIA_SECTION[resolved]
+    criteria_heading = table.criteria_heading(key, document_language)
     if criteria_heading and criteria_heading in by_heading:
         violations += check_criteria(by_heading[criteria_heading],
-                                     rules["evidence"], template)
+                                     EVIDENCE_REQUIRED[(resolved, stage)], template)
     if resolved == "pbi-agent":
         violations += check_agent_file(body_sections, code, comment)
 
     return violations
 
 
-def validate_file(path, **kwargs):
+def validate_file(path, **kwargs):  # noqa: D401 - see validate_text
     target = Path(path)
     if not target.exists():
         raise RequestError(f"no artifact at {target}")
@@ -974,6 +1023,8 @@ def main(argv=None):
     parser.add_argument("--template", action="store_true",
                         help="placeholders and example paths are this file's content")
     parser.add_argument("--root", help="resolve relative links against this directory")
+    parser.add_argument("--language", help="tie-breaker when the document's own "
+                                           "headings do not say which language it is in")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -985,7 +1036,8 @@ def main(argv=None):
         for path in args.paths:
             violations = validate_file(
                 path, artifact_type=args.artifact_type, stage=args.stage,
-                status=args.status, template=args.template, root=args.root)
+                status=args.status, template=args.template, root=args.root,
+                language=args.language)
             collected.append((path, violations))
     except ConfigError as exc:
         fail(6, str(exc))

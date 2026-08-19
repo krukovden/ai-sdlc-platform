@@ -5,20 +5,21 @@ parent: IDE-0
 ---
 
 <!--
-Этот файл читает агент. Он отвечает на вопрос «где и как», и только на него.
+An agent reads this file. It answers "where and how", and nothing else.
 
-Критериев приёмки здесь быть не должно — ни одной строки: они живут в карточке
-PBI, где их видит человек. Цель задачи здесь не пересказывается — ни одной фразы
-о том, зачем это делается, иначе появляется вторая версия задачи; нужна цель —
-агент читает карточку.
+There must be no acceptance criteria here — not one line: they live on the PBI
+card, where a human sees them. The purpose of the task is not retold here
+either — not one sentence about why this is being done, or there are two
+versions of the task; an agent that needs the purpose reads the card.
 
-Работают указатели: «экспорт живёт в core/export.py, не в app/reports; схему не
-менять, она общая с биллингом». Не работает пересказ устройства модуля — он
-удлиняет чтение и снижает решаемость.
+Pointers work: "the export lives in core/export.py, not in app/reports; do not
+change the schema, it is shared with billing." Retelling how a module is built
+does not — it lengthens the reading and lowers the odds of the task being
+solved.
 -->
 
-## Где искать
+## Where to look
 
-- <файл или каталог, с которого начинать> — <что там взять>
-- <файл или каталог, который трогать нельзя> — <почему, чем это связано>
-- <ограничение реализации: чужой контракт, схема, стиль, версия зависимости>
+- <the file or directory to start from> — <what to take from it>
+- <the file or directory that must not be touched> — <why, and what it is tied to>
+- <an implementation constraint: somebody else's contract, a schema, a style, a dependency version>

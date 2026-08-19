@@ -1,89 +1,118 @@
-# Шаблоны артефактов
+# Artifact templates
 
-Исполняемая запись стандарта оформления, утверждённого в
-[IDE-78](https://linear.app/krukov-idea-hub/issue/IDE-78). Шаблоны здесь не
-проектируются — они переносятся из утверждённого решения без изменений.
+The executable record of the authoring standard approved in
+[IDE-78](https://linear.app/krukov-idea-hub/issue/IDE-78). Nothing is designed
+here — the templates are carried over from the approved decision unchanged.
 
-## Какой шаблон когда
+## Which template, when
 
-| Шаблон | Носитель | Кто пишет | Когда |
+| Template | Carrier | Who writes it | When |
 |---|---|---|---|
-| `feature.md` | карточка верхнего уровня | Product Owner через Discovery | в начале маршрута `feature` или `small-feature` |
-| `adr.md` | файл, прикреплённый к фиче | архитектор | после фичи, до планирования; на маршруте `small-feature` не пишется |
-| `adr.project.md` | файл, прикреплённый к эпику | `/idp-establish`, утверждает Product Owner | один на проект, до первой фичи ([IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase)) |
-| `pbi.md` | sub-issue фичи | планировщик | после утверждения ADR |
-| `pbi.agent.md` | вложение к тому же PBI | планировщик, одним действием с карточкой | вместе с `pbi.md`, не отдельным актом |
-| `bug.md` | карточка верхнего уровня | Product Owner через Discovery | маршрут `bug`, один гейт |
+| `feature.md` | a top-level card | the Product Owner, through Discovery | at the start of the `feature` or `small-feature` route |
+| `adr.md` | a file attached to the feature | the architect | after the feature, before planning; not written on the `small-feature` route |
+| `adr.project.md` | a file attached to the epic | `/idp-establish`, approved by the Product Owner | one per project, before the first feature ([IDE-110](https://linear.app/krukov-idea-hub/issue/IDE-110/spike-ide-109-design-the-establish-project-phase)) |
+| `pbi.md` | a sub-issue of the feature | the planner | after the ADR is approved |
+| `pbi.agent.md` | an attachment on that same PBI | the planner, in one action with the card | together with `pbi.md`, never as a separate act |
+| `bug.md` | a top-level card | the Product Owner, through Discovery | the `bug` route, one gate |
 
-Карточка отвечает на «что и зачем» и адресована человеку — менеджеру, Product
-Owner, тестировщику. Вложение отвечает на «где и как» и адресовано агенту.
-Граница проходит по вопросу, а не по объёму текста. Критерии приёмки живут
-только в карточке; во вложении их нет ни строки.
+The card answers "what and why" and is addressed to a human — a manager, a
+Product Owner, a tester. The attachment answers "where and how" and is addressed
+to an agent. The boundary runs along the question, not along the amount of text.
+Acceptance criteria live only on the card; there is not one line of them in the
+attachment.
 
-## Правило заполнения
+## Language
 
-**Обязательный раздел обязан иметь содержание. Необязательный удаляется целиком,
-а не заполняется прочерком `N/A`.**
+**A section's identity and a section's wording are two different facts**, and
+until [IDE-132](https://linear.app/krukov-idea-hub/issue/IDE-132) they were one
+string. Every template, every lint config and `scripts/validate.py` spelled the
+same Russian heading, so an artifact written in English failed the platform's own
+validator — the language was not presentation, it was the schema.
 
-Прочерк — это утверждение «здесь ничего нет», неотличимое от «сюда не дошли
-руки». Пустой обязательный раздел означает, что артефакт не готов, а не что он
-оформлен. Если в обязательном разделе правда нечего сказать — это и надо
-написать словами: «ничего не осталось» — утверждение, за которое кто-то
-отвечает, `N/A` — нет.
+Both facts now live in [`registry/sections.json`](../registry/sections.json):
+the id (`why`, `what`, `evidence`, `cost`) is the identity, and the heading is
+one rendering of it. Code names ids and never headings.
 
-Что именно обязательно, зависит от статуса артефакта: у ADR в статусе `proposed`
-и `approved` требования разные, у карточки при заведении и при закрытии — тоже.
+* The default language sits here, at the top of `templates/`. Every other
+  language is a directory named for it — `templates/ru/`.
+* Which language a project writes in is a **profile setting**, `"language"`,
+  because it is a property of the project's audience rather than of the platform.
+  `board.py init --language ru` writes it; `/idp-establish` writes it into the
+  profile it creates, so every later phase inherits it.
+* Reading is more forgiving than writing. `validate.py` recognises a document by
+  the headings it actually carries, so an artifact written before the default
+  moved keeps validating. Nothing has to be migrated.
 
-## Машинная шапка
+Header keys, identifiers, file names and label names are always English — code
+reads them.
 
-Верх каждого файла — YAML frontmatter, проверяемый схемой
-`schemas/frontmatter.schema.json` (JSON Schema draft 2020-12). Набор
-обязательных полей зависит от `type`. Прозу схемой не проверить, шапку —
-тривиально; на ней же держится выбор конфига линтера.
+## How to fill this in
 
-Ключи шапки, идентификаторы, имена файлов и меток — всегда английские, их читает
-код. Язык текста — настройка проекта; для этого проекта описания русские,
-заголовки issue английские.
+**A mandatory section must have content. An optional one is deleted whole rather
+than filled with `N/A`.**
 
-## Как запускается проверка
+A dash is the statement "there is nothing here", which is indistinguishable from
+"nobody got to this". An empty mandatory section means the artifact is not ready,
+not that it has been filled in. If there is genuinely nothing to say in a
+mandatory section, then say that in words: "nothing is left" is a statement
+somebody is answerable for; `N/A` is not.
 
-Структуру разделов проверяет `markdownlint` правилом **MD043
-(required-headings)**. MD043 хранит один список заголовков на весь прогон, а
-структур у артефактов шесть — поэтому конфигов тоже шесть, в каталоге `lint/`.
-Каждый расширяет корневой `.markdownlint.jsonc` и переопределяет только
-`MD043.headings`.
+What exactly is mandatory depends on the artifact's status: an ADR at `proposed`
+and an ADR at `approved` are held to different things, and so is a card when it
+is created versus when it is closed.
 
-Конфиг выбирается по полю `type`, а у ADR — по `type` **и** `scope`: проектный
-ADR несёт раздел «Этапы», которого у фичевого нет. Это единственное место, где
-конфиг выбирают два поля шапки, и это же довод за то, что `scope` — отдельное
-поле, а не ещё одно значение `route`: маршрут считает гейты одной единицы
-работы, а проект целиком единицей работы не является.
+## The machine header
+
+The top of every file is YAML frontmatter, checked against
+`schemas/frontmatter.schema.json` (JSON Schema draft 2020-12). Which fields are
+mandatory depends on `type`. Prose cannot be checked by a schema; a header can,
+trivially — and the choice of lint config hangs off it too.
+
+## How the check is run
+
+The structure of the sections is checked by `markdownlint` through **MD043
+(required-headings)**. MD043 holds a single heading list for a whole run and
+there are six artifact structures, so there are six configs, in `lint/`. Each
+extends the root `.markdownlint.jsonc` and overrides only `MD043.headings`.
+
+Those lists are a **mirror of `registry/sections.json`**, rendered in the default
+language; `scripts/sections.py --check-lint`, and a test, refuse to let the two
+disagree. `scripts/validate.py` reads the table directly and therefore accepts an
+artifact in any language the table defines.
+
+The config is chosen by the `type` field, and for an ADR by `type` **and**
+`scope`: a project ADR carries a Stages section that a feature ADR does not. That
+is the only place two header fields choose a config, and it is also the argument
+for `scope` being its own field rather than another value of `route`: a route
+counts the gates of one unit of work, and a whole project is not one unit of work.
 
 ```bash
-npx markdownlint-cli --config lint/feature.jsonc   templates/feature.md
-npx markdownlint-cli --config lint/adr.jsonc       templates/adr.md
+npx markdownlint-cli --config lint/feature.jsonc     templates/feature.md
+npx markdownlint-cli --config lint/adr.jsonc         templates/adr.md
 npx markdownlint-cli --config lint/adr-project.jsonc templates/adr.project.md
-npx markdownlint-cli --config lint/pbi.jsonc       templates/pbi.md
-npx markdownlint-cli --config lint/pbi-agent.jsonc templates/pbi.agent.md
-npx markdownlint-cli --config lint/bug.jsonc       templates/bug.md
+npx markdownlint-cli --config lint/pbi.jsonc         templates/pbi.md
+npx markdownlint-cli --config lint/pbi-agent.jsonc   templates/pbi.agent.md
+npx markdownlint-cli --config lint/bug.jsonc         templates/bug.md
 ```
 
-Проверка запускается именно `markdownlint-cli`: он принимает конфиг по любому
-пути. У `markdownlint-cli2` имя конфига должно оканчиваться на
-`.markdownlint-cli2.jsonc` или `.markdownlint.jsonc`, и файлы в `lint/`
-пришлось бы переименовать в `feature.markdownlint.jsonc` и так далее.
+It is `markdownlint-cli` specifically: it accepts a config at any path. With
+`markdownlint-cli2` the config name has to end in `.markdownlint-cli2.jsonc` or
+`.markdownlint.jsonc`, and the files in `lint/` would have to be renamed to
+`feature.markdownlint.jsonc` and so on.
 
-Остальные markdown-файлы репозитория проверяются корневым конфигом, где MD043
-выключен. Шаблоны исключаются — у них свои конфиги; `docs/project-state.md`
-исключается как генерируемый файл, его стиль задаёт рендерер, а не автор:
+Every other markdown file in the repository is checked by the root config, where
+MD043 is off. The templates are excluded — they have their own configs; and
+`docs/project-state.md` is excluded as a generated file whose style is set by the
+renderer rather than by an author:
 
 ```bash
 npx markdownlint-cli --config .markdownlint.jsonc . \
   --ignore templates --ignore docs/project-state.md --ignore node_modules
 ```
 
-Сопоставление файла с его конфигом по полю `type` из шапки, проверка шапки
-схемой и проверка того, что обязательный раздел не пуст, — работа
-скрипта-проверки. Это отдельная задача: здесь лежит стандарт, а не его
-исполнитель. Коды выхода такой проверки берутся из общего набора `scripts/board.py`:
-`0` успех, `2` внешняя система недоступна, `3` запрос неверен, `6` конфигурация.
+Matching a file to its config by the `type` field, checking the header against
+the schema, and checking that a mandatory section is not empty is the work of the
+checking script. That is a separate concern: what lives here is the standard, not
+its executor. Its exit codes come from the shared set in `scripts/board.py`: `0`
+success, `2` an external system is unreachable, `3` the request is malformed, `6`
+configuration.

@@ -15,10 +15,31 @@ board answer "do I already have this?" — identity by correlation id, never by
 title, because a title is a thing humans edit.
 """
 
+import importlib.util
 import json
+import sys
 from pathlib import Path
 
 SCHEMA_VERSION = "1.0"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def load_sections():
+    """`scripts/sections.py`: the one place a section id becomes words (IDE-132).
+
+    This file writes the documents a foreign team actually reads — the project
+    ADR on their epic and two pages on their wiki. Rendering them in a language
+    that team does not read is the same as not publishing them.
+    """
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        "idp_sections", REPO_ROOT / "scripts" / "sections.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class PublishError(Exception):
@@ -60,14 +81,19 @@ def render_project_adr(package):
         "---",
     ])
 
+    words = load_sections()
+    language = package.get("language")
+
     stages = []
     for index, stage in enumerate(package.get("stages", [])):
         if index == 0:
             features = [f for f in package.get("features", [])
                         if f["stage"] == stage["id"]]
-            stages.append(f"- **{stage['title']}** (открытый этап) — {stage['summary']}")
+            stages.append(f"- **{stage['title']}** "
+                          f"{words.phrase('open-stage', language)} — {stage['summary']}")
             for feature in features:
-                mark = "" if feature["discovery"] == "done" else " · ожидает Discovery"
+                mark = ("" if feature["discovery"] == "done"
+                        else words.phrase("awaits-discovery", language))
                 stages.append(f"  - {feature['title']} — {feature['outcome']}{mark}")
         else:
             stages.append(f"- **{stage['title']}** — {stage['summary']}")
@@ -78,40 +104,43 @@ def render_project_adr(package):
                       if s["id"] == scenario_id), scenario_id)
         hops = " → ".join([trace[0]["from"]] + [hop["to"] for hop in trace])
         interfaces = ", ".join(hop["interface"] for hop in trace)
-        criteria.append(f"- **AC-{number}** — сценарий «{title}» проходит через "
-                        f"компоненты без разрывов\n"
-                        f"  Evidence: {hops} (интерфейсы: {interfaces})")
+        criteria.append(
+            f"- **AC-{number}** — "
+            + words.phrase("scenario-passes", language, title=title) + "\n"
+            + "  Evidence: " + words.phrase("trace-evidence", language,
+                                            hops=hops, interfaces=interfaces))
 
     return "\n".join([
         header, "",
-        "## Зачем", "", material.get("system", ""), "",
+        words.heading("why", language), "", material.get("system", ""), "",
         material.get("boundaries", ""), "",
-        "## Что строим", "",
-        "**Компоненты**", "",
+        words.heading("what", language), "",
+        words.phrase("label-components", language), "",
         _bullets(material.get("components", []),
                  lambda c: f"**{c['name']}** — {c['responsibility']}"), "",
-        "**Взаимодействия**", "",
+        words.phrase("label-interactions", language), "",
         _bullets(material.get("interactions", []),
                  lambda i: f"{i['from']} → {i['to']} · {i['protocol']} · `{i['interface']}`"), "",
-        "**Владение данными**", "", material.get("data_owners", ""), "",
-        "**Внешние зависимости**", "",
+        words.phrase("label-data-owners", language), "",
+        material.get("data_owners", ""), "",
+        words.phrase("label-externals", language), "",
         _bullets(material.get("external_dependencies", []),
-                 lambda d: f"**{d['name']}** — без неё: {d['absent_behaviour']}"), "",
-        "**Единицы развёртывания**", "", material.get("deployment_units", ""), "",
-        "## Этапы", "",
-        "Карточки заведены только под открытый этап; остальные ждут своей очереди.", "",
+                 lambda d: words.phrase("without-it", language, name=d["name"],
+                                        behaviour=d["absent_behaviour"])), "",
+        words.phrase("label-deployment", language), "",
+        material.get("deployment_units", ""), "",
+        words.heading("stages", language), "",
+        words.phrase("cards-open-stage", language), "",
         "\n".join(stages), "",
-        "## Чем подтвердим", "",
+        words.heading("evidence", language), "",
         "\n".join(criteria) or "- —", "",
-        "## Чего этот документ не решает", "",
+        words.heading("not-in-scope", language), "",
         material.get("non_goals", ""), "",
-        ("Как система устроена сейчас — на вики, она переписывается при каждом "
-         f"изменении: {wiki_address(package, 'architecture')} и "
-         f"{wiki_address(package, 'flow')}. Этот документ отвечает на «почему "
-         "решили так» и не переписывается.\n" if package.get("wiki") else ""),
-        "Решения по отдельным фичам — в их собственных ADR, которые ссылаются сюда "
-        "и описывают только дельту.", "",
-        "## Чем платим", "",
+        (words.phrase("wiki-pointer", language,
+                      architecture=wiki_address(package, "architecture"),
+                      flow=wiki_address(package, "flow")) if package.get("wiki") else ""),
+        words.phrase("feature-adrs", language), "",
+        words.heading("cost", language), "",
         material.get("constraints", ""), "",
     ])
 
@@ -153,6 +182,8 @@ def feature_cid(package, feature):
 
 def render_feature(package, feature):
     material = package["material"]
+    words = load_sections()
+    language = package.get("language")
     header = "\n".join([
         "---",
         "type: feature",
@@ -170,53 +201,53 @@ def render_feature(package, feature):
         for number, scenario_id in enumerate(traced, 1):
             title = next((s["title"] for s in material.get("scenarios", [])
                           if s["id"] == scenario_id), scenario_id)
-            criteria.append(f"- **AC-{number}** — «{title}» работает от края до края")
+            criteria.append(f"- **AC-{number}** — "
+                            + words.phrase("works-end-to-end", language, title=title))
         confirmation = "\n".join(criteria)
     else:
         # Not a placeholder and not `N/A`: a statement somebody is answerable
         # for. This feature was sliced out of an architecture that did not say
         # enough about it, and Discovery is what writes its criteria.
-        confirmation = ("Критериев приёмки пока нет: фича помечена "
-                        "`discovery: required` и не двигается дальше, пока "
-                        "`/idp-discovery` их не напишет.")
+        confirmation = words.phrase("no-criteria-yet", language)
 
     return "\n".join([
         header, "",
-        "## Зачем", "", feature["outcome"], "",
-        "## Что строим", "",
-        f"Затронутые компоненты: {', '.join(feature['components'])}.", "",
-        f"Проектный ADR: `{package['correlation_id']}`.", "",
-        "## Чем подтвердим", "", confirmation, "",
-        "## Чего не делаем", "",
-        "Всё, что не входит в открытый этап — оно живёт строкой в проектном ADR "
-        "и станет карточкой, когда этап откроется.", "",
+        words.heading("why", language), "", feature["outcome"], "",
+        words.heading("what", language), "",
+        words.phrase("components-touched", language,
+                     components=", ".join(feature["components"])), "",
+        words.phrase("project-adr-ref", language,
+                     correlation_id=package["correlation_id"]), "",
+        words.heading("evidence", language), "", confirmation, "",
+        words.heading("not-doing", language), "",
+        words.phrase("outside-open-stage", language), "",
     ])
 
 
 def render_schema_file(package, memory_doc):
     """The file at the repository root that points back at the board."""
+    words = load_sections()
+    language = package.get("language")
     return "\n".join([
         f"# {package['slug']}",
         "",
-        "**Источник истины — доска, а не этот репозиторий.** Здесь код; что и зачем "
-        "построено, живёт на доске.",
+        words.phrase("board-is-the-truth", language),
         "",
-        f"- Эпик: `{package['epic']}`",
-        f"- Память проекта: `{memory_doc}` — реестр фич, пишется при мерже",
-        f"- correlation_id проекта: `{package['correlation_id']}`",
+        "- " + words.phrase("epic-line", language, epic=package["epic"]),
+        "- " + words.phrase("memory-line", language, document=memory_doc),
+        "- " + words.phrase("cid-line", language,
+                            correlation_id=package["correlation_id"]),
         "",
-        "## Как загрузить состояние",
+        words.heading("load-state", language),
         "",
         "```bash",
-        "python3 scripts/board.py status <ID>   # где карточка и что запускать",
-        "python3 scripts/board.py memory core   # что уже существует",
+        "python3 scripts/board.py status <ID>",
+        "python3 scripts/board.py memory core",
         "```",
         "",
-        "## Фичи, ожидающие Discovery",
+        words.heading("awaiting-discovery", language),
         "",
-        "Карточка с `discovery: required` в машинной шапке нарезана из архитектуры, "
-        "которая о ней сказала недостаточно. `/idp-design` её не возьмёт: сначала "
-        "`/idp-discovery`.",
+        words.phrase("discovery-required-note", language),
         "",
     ])
 
@@ -242,43 +273,47 @@ def render_wiki_architecture(package, adr_url):
     a decision is the month they do.
     """
     material = package["material"]
+    words = load_sections()
+    language = package.get("language")
     lines = [
-        f"# {package['slug']} — архитектура",
+        "# " + words.phrase("wiki-architecture-title", language, slug=package["slug"]),
         "",
-        "Живая страница: как система устроена **сейчас**. Почему решили именно так — "
-        f"в проектном ADR: {adr_url}",
+        words.phrase("wiki-live-architecture", language, adr=adr_url),
         "",
-        "## Компоненты",
+        words.heading("components", language),
         "",
-        "| Компонент | За что отвечает |",
+        words.phrase("components-table", language),
         "| -- | -- |",
     ]
     for component in material.get("components", []):
         lines.append(f"| **{component['name']}** | {component['responsibility']} |")
-    lines += ["", "## Кто с кем говорит", ""]
+    lines += ["", words.heading("interactions", language), ""]
     for interaction in material.get("interactions", []):
         lines.append(f"- {interaction['from']} → **{interaction['to']}** — "
                      f"{interaction['protocol']}, `{interaction['interface']}`")
     externals = material.get("external_dependencies", [])
-    lines += ["", "## Внешние системы", ""]
+    lines += ["", words.heading("external", language), ""]
     if externals:
         for dependency in externals:
-            lines.append(f"- **{dependency['name']}** — без неё: "
-                         f"{dependency['absent_behaviour']}")
+            lines.append("- " + words.phrase(
+                "without-it", language, name=dependency["name"],
+                behaviour=dependency["absent_behaviour"]))
     else:
-        lines.append("Ни одной: система ни от чего снаружи не зависит.")
-    lines += ["", f"Страница потоков: {wiki_address(package, 'flow')}", ""]
+        lines.append(words.phrase("no-externals", language))
+    lines += ["", words.phrase("flow-page-link", language,
+                               address=wiki_address(package, "flow")), ""]
     return "\n".join(lines)
 
 
 def render_wiki_flow(package, adr_url):
     """What happens, step by step, for each scenario that was traced."""
     material = package["material"]
+    words = load_sections()
+    language = package.get("language")
     lines = [
-        f"# {package['slug']} — потоки",
+        "# " + words.phrase("wiki-flow-title", language, slug=package["slug"]),
         "",
-        "Живая страница: что происходит по шагам. Почему устроено так — "
-        f"в проектном ADR: {adr_url}",
+        words.phrase("wiki-live-flow", language, adr=adr_url),
         "",
     ]
     for scenario_id, trace in sorted(package["traces"].items()):
@@ -289,7 +324,8 @@ def render_wiki_flow(package, adr_url):
             lines.append(f"{number}. **{hop['from']}** → **{hop['to']}** · "
                          f"`{hop['interface']}`")
         lines.append("")
-    lines += [f"Страница архитектуры: {wiki_address(package, 'architecture')}", ""]
+    lines += [words.phrase("architecture-page-link", language,
+                           address=wiki_address(package, "architecture")), ""]
     return "\n".join(lines)
 
 
@@ -333,6 +369,10 @@ def step_profile(board, state, package, published):
     }
     if package.get("wiki"):
         profile["wiki"] = package["wiki"]
+    if package.get("language"):
+        # Written here so /idp-discovery, /idp-design and /idp-planning inherit
+        # it without anybody being asked the same question four times.
+        profile["language"] = package["language"]
     target = Path(state["repository"]["address"]) / ".idp" / "profile.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",

@@ -1,0 +1,563 @@
+{
+  "schema_version": 1,
+  "//": [
+    "Section identity and section wording are two different facts, and until",
+    "IDE-132 they were one string. That string was Russian, so every artifact",
+    "the platform produced was Russian — and because lint/*.jsonc and",
+    "scripts/validate.py keyed their required-heading checks off the same",
+    "literals, an English artifact failed the platform's own validator. The",
+    "language was not presentation. It was the schema.",
+    "",
+    "Here the id is the identity and the heading is one rendering of it. Code",
+    "names ids and never headings; a document is written in one language and",
+    "read in whichever one it turns out to be written in.",
+    "",
+    "This file is the single place both facts are defined. lint/<type>.jsonc",
+    "mirrors the `required` lists for `default_language` and a test refuses to",
+    "let the two disagree."
+  ],
+  "languages": [
+    "en",
+    "ru"
+  ],
+  "default_language": "en",
+  "headings": {
+    "why": {
+      "en": "Why",
+      "ru": "Зачем"
+    },
+    "what": {
+      "en": "What we build",
+      "ru": "Что строим"
+    },
+    "stages": {
+      "en": "Stages",
+      "ru": "Этапы"
+    },
+    "evidence": {
+      "en": "What proves it",
+      "ru": "Чем подтвердим"
+    },
+    "not-in-scope": {
+      "en": "What this document does not decide",
+      "ru": "Чего этот документ не решает"
+    },
+    "not-doing": {
+      "en": "What we are not doing",
+      "ru": "Чего не делаем"
+    },
+    "cost": {
+      "en": "What it costs us",
+      "ru": "Чем платим"
+    },
+    "breaks": {
+      "en": "What breaks",
+      "ru": "Что ломается"
+    },
+    "expected": {
+      "en": "What should happen",
+      "ru": "Как должно быть"
+    },
+    "conditions": {
+      "en": "Under what conditions",
+      "ru": "При каких условиях"
+    },
+    "fixed": {
+      "en": "How we know it is fixed",
+      "ru": "Как понять, что починили"
+    },
+    "result": {
+      "en": "Result",
+      "ru": "Результат"
+    },
+    "criteria": {
+      "en": "Acceptance criteria",
+      "ru": "Критерии приёмки"
+    },
+    "where-to-look": {
+      "en": "Where to look",
+      "ru": "Где искать"
+    },
+    "problem": {
+      "en": "Problem",
+      "ru": "Проблема"
+    },
+    "requirements": {
+      "en": "Requirements",
+      "ru": "Требования"
+    },
+    "po-decisions": {
+      "en": "Product Owner decisions",
+      "ru": "Решения Product Owner"
+    },
+    "assumptions": {
+      "en": "Assumptions — nobody confirmed these",
+      "ru": "Допущения — их никто не подтверждал"
+    },
+    "proof": {
+      "en": "Evidence",
+      "ru": "Доказательства"
+    },
+    "open-questions": {
+      "en": "Left open",
+      "ru": "Осталось открытым"
+    },
+    "reviewed": {
+      "en": "What was reviewed",
+      "ru": "Что рассмотрено"
+    },
+    "decision-registry": {
+      "en": "Decision registry",
+      "ru": "Реестр решений"
+    },
+    "alternatives": {
+      "en": "Alternatives",
+      "ru": "Альтернативы"
+    },
+    "tried-and-rejected": {
+      "en": "Tried and rejected",
+      "ru": "Рассмотрено и отклонено"
+    },
+    "interactions": {
+      "en": "Who talks to whom",
+      "ru": "Кто с кем говорит"
+    },
+    "how-built": {
+      "en": "How it is built",
+      "ru": "Как это сделано"
+    },
+    "how-it-went": {
+      "en": "How it went",
+      "ru": "Как это получилось"
+    },
+    "awaiting-discovery": {
+      "en": "Features awaiting Discovery",
+      "ru": "Фичи, ожидающие Discovery"
+    },
+    "feature-history": {
+      "en": "Feature history",
+      "ru": "История фичи"
+    },
+    "fill-rule": {
+      "en": "How to fill this in",
+      "ru": "Правило заполнения"
+    },
+    "check-run": {
+      "en": "How the check is run",
+      "ru": "Как запускается проверка"
+    },
+    "artifact-templates": {
+      "en": "Artifact templates",
+      "ru": "Шаблоны артефактов"
+    },
+    "users": {
+      "en": "Users",
+      "ru": "Пользователи"
+    },
+    "constraints": {
+      "en": "Constraints",
+      "ru": "Ограничения"
+    },
+    "dependencies": {
+      "en": "Dependencies",
+      "ru": "Зависимости"
+    },
+    "components": {
+      "en": "Components",
+      "ru": "Компоненты"
+    },
+    "external": {
+      "en": "External systems",
+      "ru": "Внешние системы"
+    },
+    "load-state": {
+      "en": "How to load the state",
+      "ru": "Как загрузить состояние"
+    }
+  },
+  "artifacts": {
+    "feature": {
+      "required": [
+        "why",
+        "what",
+        "evidence",
+        "not-doing"
+      ],
+      "criteria": "evidence",
+      "deferred_at_draft": []
+    },
+    "adr": {
+      "required": [
+        "why",
+        "what",
+        "evidence",
+        "not-in-scope",
+        "cost"
+      ],
+      "criteria": "evidence",
+      "deferred_at_draft": [
+        "cost"
+      ]
+    },
+    "adr-project": {
+      "required": [
+        "why",
+        "what",
+        "stages",
+        "evidence",
+        "not-in-scope",
+        "cost"
+      ],
+      "criteria": "evidence",
+      "deferred_at_draft": [
+        "cost"
+      ]
+    },
+    "pbi": {
+      "required": [
+        "result",
+        "criteria"
+      ],
+      "criteria": "criteria",
+      "deferred_at_draft": []
+    },
+    "pbi-agent": {
+      "required": [
+        "where-to-look"
+      ],
+      "criteria": null,
+      "deferred_at_draft": []
+    },
+    "bug": {
+      "required": [
+        "breaks",
+        "expected",
+        "conditions",
+        "fixed"
+      ],
+      "criteria": "fixed",
+      "deferred_at_draft": []
+    }
+  },
+  "phrases": {
+    "//": "Every sentence a renderer puts inside an artifact. English is written for the field; the Russian column is the literal text these renderers emitted before IDE-132, moved here rather than retranslated.",
+    "criterion": {
+      "en": "given {given}, when {when}, then {then}",
+      "ru": "если {given}, когда {when}, то {then}"
+    },
+    "independent-review": {
+      "en": "Independent review: {mode}",
+      "ru": "Независимая проверка: {mode}"
+    },
+    "gap-rounds": {
+      "en": "Gap-search rounds: {rounds}",
+      "ru": "Раундов поиска пробелов: {rounds}"
+    },
+    "practice-research": {
+      "en": "Practice research: {value}",
+      "ru": "Исследование практик: {value}"
+    },
+    "search-truncated": {
+      "en": "**The search stopped at a limit, not at exhaustion.** This is not a complete search.",
+      "ru": "**Поиск остановлен лимитом, а не исчерпанием.** Это не полный поиск."
+    },
+    "risk": {
+      "en": "risk {risk}",
+      "ru": "риск {risk}"
+    },
+    "confirmed": {
+      "en": "confirmed",
+      "ru": "подтверждено"
+    },
+    "not-confirmed": {
+      "en": "not confirmed",
+      "ru": "не подтверждено"
+    },
+    "cost-and-breaks": {
+      "en": "Costs: {cost}. Breaks: {where}.",
+      "ru": "Стоит: {cost}. Ломается: {where}."
+    },
+    "feature-branch": {
+      "en": "Feature branch: `{branch}`",
+      "ru": "Ветка фичи: `{branch}`"
+    },
+    "adr-sections": {
+      "en": "ADR sections: {sections}",
+      "ru": "Разделы ADR: {sections}"
+    },
+    "do-not-touch": {
+      "en": "do not touch: {pointer}",
+      "ru": "не трогать: {pointer}"
+    },
+    "constraint": {
+      "en": "constraint: {pointer}",
+      "ru": "ограничение: {pointer}"
+    },
+    "work-in-branch": {
+      "en": "feature branch: `{branch}` — work in it; the PBI merges into it",
+      "ru": "ветка фичи: `{branch}` — работать в ней, PBI мержится в неё"
+    },
+    "declared-paths": {
+      "en": "declared paths: {paths}",
+      "ru": "объявленные пути: {paths}"
+    },
+    "waits-on": {
+      "en": "waits on: {need}",
+      "ru": "ждёт: {need}"
+    },
+    "about-repository": {
+      "en": "about this repository: {notes}",
+      "ru": "про этот репозиторий: {notes}"
+    },
+    "considered-table": {
+      "en": "| Artifact | Status |",
+      "ru": "| Артефакт | Статус |"
+    },
+    "skipped-because": {
+      "en": "skipped — {reason}",
+      "ru": "пропущен — {reason}"
+    },
+    "no-reason-recorded": {
+      "en": "no reason recorded",
+      "ru": "причина не записана"
+    },
+    "written": {
+      "en": "written",
+      "ru": "написан"
+    },
+    "registry-table": {
+      "en": "| id | decision | reversibility | why it is classified this way |",
+      "ru": "| id | решение | обратимость | почему так классифицировано |"
+    },
+    "practice-contradicts": {
+      "en": " · **external practice contradicts this decision**",
+      "ru": " · **внешняя практика противоречит этому решению**"
+    },
+    "no-hard-decisions": {
+      "en": "No hard-to-reverse decisions, so no alternatives were generated. Three alternatives for the name of an internal helper cost more than changing your mind.",
+      "ru": "Необратимых решений нет — альтернативы не генерировались. Три альтернативы для имени внутреннего хелпера стоят дороже, чем передумать."
+    },
+    "round-not-run": {
+      "en": "The round has not been run yet.",
+      "ru": "Раунд ещё не проводился."
+    },
+    "alternatives-skipped": {
+      "en": "No alternatives were obtained: the provider was unavailable, mode `skipped`. This is not \"we looked and found none\".",
+      "ru": "Альтернативы не получены: провайдер недоступен, режим `skipped`. Это не «искали и не нашли»."
+    },
+    "practice-unconsidered": {
+      "en": "**The practice finding on this decision was left as an unconsidered alternative.**",
+      "ru": "**Находка практики по этому решению осталась нерассмотренной альтернативой.**"
+    },
+    "alternatives-table": {
+      "en": "| alternative | {axes} | when it wins | when it loses |",
+      "ru": "| альтернатива | {axes} | когда выигрывает | когда проигрывает |"
+    },
+    "answers-practice": {
+      "en": "\"{name}\" answers the practice finding: {finding}",
+      "ru": "«{name}» отвечает на находку практики: {finding}"
+    },
+    "no-rejected": {
+      "en": "The architect rejected no objections.",
+      "ru": "Возражений, отклонённых архитектором, нет."
+    },
+    "rejected-because": {
+      "en": "{text} — rejected: {reason}",
+      "ru": "{text} — отклонено: {reason}"
+    },
+    "architect-line": {
+      "en": "architect: {model}",
+      "ru": "архитектор: {model}"
+    },
+    "critic-line": {
+      "en": "critic: {mode}",
+      "ru": "критик: {mode}"
+    },
+    "alternatives-line": {
+      "en": "alternatives {decision}: {mode}",
+      "ru": "альтернативы {decision}: {mode}"
+    },
+    "budget-forced": {
+      "en": "the alternatives budget was lifted by hand (--force-budget): {count} hard-to-reverse decisions",
+      "ru": "бюджет альтернатив снят вручную (--force-budget): {count} необратимых решений"
+    },
+    "degradation": {
+      "en": "**degraded:** {what}",
+      "ru": "**деградация:** {what}"
+    },
+    "open-stage": {
+      "en": "(open stage)",
+      "ru": "(открытый этап)"
+    },
+    "awaits-discovery": {
+      "en": " · awaiting Discovery",
+      "ru": " · ожидает Discovery"
+    },
+    "scenario-passes": {
+      "en": "scenario \"{title}\" passes through the components with no gaps",
+      "ru": "сценарий «{title}» проходит через компоненты без разрывов"
+    },
+    "trace-evidence": {
+      "en": "{hops} (interfaces: {interfaces})",
+      "ru": "{hops} (интерфейсы: {interfaces})"
+    },
+    "label-components": {
+      "en": "**Components**",
+      "ru": "**Компоненты**"
+    },
+    "label-interactions": {
+      "en": "**Interactions**",
+      "ru": "**Взаимодействия**"
+    },
+    "label-data-owners": {
+      "en": "**Data ownership**",
+      "ru": "**Владение данными**"
+    },
+    "label-externals": {
+      "en": "**External dependencies**",
+      "ru": "**Внешние зависимости**"
+    },
+    "label-deployment": {
+      "en": "**Deployment units**",
+      "ru": "**Единицы развёртывания**"
+    },
+    "cards-open-stage": {
+      "en": "Cards exist only for the open stage; the rest wait their turn.",
+      "ru": "Карточки заведены только под открытый этап; остальные ждут своей очереди."
+    },
+    "wiki-pointer": {
+      "en": "How the system is built now is on the wiki, which is rewritten on every change: {architecture} and {flow}. This document answers why it was decided this way, and is not rewritten.\\n",
+      "ru": "Как система устроена сейчас — на вики, она переписывается при каждом изменении: {architecture} и {flow}. Этот документ отвечает на «почему решили так» и не переписывается.\\n"
+    },
+    "feature-adrs": {
+      "en": "Decisions about individual features live in their own ADRs, which point back here and describe only the delta.",
+      "ru": "Решения по отдельным фичам — в их собственных ADR, которые ссылаются сюда и описывают только дельту."
+    },
+    "without-it": {
+      "en": "**{name}** — without it: {behaviour}",
+      "ru": "**{name}** — без неё: {behaviour}"
+    },
+    "works-end-to-end": {
+      "en": "\"{title}\" works end to end",
+      "ru": "«{title}» работает от края до края"
+    },
+    "no-criteria-yet": {
+      "en": "No acceptance criteria yet: this feature is marked `discovery: required` and moves no further until `/idp-discovery` writes them.",
+      "ru": "Критериев приёмки пока нет: фича помечена `discovery: required` и не двигается дальше, пока `/idp-discovery` их не напишет."
+    },
+    "components-touched": {
+      "en": "Components touched: {components}.",
+      "ru": "Затронутые компоненты: {components}."
+    },
+    "project-adr-ref": {
+      "en": "Project ADR: `{correlation_id}`.",
+      "ru": "Проектный ADR: `{correlation_id}`."
+    },
+    "outside-open-stage": {
+      "en": "Everything outside the open stage — it lives as one line in the project ADR and becomes a card when its stage opens.",
+      "ru": "Всё, что не входит в открытый этап — оно живёт строкой в проектном ADR и станет карточкой, когда этап откроется."
+    },
+    "board-is-the-truth": {
+      "en": "**The board is the source of truth, not this repository.** The code is here; what was built and why lives on the board.",
+      "ru": "**Источник истины — доска, а не этот репозиторий.** Здесь код; что и зачем построено, живёт на доске."
+    },
+    "epic-line": {
+      "en": "Epic: `{epic}`",
+      "ru": "Эпик: `{epic}`"
+    },
+    "memory-line": {
+      "en": "Project memory: `{document}` — the feature registry, written at merge",
+      "ru": "Память проекта: `{document}` — реестр фич, пишется при мерже"
+    },
+    "cid-line": {
+      "en": "the project's correlation_id: `{correlation_id}`",
+      "ru": "correlation_id проекта: `{correlation_id}`"
+    },
+    "discovery-required-note": {
+      "en": "A card carrying `discovery: required` in its machine header was sliced out of an architecture that said too little about it. `/idp-design` will not pick it up: `/idp-discovery` comes first.",
+      "ru": "Карточка с `discovery: required` в машинной шапке нарезана из архитектуры, которая о ней сказала недостаточно. `/idp-design` её не возьмёт: сначала `/idp-discovery`."
+    },
+    "wiki-architecture-title": {
+      "en": "{slug} — architecture",
+      "ru": "{slug} — архитектура"
+    },
+    "wiki-flow-title": {
+      "en": "{slug} — flows",
+      "ru": "{slug} — потоки"
+    },
+    "wiki-live-architecture": {
+      "en": "A living page: how the system is built **now**. Why it was decided this way is in the project ADR: {adr}",
+      "ru": "Живая страница: как система устроена **сейчас**. Почему решили именно так — в проектном ADR: {adr}"
+    },
+    "wiki-live-flow": {
+      "en": "A living page: what happens, step by step. Why it is built this way is in the project ADR: {adr}",
+      "ru": "Живая страница: что происходит по шагам. Почему устроено так — в проектном ADR: {adr}"
+    },
+    "components-table": {
+      "en": "| Component | What it is responsible for |",
+      "ru": "| Компонент | За что отвечает |"
+    },
+    "no-externals": {
+      "en": "None: the system depends on nothing outside itself.",
+      "ru": "Ни одной: система ни от чего снаружи не зависит."
+    },
+    "flow-page-link": {
+      "en": "Flow page: {address}",
+      "ru": "Страница потоков: {address}"
+    },
+    "architecture-page-link": {
+      "en": "Architecture page: {address}",
+      "ru": "Страница архитектуры: {address}"
+    },
+    "history-preamble": {
+      "en": "Appended when a PBI merges into the feature branch. Appended only: this document answers \"how it came to be this way\", not \"how it should look now\".",
+      "ru": "Дописывается при мерже PBI в ветку фичи. Только дописывается: документ отвечает на вопрос «как это стало таким», а не «как это должно выглядеть сейчас»."
+    }
+  },
+  "candidate_artifacts": {
+    "//": "The floor of artifacts a design is asked to consider (IDE-69 §5). Not a quota: a feature that touches no storage gets a row saying so and why.",
+    "diagrams": {
+      "en": "Component and flow diagrams",
+      "ru": "Диаграммы компонентов и потоков"
+    },
+    "contracts": {
+      "en": "API contracts",
+      "ru": "Контракты API"
+    },
+    "storage": {
+      "en": "Storage model",
+      "ru": "Модель хранения"
+    },
+    "testing": {
+      "en": "Testing strategy",
+      "ru": "Стратегия тестирования"
+    },
+    "acceptance": {
+      "en": "Acceptance checks",
+      "ru": "Проверки при приёмке"
+    }
+  },
+  "axes": {
+    "//": "How an alternative is compared, per IDE-69. Ids are the keys the model answers with.",
+    "depth": {
+      "en": "depth",
+      "ru": "глубина"
+    },
+    "locality": {
+      "en": "locality",
+      "ru": "локальность"
+    },
+    "seam_placement": {
+      "en": "seam placement",
+      "ru": "размещение шва"
+    },
+    "testability": {
+      "en": "testability",
+      "ru": "тестируемость"
+    },
+    "cost_of_reversal": {
+      "en": "cost of reversal",
+      "ru": "цена отката"
+    }
+  }
+}

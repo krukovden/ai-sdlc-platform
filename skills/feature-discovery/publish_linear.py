@@ -59,6 +59,19 @@ def fail(code, message):
     sys.exit(code)
 
 
+def load_sections():
+    """The one place a section id becomes words (IDE-132)."""
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("idp_sections",
+                                                  SCRIPTS / "sections.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_validator():
     """The artifact standard's own checker, reused rather than re-implemented."""
     spec = importlib.util.spec_from_file_location("idp_validate",
@@ -69,7 +82,7 @@ def load_validator():
     return module
 
 
-def check_valid(package, discovery, root=None):
+def check_valid(package, discovery, root=None, profile=None):
     """Refuse to publish an artifact that fails the standard it claims to follow.
 
     The checker existed before this call site did, and a checker wired to
@@ -84,7 +97,7 @@ def check_valid(package, discovery, root=None):
     feature for mentioning an issue that legitimately lives somewhere else.
     """
     validator = load_validator()
-    text = discovery.render_markdown(package)
+    text = discovery.render_markdown(package, profile)
     try:
         violations = validator.validate_text(text, artifact_type="feature",
                                              stage="final",
@@ -206,7 +219,7 @@ def publish(board, profile, package, discovery, dry_run=False):
     if not project_id:
         fail(6, "the profile has no project_id; publication has nowhere to go")
 
-    body = discovery.render_markdown(package) + "\n\n" + meta_block(package)
+    body = discovery.render_markdown(package, profile) + "\n\n" + meta_block(package)
     title = title_for(package)
     existing = find_existing(board, project_id, package["correlation_id"])
 
@@ -242,80 +255,92 @@ def publish(board, profile, package, discovery, dry_run=False):
             board.apply_marker(identifier, opens)
 
     board.attach_document(f"{package['slug']} — specification",
-                          specification_document(package), identifier=identifier)
+                          specification_document(package, profile),
+                          identifier=identifier)
     board.add_comment(identifier, approval_block(package))
     return {"identifier": identifier, "created": created, "dry_run": False}
 
 
-def specification_document(package):
+def specification_document(package, profile=None):
     """The full specification and decision trace, as its own document.
 
     Separate from the card body on purpose: the card is what a human scans in a
     list, the document is what the next agent reads in full.
     """
     material = package["material"]
+    words = load_sections()
+    language = words.language_of(profile)
     lines = [f"# {package['slug']}", "",
              f"`correlation_id: {package['correlation_id']}` · "
              f"version {package['package_version']}", "",
-             "## Проблема", "", material.get("problem", "") or "—", "",
-             "## Результат", "", material.get("outcome", "") or "—", ""]
+             words.heading("problem", language), "",
+             material.get("problem", "") or "—", "",
+             words.heading("result", language), "",
+             material.get("outcome", "") or "—", ""]
 
-    for heading, key in (("Пользователи", "users"), ("Что строим", "scope"),
-                         ("Чего не делаем", "non_goals"),
-                         ("Ограничения", "constraints"),
-                         ("Зависимости", "dependencies")):
+    for section_id, key in (("users", "users"), ("what", "scope"),
+                            ("not-doing", "non_goals"),
+                            ("constraints", "constraints"),
+                            ("dependencies", "dependencies")):
         if material.get(key):
-            lines += [f"## {heading}", ""]
+            lines += [words.heading(section_id, language), ""]
             lines += [f"* {item}" for item in material[key]]
             lines.append("")
 
     if material.get("functional_requirements"):
-        lines += ["## Требования", ""]
+        lines += [words.heading("requirements", language), ""]
         for requirement in material["functional_requirements"]:
             lines.append(f"* **{requirement.get('id')}** — {requirement.get('text')}")
         lines.append("")
 
     if material.get("acceptance_criteria"):
-        lines += ["## Критерии приёмки", ""]
+        lines += [words.heading("criteria", language), ""]
         for criterion in material["acceptance_criteria"]:
-            lines.append(f"* **{criterion.get('id')}** — если {criterion.get('given')}, "
-                         f"когда {criterion.get('when')}, то {criterion.get('then')}")
+            lines.append(f"* **{criterion.get('id')}** — " + words.phrase(
+                "criterion", language, given=criterion.get("given"),
+                when=criterion.get("when"), then=criterion.get("then")))
         lines.append("")
 
     # Decisions and assumptions stay separate, so that reading this never
     # ratifies as decided something nobody was asked about.
     if package.get("decision_trace"):
-        lines += ["## Решения Product Owner", ""]
+        lines += [words.heading("po-decisions", language), ""]
         for entry in package["decision_trace"]:
             lines.append(f"* {entry.get('decision')} — {entry.get('rationale') or '—'}")
         lines.append("")
 
     if material.get("assumptions"):
-        lines += ["## Допущения — их никто не подтверждал", ""]
+        lines += [words.heading("assumptions", language), ""]
         for assumption in material["assumptions"]:
-            mark = "подтверждено" if assumption.get("validated") else "не подтверждено"
+            mark = words.phrase(
+                "confirmed" if assumption.get("validated") else "not-confirmed",
+                language)
             lines.append(f"* {assumption.get('text')} ({mark})")
         lines.append("")
 
     if package.get("evidence"):
-        lines += ["## Доказательства", ""]
+        lines += [words.heading("proof", language), ""]
         for entry in package["evidence"]:
             lines.append(f"* `{entry['id']}` {entry['uri']} — «{entry['quote']}»")
         lines.append("")
 
     provenance = package["provenance"]
-    lines += ["## Как это получилось", "",
-              f"* Независимая проверка: {provenance.get('reviewer_mode')}"
+    lines += [words.heading("how-it-went", language), "",
+              "* " + words.phrase("independent-review", language,
+                                  mode=provenance.get("reviewer_mode"))
               + (f" ({provenance['reviewer']})" if provenance.get("reviewer") else ""),
-              f"* Раундов поиска пробелов: {provenance.get('gap_rounds_run')}",
-              f"* Исследование практик: {provenance.get('practice_research')}"]
+              "* " + words.phrase("gap-rounds", language,
+                                  rounds=provenance.get("gap_rounds_run")),
+              "* " + words.phrase("practice-research", language,
+                                  value=provenance.get("practice_research"))]
     if provenance.get("gap_search_truncated"):
-        lines.append("* **Поиск остановлен лимитом, а не исчерпанием** — это не полный поиск")
+        lines.append("* " + words.phrase("search-truncated", language))
 
     if package.get("open_questions"):
-        lines += ["", "## Осталось открытым", ""]
+        lines += ["", words.heading("open-questions", language), ""]
         for question in package["open_questions"]:
-            lines.append(f"* {question['text']} — риск {question.get('risk')}")
+            lines.append(f"* {question['text']} — "
+                         + words.phrase("risk", language, risk=question.get("risk")))
     return "\n".join(lines)
 
 
@@ -338,11 +363,15 @@ def main(argv=None):
     discovery = load_discovery()
     package = load_package(args.package)
     check_publishable(package, discovery)
+    # The profile is read, not connected to, so a bad artifact still fails
+    # before anything touches the network. The language it names decides what
+    # the artifact is rendered — and therefore validated — in (IDE-132).
+    profile = board_module.load_profile()
     if args.skip_validation:
         print("WARNING: published without checking it against the standard.",
               file=sys.stderr)
     else:
-        check_valid(package, discovery, root=args.root)
+        check_valid(package, discovery, root=args.root, profile=profile)
 
     profile, _, board = board_module.open_board()
     result = publish(board, profile, package, discovery, dry_run=args.dry_run)

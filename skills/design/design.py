@@ -91,14 +91,12 @@ ALTERNATIVES_PER_ROUND = 2
 REVERSIBILITY = ["hard-to-reverse", "cheap-to-reverse"]
 
 # IDE-69 §5. A floor, not a quota: a feature that touches no storage does not
-# get a storage model, it gets a row saying so and why.
-CANDIDATE_ARTIFACTS = [
-    "Диаграммы компонентов и потоков",
-    "Контракты API",
-    "Модель хранения",
-    "Стратегия тестирования",
-    "Проверки при приёмке",
-]
+# get a storage model, it gets a row saying so and why. The list itself lives in
+# registry/sections.json, because an ADR published to a team that does not read
+# Russian has to be readable by them (IDE-132).
+def candidate_artifacts(language=None):
+    return [words for _, words in load_sections().catalogue("candidate_artifacts",
+                                                            language)]
 
 STATES = ["INIT", "DRAFTING", "PRACTICE", "ALTERNATIVES", "CRITIC",
           "INTEGRATING", "AWAITING_APPROVAL", "BLOCKED"]
@@ -293,6 +291,11 @@ def load_reviewer_module():
     place for the strict-structured-output rule of IDE-103 to be got wrong.
     """
     return load_sibling(DISCOVERY_SKILL / "reviewer.py", "idp_reviewer")
+
+
+def load_sections():
+    """The one place a section id becomes words (IDE-132)."""
+    return load_sibling(SCRIPTS / "sections.py", "idp_sections")
 
 
 def load_board_module():
@@ -517,9 +520,10 @@ def validate(state):
 # Rendering — the script's, always
 # ---------------------------------------------------------------------------
 
-AXES = [("depth", "глубина"), ("locality", "локальность"),
-        ("seam_placement", "размещение шва"), ("testability", "тестируемость"),
-        ("cost_of_reversal", "цена отката")]
+def axes(language=None):
+    """How an alternative is compared: the key the model answers with, and the
+    column heading a human reads. IDE-69, worded by registry/sections.json."""
+    return load_sections().catalogue("axes", language)
 
 
 def cell(text):
@@ -555,84 +559,95 @@ def render_adr(state):
         if heading not in headings:
             lines += [f"## {heading}", "", str(text).strip() or "—", ""]
 
-    lines += ["## Что рассмотрено", "", "| Артефакт | Статус |", "| -- | -- |"]
+    words = load_sections()
+    language = state.get("language")
+    columns = axes(language)
+
+    lines += [words.heading("reviewed", language), "",
+              words.phrase("considered-table", language), "| -- | -- |"]
     for row in state["considered"]:
         status = row["status"]
         if status == "skipped":
-            status = f"пропущен — {row.get('reason') or 'причина не записана'}"
+            status = words.phrase(
+                "skipped-because", language,
+                reason=row.get("reason") or words.phrase("no-reason-recorded", language))
         elif status == "written":
-            status = "написан"
+            status = words.phrase("written", language)
         lines.append(f"| {cell(row['artifact'])} | {cell(status)} |")
     lines.append("")
 
-    lines += ["## Реестр решений", "",
-              "| id | решение | обратимость | почему так классифицировано |",
+    lines += [words.heading("decision-registry", language), "",
+              words.phrase("registry-table", language),
               "| -- | -- | -- | -- |"]
     for decision in state["decisions"]:
         flag = ""
         if decision.get("flagged_by_practice"):
-            flag = " · **внешняя практика противоречит этому решению**"
+            flag = words.phrase("practice-contradicts", language)
         lines.append(f"| {cell(decision['id'])} | {cell(decision['decision'])} | "
                      f"{cell(decision['reversibility'])} | "
                      f"{cell(decision['why'])}{flag} |")
     lines.append("")
 
-    lines += ["## Альтернативы", ""]
+    lines += [words.heading("alternatives", language), ""]
     if not hard_decisions(state):
-        lines += ["Необратимых решений нет — альтернативы не генерировались. "
-                  "Три альтернативы для имени внутреннего хелпера стоят дороже, "
-                  "чем передумать.", ""]
+        lines += [words.phrase("no-hard-decisions", language), ""]
     for decision in hard_decisions(state):
         record = state.get("alternative_rounds", {}).get(decision["id"])
         lines += [f"### {decision['id']} — {decision['decision']}", ""]
         if not record:
-            lines += ["Раунд ещё не проводился.", ""]
+            lines += [words.phrase("round-not-run", language), ""]
             continue
         if record.get("mode") == "skipped":
-            lines += ["Альтернативы не получены: провайдер недоступен, режим "
-                      "`skipped`. Это не «искали и не нашли».", ""]
+            lines += [words.phrase("alternatives-skipped", language), ""]
             if decision.get("flagged_by_practice"):
-                lines += ["**Находка практики по этому решению осталась "
-                          "нерассмотренной альтернативой.**", ""]
+                lines += [words.phrase("practice-unconsidered", language), ""]
             continue
-        header = "| альтернатива | " + " | ".join(name for _, name in AXES) \
-                 + " | когда выигрывает | когда проигрывает |"
-        lines += [header, "| -- " * (len(AXES) + 3) + "|"]
+        header = words.phrase("alternatives-table", language,
+                              axes=" | ".join(name for _, name in columns))
+        lines += [header, "| -- " * (len(columns) + 3) + "|"]
         for alternative in state["alternatives"].get(decision["id"], []):
             cells = [cell(alternative["name"])]
-            cells += [cell(alternative["axes"][key]) for key, _ in AXES]
+            cells += [cell(alternative["axes"][key]) for key, _ in columns]
             cells += [cell(alternative["when_it_wins"]),
                       cell(alternative["when_it_loses"])]
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
         for alternative in state["alternatives"].get(decision["id"], []):
             if alternative.get("addresses_practice_finding"):
-                lines += [f"«{alternative['name']}» отвечает на находку практики: "
-                          f"{alternative['addresses_practice_finding']}", ""]
+                lines += [words.phrase(
+                    "answers-practice", language, name=alternative["name"],
+                    finding=alternative["addresses_practice_finding"]), ""]
 
     rejected = [o for o in state["objections"] if o.get("disposition") == "rejected"]
-    lines += ["## Рассмотрено и отклонено", ""]
+    lines += [words.heading("tried-and-rejected", language), ""]
     if not rejected:
-        lines += ["Возражений, отклонённых архитектором, нет.", ""]
+        lines += [words.phrase("no-rejected", language), ""]
     for objection in rejected:
-        lines.append(f"* {objection['text']} — отклонено: {objection.get('reason')}")
+        lines.append("* " + words.phrase("rejected-because", language,
+                                         text=objection["text"],
+                                         reason=objection.get("reason")))
     if rejected:
         lines.append("")
 
-    lines += ["## Как это сделано", "",
-              f"* архитектор: {state['architect_model']}",
+    lines += [words.heading("how-built", language), "",
+              "* " + words.phrase("architect-line", language,
+                                  model=state["architect_model"]),
               f"* best practice: {state['subphases']['practice'].get('mode', 'pending')}",
-              f"* критик: {state['subphases']['critic'].get('mode', 'pending')}"
-              f" ({state['subphases']['critic'].get('provider') or '—'})"]
+              "* " + words.phrase(
+                  "critic-line", language,
+                  mode=state["subphases"]["critic"].get("mode", "pending"))
+              + f" ({state['subphases']['critic'].get('provider') or '—'})"]
     for decision in hard_decisions(state):
         record = state.get("alternative_rounds", {}).get(decision["id"])
         mode = record.get("mode") if record else "pending"
-        lines.append(f"* альтернативы {decision['id']}: {mode}")
+        lines.append("* " + words.phrase("alternatives-line", language,
+                                         decision=decision["id"], mode=mode))
     if state.get("budget_forced"):
-        lines.append(f"* бюджет альтернатив снят вручную (--force-budget): "
-                     f"{len(hard_decisions(state))} необратимых решений")
+        lines.append("* " + words.phrase("budget-forced", language,
+                                         count=len(hard_decisions(state))))
     for degradation in state.get("degradations", []):
-        lines.append(f"* **деградация:** {degradation['what']}")
+        lines.append("* " + words.phrase("degradation", language,
+                                         what=degradation["what"]))
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -752,7 +767,7 @@ def cmd_init(args):
               file=sys.stderr)
         return
 
-    board, _, issue, answer = open_card(identifier)
+    board, profile, issue, answer = open_card(identifier)
     header = state_module().parse_machine_header(issue.get("description"))
 
     if (header.get("type") or "").strip().casefold() == "adr":
@@ -803,8 +818,12 @@ def cmd_init(args):
         "alternatives": {},
         "alternative_rounds": {},
         "objections": [],
+        # Recorded on the session so every artifact of one design is written in
+        # one language, even if the profile is edited halfway through.
+        "language": load_sections().language_of(profile),
         "considered": [{"artifact": name, "status": "unset", "reason": None}
-                       for name in CANDIDATE_ARTIFACTS],
+                       for name in candidate_artifacts(
+                           load_sections().language_of(profile))],
         "subphases": {name: {"done": False, "mode": "pending"}
                       for name in SUBPHASE_ORDER},
         "degradations": [],

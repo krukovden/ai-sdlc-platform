@@ -4,19 +4,18 @@ standard: "1.0"
 parent: IDE-0
 ---
 
-## Результат
+## Result
 
-<Что и зачем: чем мир отличается после закрытия карточки. Коротко — карточку
-читают менеджер, Product Owner и тестировщик. Как это устроено внутри —
-во вложении pbi.agent.md, не здесь.>
+<What and why: how the world differs once this card is closed. Keep it short — the card is read by a
+manager, a Product Owner and a tester. How it works inside belongs in the pbi.agent.md attachment,
+not here.>
 
-## Критерии приёмки
+## Acceptance criteria
 
-<Критерии приёмки живут только здесь и никогда во вложении: по ним работает
-тестировщик и принимает человек. Под каждым — строка Evidence с точным адресом
-теста.>
+<Acceptance criteria live only here and never in the attachment: a tester works from them and a
+human accepts against them. Under each one an Evidence line with the exact address of the test.>
 
-- **AC-1** — <проверяемое утверждение>
+- **AC-1** — <a checkable statement>
   Evidence: path/to/test.py::test_name
-- **AC-2** — <проверяемое утверждение>
+- **AC-2** — <a checkable statement>
   Evidence: path/to/test.py::test_name

@@ -31,6 +31,11 @@ discovery = load_script("discovery", SKILL)
 TEMPLATES = REPO_ROOT / "templates"
 TEMPLATE_FILES = ("feature.md", "adr.md", "pbi.md", "pbi.agent.md", "bug.md")
 
+# One set per language the platform writes in: the default language sits at the
+# top of `templates/`, every other one in a directory named for it (IDE-132).
+TEMPLATE_SETS = [TEMPLATES] + sorted(
+    path for path in TEMPLATES.iterdir() if path.is_dir())
+
 
 # ---------------------------------------------------------------------------
 # Whole artifacts, one per type, each of them clean.
@@ -341,8 +346,18 @@ class SectionLayer(ValidatorTestCase):
     def test_the_per_type_config_overrides_the_root_switch_it_extends(self):
         # The root config turns MD043 off; following `extends` and merging is
         # what makes the per-type list win.
-        self.assertEqual(validate.load_lint_config("adr")[0], "## Зачем")
-        self.assertIn("## Чем платим", validate.load_lint_config("adr"))
+        table = validate._section_table()
+        wanted = table.required_headings("adr", table.default_language())
+        self.assertEqual(validate.load_lint_config("adr"), wanted)
+
+    def test_the_lint_configs_and_the_section_table_cannot_drift(self):
+        """Two places stating one contract is how they come to disagree.
+
+        `registry/sections.json` defines the sections; `lint/<type>.jsonc`
+        mirrors them so markdownlint can be run on its own. This is the check
+        that keeps the mirror honest (IDE-132).
+        """
+        self.assertEqual(validate._section_table().check_lint(), [])
 
 
 class ContentLayer(ValidatorTestCase):
@@ -544,7 +559,7 @@ class StatusDependence(ValidatorTestCase):
     def test_every_type_has_a_rule_row_for_every_stage(self):
         for artifact_type in validate.TYPES:
             for stage in validate.STAGES:
-                self.assertIn((artifact_type, stage), validate.RULES)
+                self.assertIn((artifact_type, stage), validate.EVIDENCE_REQUIRED)
 
 
 class Reporting(ValidatorTestCase):
@@ -589,12 +604,26 @@ class Reporting(ValidatorTestCase):
         self.assertEqual(code, 3)
         self.assertIn("ERROR", err)
 
-    def test_a_broken_lint_configuration_exits_six_not_three(self):
+    def test_a_broken_section_table_exits_six_not_three(self):
+        """The checker's own configuration failing is not the artifact's fault.
+
+        The heading list moved from `lint/<type>.jsonc` to
+        `registry/sections.json` (IDE-132); the exit code did not move with it
+        until this test said so.
+        """
         path = self.write("f.md", FEATURE)
-        with mock.patch.object(validate, "LINT_DIR", self.root):
+        table = validate._section_table()
+        with mock.patch.object(table, "TABLE_PATH", self.root / "nope.json"), \
+             mock.patch.object(table, "_TABLE", None):
             code, _, err = self.cli([str(path), "--root", str(self.root)])
         self.assertEqual(code, 6)
-        self.assertIn("lint config", err)
+        self.assertIn("sections.json", err)
+
+    def test_a_broken_lint_configuration_exits_six_when_one_is_asked_for(self):
+        # `--lint-dir` is the override seam, and it keeps its own contract.
+        path = self.write("f.md", FEATURE)
+        with self.assertRaises(validate.ConfigError):
+            validate.validate_file(path, root=self.root, lint_dir=self.root)
 
     def test_a_missing_schema_exits_six(self):
         path = self.write("f.md", FEATURE)
@@ -628,11 +657,19 @@ class SelfApplication(ValidatorTestCase):
     """
 
     def test_every_template_passes_as_a_template(self):
-        for name in TEMPLATE_FILES:
-            with self.subTest(template=name):
-                violations = validate.validate_file(
-                    TEMPLATES / name, template=True, root=REPO_ROOT)
-                self.assertEqual(violations, [], violations)
+        """Every language's set, because each is held to the same standard.
+
+        This is the property IDE-132 turns on: the same required sections, the
+        same content rules, two renderings. A Russian artifact keeps passing
+        after the default moves to English, and nothing had to be migrated.
+        """
+        for directory in TEMPLATE_SETS:
+            for name in TEMPLATE_FILES:
+                with self.subTest(template=(directory / name).name,
+                                  language=directory.name):
+                    violations = validate.validate_file(
+                        directory / name, template=True, root=REPO_ROOT)
+                    self.assertEqual(violations, [], violations)
 
     def test_every_artifact_in_the_repository_passes(self):
         """Not a fixed inventory — whatever is there now, held to the standard.
@@ -652,7 +689,7 @@ class SelfApplication(ValidatorTestCase):
         self.assertTrue(found)
         for path in found:
             with self.subTest(artifact=path.relative_to(REPO_ROOT).as_posix()):
-                is_template = path.parent == TEMPLATES
+                is_template = path.parent in TEMPLATE_SETS
                 violations = validate.validate_file(
                     path, template=is_template, root=REPO_ROOT)
                 self.assertEqual(violations, [], violations)
@@ -666,7 +703,7 @@ class SelfApplication(ValidatorTestCase):
 
     def test_template_mode_does_not_silence_the_sections_layer(self):
         text = (TEMPLATES / "feature.md").read_text(encoding="utf-8")
-        path = self.write("t.md", swap(text, "## Чего не делаем", "## Границы"))
+        path = self.write("t.md", swap(text, "## What we are not doing", "## Edges"))
         violations = validate.validate_file(path, template=True, root=REPO_ROOT)
         self.assertIn("missing-heading", rules(violations))
 
@@ -679,11 +716,9 @@ class SelfApplication(ValidatorTestCase):
 
     def test_template_mode_does_not_silence_an_empty_section(self):
         text = (TEMPLATES / "pbi.md").read_text(encoding="utf-8")
-        gutted = swap(text, "<Что и зачем: чем мир отличается после закрытия карточки. "
-                            "Коротко — карточку", "")
-        path = self.write("t.md", gutted.replace(
-            "читают менеджер, Product Owner и тестировщик. Как это устроено внутри —\n"
-            "во вложении pbi.agent.md, не здесь.>\n", ""))
+        start = text.index("<What and why")
+        end = text.index("\n\n", start)
+        path = self.write("t.md", text[:start] + text[end:])
         violations = validate.validate_file(path, template=True, root=REPO_ROOT)
         self.assertIn("empty-section", rules(violations))
 

@@ -367,7 +367,7 @@ class HistoryTests(ScriptTestCase):
     def test_creates_the_document_with_a_first_entry(self):
         text = memory.append_entry(None, "wired the resolver in", "2026-08-15")
 
-        self.assertIn("# История фичи", text)
+        self.assertIn(memory._section_table().heading("feature-history", level=1), text)
         self.assertIn("**2026-08-15**", text)
         self.assertIn("wired the resolver in", text)
 

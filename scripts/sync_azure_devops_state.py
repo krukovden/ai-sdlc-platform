@@ -272,6 +272,20 @@ def fail(code, message):
     sys.exit(code)
 
 
+def _sections_module():
+    """`scripts/sections.py`, borrowed the same way `state.py` is."""
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / "sections.py"
+    spec = importlib.util.spec_from_file_location("idp_sections", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _state_module():
     """The phase-map vocabulary lives with the resolver; borrow it, do not copy.
 
@@ -461,7 +475,20 @@ LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 BOLD = re.compile(r"\*\*([^*]+)\*\*")
 PRE_BLOCK = re.compile(r"<pre>(.*?)</pre>", re.DOTALL | re.IGNORECASE)
 
-AC_HEADINGS = ("критерии приёмки", "чем подтвердим", "acceptance criteria")
+def _ac_headings():
+    """Which heading holds the acceptance criteria, in every language we write.
+
+    A reader, so it is deliberately permissive: an artifact written before the
+    default moved to English is still read correctly (IDE-132).
+    """
+    words = _sections_module()
+    found = set()
+    for artifact_type in ("feature", "adr", "pbi", "bug"):
+        for language in words.languages():
+            heading = words.criteria_heading(artifact_type, language)
+            if heading:
+                found.add(heading.lstrip("#").strip().casefold())
+    return tuple(sorted(found))
 
 
 def inline(text):
@@ -570,7 +597,7 @@ def acceptance_criteria(text):
     for line in (text or "").split("\n"):
         stripped = line.strip()
         if stripped.startswith("#"):
-            collecting = stripped.lstrip("#").strip().casefold() in AC_HEADINGS
+            collecting = stripped.lstrip("#").strip().casefold() in _ac_headings()
             continue
         if not collecting:
             continue

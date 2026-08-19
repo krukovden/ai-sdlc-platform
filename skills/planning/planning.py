@@ -146,6 +146,11 @@ def load_board():
     return _load(SCRIPTS / "board.py", "idp_board")
 
 
+def load_sections():
+    """The one place a section id becomes words (IDE-132)."""
+    return _load(SCRIPTS / "sections.py", "idp_sections")
+
+
 def load_reviewer():
     """The JSON Schema subset validator, written once in the discovery skill.
 
@@ -690,36 +695,43 @@ def pbi_meta(session, pbi, brief_url=None):
 
 def render_card(session, pbi, brief_url=None):
     """What and why, for the human and the tester. Criteria live here and nowhere else."""
+    words = load_sections()
+    language = session.get("language")
     lines = [frontmatter("pbi", session["feature"]), "",
-             "## Результат", "", pbi["result"].strip(), "",
-             "## Критерии приёмки", ""]
+             words.heading("result", language), "", pbi["result"].strip(), "",
+             words.heading("criteria", language), ""]
     for criterion in pbi["acceptance_criteria"]:
         lines.append(f"- **{criterion['id']}** — {criterion['text']}")
         lines.append(f"  Evidence: {criterion['evidence']}")
-    lines += ["", f"Ветка фичи: `{session['branch']}`",
-              f"Разделы ADR: {', '.join(pbi.get('adr_sections') or [])}", "",
+    lines += ["", words.phrase("feature-branch", language, branch=session["branch"]),
+              words.phrase("adr-sections", language,
+                           sections=", ".join(pbi.get("adr_sections") or [])), "",
               meta_block(pbi_meta(session, pbi, brief_url)), ""]
     return "\n".join(lines)
 
 
 def render_brief(session, pbi):
     """Where and how, for the agent. Pointers, not a retelling of the architecture."""
+    words = load_sections()
+    language = session.get("language")
     lines = [frontmatter("pbi-agent", session["feature"]), "",
-             "## Где искать", ""]
+             words.heading("where-to-look", language), ""]
     for pointer in pbi["where_to_look"]:
         lines.append(f"- {pointer}")
     for pointer in pbi.get("do_not_touch") or []:
-        lines.append(f"- не трогать: {pointer}")
+        lines.append("- " + words.phrase("do-not-touch", language, pointer=pointer))
     for pointer in pbi.get("constraints") or []:
-        lines.append(f"- ограничение: {pointer}")
+        lines.append("- " + words.phrase("constraint", language, pointer=pointer))
 
-    lines.append(f"- ветка фичи: `{session['branch']}` — работать в ней, "
-                 "PBI мержится в неё")
-    lines.append("- объявленные пути: " + ", ".join(pbi.get("paths") or []))
+    lines.append("- " + words.phrase("work-in-branch", language,
+                                     branch=session["branch"]))
+    lines.append("- " + words.phrase("declared-paths", language,
+                                     paths=", ".join(pbi.get("paths") or [])))
     for need in pbi.get("depends_on") or []:
-        lines.append(f"- ждёт: {need}")
+        lines.append("- " + words.phrase("waits-on", language, need=need))
     if session.get("notes"):
-        lines.append(f"- про этот репозиторий: {session['notes']}")
+        lines.append("- " + words.phrase("about-repository", language,
+                                         notes=session["notes"]))
 
     lines += ["", meta_block(dict(pbi_meta(session, pbi), type="pbi-agent")), ""]
     return "\n".join(lines)
@@ -929,6 +941,10 @@ def start_session(board, profile, identifier, state_module, adr_file=None,
         "branch": branch,
         "cid": header.get("cid"),
         "project_id": profile.get("project_id"),
+        # Recorded on the session, not read again at render time: the artifacts
+        # of one feature are written in one language, even if the profile is
+        # edited halfway through (IDE-132).
+        "language": load_sections().language_of(profile),
         "adr": {"source": source, "hash": content_hash(adr_text)},
         "created_at": now(),
     }

@@ -271,7 +271,8 @@ class T5Truncation(DiscoveryTestCase):
 
         package = self.package()
         self.assertTrue(package["provenance"]["gap_search_truncated"])
-        self.assertIn("остановлен лимитом", discovery.render_markdown(package))
+        self.assertIn(discovery.load_sections().phrase("search-truncated"),
+                      discovery.render_markdown(package))
 
     def test_a_loop_that_went_dry_is_not_marked_truncated(self):
         self.start()

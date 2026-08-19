@@ -3,38 +3,38 @@ type: adr
 status: proposed
 route: feature
 standard: "1.0"
-cid: <тот же идентификатор корреляции, что у фичи>
+cid: <the same correlation id the feature carries>
 parent: IDE-0
 ---
 
-## Зачем
+## Why
 
-<Какую задачу закрывает это решение. Одно решение — один ADR.>
+<Which question this decision closes. One decision, one ADR.>
 
-## Что строим
+## What we build
 
-<Здесь — про реализацию, а не про поведение продукта: устройство, компоненты,
-контракты, порядок вызовов. Свободные подразделы и диаграммы разрешены.>
+<Implementation, not product behaviour: the structure, the components, the contracts, the order of
+calls. Free subsections and diagrams are allowed.>
 
-## Чем подтвердим
+## What proves it
 
-<Чем проверится техническое решение. Под каждым критерием — строка Evidence:
-что именно предъявляется как доказательство (тест, замер, лог, ручной прогон).
-Номера AC-n стабильны и переживают правки документа.>
+<What checks the technical decision. Under every criterion an Evidence: line saying what exactly is
+produced as proof — a test, a measurement, a log, a manual run. AC-n numbers are stable and survive
+edits to the document.>
 
-- **AC-1** — <проверяемое утверждение о техническом решении>
-  Evidence: <тест, замер или иное предъявляемое доказательство>
-- **AC-2** — <проверяемое утверждение о техническом решении>
-  Evidence: <тест, замер или иное предъявляемое доказательство>
+- **AC-1** — <a checkable statement about the technical decision>
+  Evidence: <the test, measurement or other proof that will be produced>
+- **AC-2** — <a checkable statement about the technical decision>
+  Evidence: <the test, measurement or other proof that will be produced>
 
-## Чего этот документ не решает
+## What this document does not decide
 
-<Граница документа, а не список отказов: что осталось за его пределами и где
-это решается.>
+<The edge of the document, not a list of refusals: what is left outside it, and where that is
+decided instead.>
 
-- <вопрос вне границы> — <где он решается>
+- <a question outside the edge> — <where it is decided>
 
-## Чем платим
+## What it costs us
 
-<Цена решения: чем расплачиваемся за него и кто это почувствует. Через два года
-запись читают именно ради этого раздела.>
+<The price of the decision: what is being paid for it, and who will feel it. In two years this is
+the section the record is read for.>

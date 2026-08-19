@@ -12,18 +12,25 @@
   // The heading of a card is its title on the board.
   "MD041": false,
 
+  // GENERATED HEADINGS. The `MD043` list below mirrors `registry/sections.json`,
+  // which is where a section's identity and its wording are defined (IDE-132).
+  // Edit that table, not this list — `scripts/sections.py --check-lint`, and a
+  // test, refuse to let the two disagree. The headings are rendered in the
+  // table's `default_language`; `scripts/validate.py` reads the table directly
+  // and accepts an artifact in any language it defines.
+
   // Placeholders are written in angle brackets and read as inline HTML.
   "MD033": false,
 
   "MD043": {
     "headings": [
-      "## Что ломается",
+      "## What breaks",
       "*",
-      "## Как должно быть",
+      "## What should happen",
       "*",
-      "## При каких условиях",
+      "## Under what conditions",
       "*",
-      "## Как понять, что починили",
+      "## How we know it is fixed",
       "*"
     ]
   }

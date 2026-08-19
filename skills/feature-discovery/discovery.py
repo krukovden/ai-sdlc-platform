@@ -773,7 +773,9 @@ def cmd_research(args):
             "id": f"ev-{len(package['evidence']) + 1}",
             "uri": approach["source"], "kind": "web", "retrieved_at": now(),
             "quote": f"{approach['name']}: {approach['how_it_works']} "
-                     f"Стоит: {approach['cost']}. Ломается: {approach['where_it_breaks']}."})
+                     + load_sections().phrase(
+                         "cost-and-breaks", cost=approach["cost"],
+                         where=approach["where_it_breaks"])})
 
     reopened = []
     for clash in response.get("contradicts", []):
@@ -864,6 +866,20 @@ def cmd_review(args):
     save_package(args.slug, package)
     print(f"review applied: {len(response.get('gaps', []))} gaps, "
           f"{len(response.get('resolved', []))} resolutions")
+
+
+def load_sections():
+    """`scripts/sections.py`: the one place a section id becomes words (IDE-132)."""
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_sections", REPO_ROOT / "scripts" / "sections.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_reviewer_module():
@@ -1076,13 +1092,18 @@ def cmd_render(args):
         print(text)
 
 
-def render_markdown(package):
+def render_markdown(package, profile=None):
     """The rendered specification. The script writes this, never the model.
 
     Rendering is deterministic so that the same package always produces the
     same document, which is what makes the content hash mean anything.
     """
     material = package["material"]
+    # Headings and sentences both come from registry/sections.json: the language
+    # an artifact is written in belongs to the project's audience, not to this
+    # renderer (IDE-132).
+    words = load_sections()
+    language = words.language_of(profile)
     lines = ["---",
              "type: feature",
              "route: feature",
@@ -1090,41 +1111,44 @@ def render_markdown(package):
              f"cid: {package['correlation_id']}",
              "---",
              "",
-             "## Зачем",
+             words.heading("why", language),
              "",
              material.get("problem", "") or "—",
              "",
              material.get("outcome", ""),
              "",
-             "## Что строим",
+             words.heading("what", language),
              ""]
     for item in material.get("scope", []):
         lines.append(f"* {item}")
     if material.get("functional_requirements"):
-        lines += ["", "### Требования", ""]
+        lines += ["", words.heading("requirements", language, level=3), ""]
         for requirement in material["functional_requirements"]:
             lines.append(f"* **{requirement.get('id')}** — {requirement.get('text')}")
 
-    lines += ["", "## Чем подтвердим", ""]
+    lines += ["", words.heading("evidence", language), ""]
     for criterion in material.get("acceptance_criteria", []):
-        lines.append(f"* **{criterion.get('id')}** — если {criterion.get('given')}, "
-                     f"когда {criterion.get('when')}, то {criterion.get('then')}")
+        lines.append(f"* **{criterion.get('id')}** — " + words.phrase(
+            "criterion", language, given=criterion.get("given"),
+            when=criterion.get("when"), then=criterion.get("then")))
 
-    lines += ["", "## Чего не делаем", ""]
+    lines += ["", words.heading("not-doing", language), ""]
     for item in material.get("non_goals", []):
         lines.append(f"* {item}")
 
     provenance = package["provenance"]
     lines += ["", "---", "",
-              f"Независимая проверка: {provenance['reviewer_mode']}.",
-              f"Раундов поиска пробелов: {provenance['gap_rounds_run']}."]
+              words.phrase("independent-review", language,
+                           mode=provenance["reviewer_mode"]) + ".",
+              words.phrase("gap-rounds", language,
+                           rounds=provenance["gap_rounds_run"]) + "."]
     if provenance["gap_search_truncated"]:
-        lines.append("**Поиск остановлен лимитом, а не исчерпанием.** "
-                     "Это не полный поиск.")
+        lines.append(words.phrase("search-truncated", language))
     if package["open_questions"]:
-        lines += ["", "### Осталось открытым", ""]
+        lines += ["", words.heading("open-questions", language, level=3), ""]
         for question in package["open_questions"]:
-            lines.append(f"* {question['text']} — риск {question.get('risk')}")
+            lines.append(f"* {question['text']} — "
+                         + words.phrase("risk", language, risk=question.get("risk")))
     return "\n".join(lines)
 
 

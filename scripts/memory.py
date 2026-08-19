@@ -19,9 +19,11 @@ with confidence, which is how the drift this whole mechanism exists to prevent
 actually happened once.
 """
 
+import importlib.util
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REGISTRY_BLOCK = "idp-registry"
@@ -568,7 +570,20 @@ def history_title(identifier):
     return feature_file(identifier, "history")
 
 
-def append_entry(existing, entry, on_date, pbi=None):
+def _section_table():
+    """`scripts/sections.py`: the one place a section id becomes words (IDE-132)."""
+    existing = sys.modules.get("idp_sections")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        "idp_sections", Path(__file__).resolve().parent / "sections.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_sections"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def append_entry(existing, entry, on_date, pbi=None, language=None):
     """Add one line to a feature's history, newest last.
 
     Append-only on purpose. The history answers "how did this get to be the way
@@ -584,12 +599,11 @@ def append_entry(existing, entry, on_date, pbi=None):
     line = f"* **{on_date}**{source} — {entry}"
 
     if not existing:
+        words = _section_table()
         return "\n".join([
-            "# История фичи",
+            words.heading("feature-history", language, level=1),
             "",
-            "Дописывается при мерже PBI в ветку фичи. Только дописывается: "
-            "документ отвечает на вопрос «как это стало таким», а не «как это "
-            "должно выглядеть сейчас».",
+            words.phrase("history-preamble", language),
             "",
             line,
             "",

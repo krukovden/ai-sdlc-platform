@@ -2,29 +2,29 @@
 type: feature
 route: feature
 standard: "1.0"
-cid: <идентификатор корреляции, связывает фичу с её ADR и PBI>
+cid: <correlation id, ties this feature to its ADR and its PBIs>
 ---
 
-## Зачем
+## Why
 
-<Какую проблему решаем и чья она. Без решения — решение появится в ADR.>
+<What problem is being solved and whose it is. No solution here — the solution appears in the ADR.>
 
-## Что строим
+## What we build
 
-<Поведение продукта глазами того, кто им пользуется. Не реализация, не архитектура.>
+<Product behaviour as the person using it sees it. Not the implementation, not the architecture.>
 
-## Чем подтвердим
+## What proves it
 
-<Продуктовые критерии: по ним собирается сводная матрица QA перед глобальным PR.
-Номер AC-n стабилен — на него ссылаются ADR и PBI. Снятый критерий удаляется
-вместе со своим номером, оставшиеся не перенумеровываются.>
+<Product-level criteria: the QA matrix before the global pull request is assembled from them.
+The AC-n number is stable — the ADR and the PBIs point at it. A criterion that is dropped is
+deleted together with its number, and the rest are not renumbered.>
 
-- **AC-1** — <проверяемое утверждение о поведении продукта>
-- **AC-2** — <проверяемое утверждение о поведении продукта>
+- **AC-1** — <a checkable statement about product behaviour>
+- **AC-2** — <a checkable statement about product behaviour>
 
-## Чего не делаем
+## What we are not doing
 
-<Границы фичи. Каждая строка — что именно не трогаем и почему. Отвергнутые
-варианты сюда не пишутся: они живут в Tried & Rejected по контракту памяти.>
+<The edge of the feature. One line each: what exactly is left alone, and why. Rejected options do
+not go here — they live in Tried & Rejected, by the memory contract.>
 
-- <что не трогаем> — <причина, со ссылкой на issue, если она есть>
+- <what is left alone> — <the reason, with an issue link where there is one>

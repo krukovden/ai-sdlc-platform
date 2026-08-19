@@ -32,7 +32,7 @@ Workspace `krukov-idea-hub`, team **IdeaHub** (issue prefix `IDE`).
 - [Референсная архитектура](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59) — system context, the nine logical capabilities, the core artifacts, automation boundaries.
 - [IDE-68 — Feature Discovery Skill: Design and Requirements](https://linear.app/krukov-idea-hub/document/ide-68-feature-discovery-skill-design-and-requirements-a247a37100ce) — the approved design for the first component, including artifact schemas, the determinism boundary and the CLI contract.
 
-Existing Linear documents are written in Russian. New artifacts produced by the platform are written in English.
+Existing Linear documents are written in Russian. New artifacts produced by the platform are written in English — and since IDE-132 that is enforced by construction rather than by good intentions: a section's identity (`why`, `what`, `evidence`, `cost`) and its wording are two different facts, defined together in [`registry/sections.json`](registry/sections.json). Code names ids and never headings. Which language a project writes in is a profile setting, `"language"`, because it is a property of the project's audience; English is the default. Reading is more forgiving than writing — `validate.py` recognises a document by the headings it carries, so the Russian artifacts already on the board keep validating and nothing had to be migrated.
 
 ## Loading project state
 
@@ -172,13 +172,14 @@ scripts/       board.py (front door) + sync_<board>_state.py (one adapter per tr
                state.py (the resolver), memory.py (the registry), install.py             ✅
 tests/         deterministic tests, none touch the network                                ✅
 docs/          project-state.md (generated)                                               ✅
-templates/     five artifact templates: feature, adr, adr.project, pbi, bug         ✅
+templates/     six artifact templates; the default language at the top,               ✅
+               every other one in a directory named for it (templates/ru/)
 schemas/       frontmatter, reviewer, practice, alternatives, challenge              ✅
 lint/          one markdownlint config per artifact structure (MD043)                  ✅
                validate.py in scripts/ enforces them plus the content layer            ✅
 skills/        feature-discovery/, design/, planning/, establish-project/              ✅
 registry/      slots.json (feature coverage), project_slots.json (project coverage)    ✅
-               providers.json                                                          ✅
+               providers.json, sections.json (section ids and their wording)           ✅
 evals/         golden ideas and LLM evaluations
 ```
 
@@ -219,7 +220,7 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 - **HTTPS from Python needs an explicit CA bundle.** The python.org build ships without one, so `urllib` fails with `CERTIFICATE_VERIFY_FAILED` out of the box. Fall back to `/etc/ssl/cert.pem` — never disable verification. See `build_ssl_context()` in `scripts/sync_linear_state.py` for the pattern to copy.
 - **Linear rejects queries above complexity 10000.** Bound every nested connection (`labels(first: 10)`, not `labels`), or the query is refused outright.
 - **The script owns the process; the model owns the text.** Deterministic scripts own state machines, question order, escalation rules, schema validation, rendering, hashing and publication. Models formulate questions, extract facts and draft prose. A skill must instruct the model never to call a tracker directly or write final rendered output — the existing `~/.claude/skills/ado-pbi` is the reference for this pattern.
-- **Artifacts and code in English.**
+- **Artifacts and code in English.** The headings and the sentences a renderer emits come from `registry/sections.json`, never from a literal in the renderer — that table is the only place both the id and the words are defined, and `lint/*.jsonc` mirrors its required lists for markdownlint (kept honest by `scripts/sections.py --check-lint` and a test).
 - **Secrets never enter artifacts, state files, journals or published content.** The Linear personal API key lives at `~/.feature-discovery/linear-token` (mode 0600) or in `LINEAR_API_KEY`.
 - **Linear access from scripts uses GraphQL with that API key**, not MCP. The Linear MCP is an interactive claude.ai connector and cannot run unattended, which would block the autonomous agents later in the pipeline.
 - **Azure DevOps access uses the `az` CLI**, authenticated either by an interactive Entra login or by a personal access token the profile points at with `token_path` — the case for an organisation this machine has no Entra account in. A rejected credential is exit code 2 naming the one that was rejected: `! az login` for a sign-in, and the token file plus the organisation's token page for a PAT, which `az login` cannot renew (IDE-130). Never a generic failure. Mostly `az boards`, but **not only**: it cannot upload an attachment at all, and the approved requirement is that the full specification is attached as Markdown. `az devops invoke` was the first answer and it does not work — **it runs `json.loads` on `--in-file` before sending it, whatever `--media-type` says**, so Markdown never survives the trip (IDE-137). The three attachment operations — upload, link, download — therefore go over REST through `rest_call` in the adapter, carrying the same credential: a PAT as basic auth, or a bearer token asked of `az` where the sign-in is interactive. Same exit-code mapping, including a 203 sign-in page, which arrives looking like success.
