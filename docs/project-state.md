@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-19T13:26:44Z
+**Generated:** 2026-08-19T15:22:36Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 55 live (4 in progress, 38 done) · 15 archived
+**Issues:** 61 live (5 in progress, 38 done) · 15 archived
 
 ## Project documents
 
@@ -67,8 +67,9 @@
 
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
+| [IDE-126](https://linear.app/krukov-idea-hub/issue/IDE-126/work-item-ide-92-azure-devops-phase-positions-carried-by-tags) | [Work Item · IDE-92] Azure DevOps: phase positions carried by tags | In Development | — | `krukovden/ide-126-work-item-ide-92-azure-devops-phase-positions-carried-by` | child of IDE-92 |
 | [IDE-100](https://linear.app/krukov-idea-hub/issue/IDE-100/work-item-ide-92-a-key-per-agent-identity-in-the-profile) | [Work Item · IDE-92] A key per agent: identity in the profile | Done | — | `krukovden/ide-100-work-item-ide-92-a-key-per-agent-identity-in-the-profile` | child of IDE-92, related IDE-71 |
-| [IDE-125](https://linear.app/krukov-idea-hub/issue/IDE-125/work-item-ide-92-phase-positions-carried-by-tags-where-a-board-has-no) | [Work Item · IDE-92] Phase positions carried by tags where a board has no status | Done | — | `krukovden/ide-125-work-item-ide-92-phase-positions-carried-by-tags-where-a` | child of IDE-92, related IDE-87, related IDE-71 |
+| [IDE-125](https://linear.app/krukov-idea-hub/issue/IDE-125/work-item-ide-92-phase-positions-carried-by-tags-where-a-board-has-no) | [Work Item · IDE-92] Phase positions carried by tags where a board has no status | Done | — | `krukovden/ide-125-work-item-ide-92-phase-positions-carried-by-tags-where-a` | child of IDE-92, blocks IDE-126, related IDE-87, related IDE-71 |
 | [IDE-5](https://linear.app/krukov-idea-hub/issue/IDE-5/work-item-ide-79-establish-the-linked-linear-and-github-project) | [Work Item · IDE-79] Establish the linked Linear and GitHub project foundation | Done | — | `krukovden/ide-5-work-item-ide-79-establish-the-linked-linear-and-github` | child of IDE-79, related IDE-76 |
 | [IDE-71](https://linear.app/krukov-idea-hub/issue/IDE-71/spike-ide-79-define-linear-workflow-states-approvals-and-agent) | [Spike · IDE-79] Define Linear workflow states, approvals, and agent handoffs | Done | Spike | `krukovden/ide-71-spike-ide-79-define-linear-workflow-states-approvals-and` | child of IDE-79, related IDE-77, blocks IDE-89, blocks IDE-72, blocks IDE-69, related IDE-68 |
 | [IDE-76](https://linear.app/krukov-idea-hub/issue/IDE-76/spike-ide-79-design-the-project-memory-contract) | [Spike · IDE-79] Design the Project Memory contract | Done | Spike | `krukovden/ide-76-spike-ide-79-design-the-project-memory-contract` | child of IDE-79, blocks IDE-89, related IDE-68, related IDE-71 |
@@ -172,6 +173,24 @@ It precedes the pilot: the pilot verifies the process, this milestone gives the 
 | [IDE-119](https://linear.app/krukov-idea-hub/issue/IDE-119/work-item-ide-109-slicing-the-escalation-rule-and-the-per-feature) | [Work Item · IDE-109] Slicing, the escalation rule and the per-feature review | Done | — | `krukovden/ide-119-work-item-ide-109-slicing-the-escalation-rule-and-the-per` | child of IDE-109, blocks IDE-120, related IDE-110 |
 | [IDE-120](https://linear.app/krukov-idea-hub/issue/IDE-120/work-item-ide-109-approval-hashing-and-idempotent-publication) | [Work Item · IDE-109] Approval, hashing and idempotent publication | Done | — | `krukovden/ide-120-work-item-ide-109-approval-hashing-and-idempotent` | child of IDE-109, blocks IDE-121, related IDE-110 |
 | [IDE-121](https://linear.app/krukov-idea-hub/issue/IDE-121/work-item-ide-109-wiki-writer-architecture-and-flow-pages-optional) | [Work Item · IDE-109] Wiki writer: architecture and flow pages, optional path | Done | — | `krukovden/ide-121-work-item-ide-109-wiki-writer-architecture-and-flow-pages` | child of IDE-109, related IDE-110 |
+
+### FIT
+
+**Field Integration Test** — what the platform gets wrong when a real project runs on it.
+
+Everything in this milestone was found by *using* the platform, not by reading it. The first run is the Hanwha **Contract Intake Agent**: a live Azure DevOps organisation (`ChariotEnergyApps`, project `Application Development`, epic 2445), a custom Agile process whose states are not ours, and a PAT instead of an interactive `az login` — none of which the platform had ever met.
+
+Findings are children of **FIT: bugs**, one card each, so a second agent can pick them up in parallel while the pilot keeps running. A finding is filed here when it survives being written down as a reproduction; a design change that follows from one is a normal work item under its own feature, linked from the finding.
+
+The milestone is not the fix queue for the platform's known debt — only for what the field turned up.
+
+| Issue | Title | Status | Labels | Branch | Links |
+|---|---|---|---|---|---|
+| [IDE-127](https://linear.app/krukov-idea-hub/issue/IDE-127/fit-bugs) | FIT: bugs | Backlog | — | `krukovden/ide-127-fit-bugs` | — |
+| [IDE-128](https://linear.app/krukov-idea-hub/issue/IDE-128/ide-125-is-done-and-its-code-is-not-on-main) | IDE-125 is Done and its code is not on main | Backlog | — | `krukovden/ide-128-ide-125-is-done-and-its-code-is-not-on-main` | child of IDE-127, related IDE-126, related IDE-125 |
+| [IDE-129](https://linear.app/krukov-idea-hub/issue/IDE-129/azure-devops-phase-defaults-are-linear-status-names) | Azure DevOps phase defaults are Linear status names | Backlog | — | `krukovden/ide-129-azure-devops-phase-defaults-are-linear-status-names` | child of IDE-127, related IDE-126 |
+| [IDE-130](https://linear.app/krukov-idea-hub/issue/IDE-130/azure-devops-under-a-pat-the-profile-cannot-say-where-it-is-and-an) | Azure DevOps under a PAT: the profile cannot say where it is, and an expired one gives the wrong advice | Backlog | — | `krukovden/ide-130-azure-devops-under-a-pat-the-profile-cannot-say-where-it-is` | child of IDE-127 |
+| [IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed) | CLAUDE.md Known gaps lists two gaps that are closed | Backlog | — | `krukovden/ide-131-claudemd-known-gaps-lists-two-gaps-that-are-closed` | child of IDE-127, related IDE-111, related IDE-128, related IDE-125 |
 
 ## How to use this file
 
