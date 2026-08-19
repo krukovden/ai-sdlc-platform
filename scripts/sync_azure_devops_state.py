@@ -608,6 +608,33 @@ def acceptance_criteria(text):
     return found
 
 
+def without_acceptance_criteria(text):
+    """The body with its acceptance-criteria section cut out.
+
+    Azure DevOps renders `Microsoft.VSTS.Common.AcceptanceCriteria` as its own
+    section on the card, so a body that also carries them shows them twice —
+    which is what the Product Owner asked about on card 2464. Two copies drift:
+    somebody edits the field, because that is the one the board presents as *the*
+    criteria, and the description keeps the old wording (IDE-138).
+
+    The section runs to the next heading of the same or a higher level, so a
+    `###` subsection under it goes with it.
+    """
+    kept, skipping, level = [], False, 0
+    for line in (text or "").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            here = len(stripped) - len(stripped.lstrip("#"))
+            if skipping and here <= level:
+                skipping = False
+            if not skipping and stripped.lstrip("#").strip().casefold() in _ac_headings():
+                skipping, level = True, here
+                continue
+        if not skipping:
+            kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n") + "\n"
+
+
 def _plain(chunk):
     text = re.sub(r"(?i)<div>\s*<br\s*/?>\s*</div>", "\n\n", chunk)
     text = re.sub(r'(?is)<a href="([^"]*)">(.*?)</a>', r"[\2](\1)", text)
@@ -644,10 +671,22 @@ def html_to_text(markup):
     return text.strip("\n")
 
 
+# What a machine header writes when it has no id to write. `null` matches the
+# character class the pattern uses, so it was captured and stamped onto the card
+# as `sdlc:cid=null` — and idempotent publication then found *every* card that
+# had failed the same way and updated one of those instead of its own output. A
+# missing tag would have been safe; the wrong tag turned identity into a
+# collision (IDE-143).
+NOT_A_CID = {"null", "none", "nil", "~", "undefined", "-", ""}
+
+
 def read_cid(text):
     """The correlation id carried by an artifact's machine header, if any."""
     match = CID_PATTERN.search(text or "")
-    return match.group(1) if match else None
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return None if value.casefold() in NOT_A_CID else value
 
 
 def slugify(text, limit=48):
@@ -926,14 +965,30 @@ class Board:
         Derived, never passed in: a caller that has to remember to tag is a
         caller that will forget on the one path nobody tested.
         """
+        state = _state_module()
         tags = []
         header_type = _header_type(body)
-        if header_type == "feature" or (header_type is None and not parent):
+        kind = header_type or ("pbi" if parent else "feature")
+        if kind == "feature":
             tags.append(TAG_FEATURE_PACKAGE)
-        opens_design = _state_module().as_marker(
-            self.phase_states().get("design", {}).get("ready")) or {}
-        if status and status.casefold() == str(opens_design.get("status") or "").casefold():
-            tags.append(TAG_READY_FOR_DESIGN)
+
+        # A card is only marked as opening design when design is a phase this
+        # card can be in. Before IDE-144 the status was compared and nothing
+        # else, so a PBI on the `small-feature` route — which has no design
+        # phase at all — was created carrying `sdlc:ready-for-design`, because
+        # the profile happened to map `design.ready` onto the status every new
+        # card starts in. The kind and the route were both known and neither was
+        # consulted.
+        route = _header_route(body) or state.DEFAULT_ROUTE
+        design_applies = (kind not in ("pbi", "pbi-agent")
+                          and "design" in state.ROUTES.get(route, ()))
+        if design_applies:
+            opens_design = state.as_marker(
+                self.phase_states().get("design", {}).get("ready")) or {}
+            if status and status.casefold() == str(
+                    opens_design.get("status") or "").casefold():
+                tags.append(TAG_READY_FOR_DESIGN)
+
         cid = read_cid(body)
         if cid:
             tags.append(TAG_CID_PREFIX + cid)
@@ -945,8 +1000,13 @@ class Board:
         fields = {}
 
         if body:
-            fields["System.Description"] = render_description(body)
             criteria = acceptance_criteria(body)
+            # The criteria go in the field this board has for them, and are cut
+            # out of the description that would otherwise repeat them (IDE-138).
+            # Linear has no such field and keeps them in the body: what the board
+            # offers decides where the content goes.
+            fields["System.Description"] = render_description(
+                without_acceptance_criteria(body) if criteria else body)
             if criteria:
                 fields["Microsoft.VSTS.Common.AcceptanceCriteria"] = \
                     render_acceptance_criteria(criteria)
@@ -1009,8 +1069,13 @@ class Board:
         if status:
             args += ["--state", status]
         if body:
-            fields["System.Description"] = render_description(body)
             criteria = acceptance_criteria(body)
+            # The criteria go in the field this board has for them, and are cut
+            # out of the description that would otherwise repeat them (IDE-138).
+            # Linear has no such field and keeps them in the body: what the board
+            # offers decides where the content goes.
+            fields["System.Description"] = render_description(
+                without_acceptance_criteria(body) if criteria else body)
             if criteria:
                 fields["Microsoft.VSTS.Common.AcceptanceCriteria"] = \
                     render_acceptance_criteria(criteria)
@@ -1279,10 +1344,22 @@ class Board:
         wanted = keep + ([tag] if tag else [])
 
         work_item_id = str(_as_id(identifier))
-        updated = self._az(["boards", "work-item", "update", "--id", work_item_id,
-                            "--org", self.organization, "-o", "json",
-                            "--fields", f"System.Tags={'; '.join(wanted)}"])
-        fields = (updated or {}).get("fields") or {}
+        # `op: replace`, over REST, and not `az boards work-item update --fields`.
+        # That command sends `add`, and **Azure DevOps does not replace
+        # `System.Tags` on an add** — it merges. So the old phase tag survived
+        # every swap, the work item ended up carrying two, and `locate` raises on
+        # two by design: the card was wedged and only a human editing tags in the
+        # web UI could free it. Measured on the live board; `add` and the `az`
+        # command both left the field unchanged, `replace` cleared it (IDE-136).
+        patch = json.dumps([{
+            "op": "replace",
+            "path": "/fields/System.Tags",
+            "value": "; ".join(wanted),
+        }]).encode("utf-8")
+        updated = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
+                             body=patch,
+                             content_type="application/json-patch+json") or {}
+        fields = updated.get("fields") or {}
         return {"identifier": work_item_id,
                 "status": fields.get("System.State"),
                 "labels": _tags_of(fields) or wanted}
@@ -1410,6 +1487,12 @@ def _parent_of(item):
 def _header_type(body):
     """`type:` out of the artifact's machine header, without a YAML parser."""
     match = re.search(r'"?\btype"?\s*:\s*"?([A-Za-z-]+)"?', body or "")
+    return match.group(1).casefold() if match else None
+
+
+def _header_route(body):
+    """`route:` out of the same header. Which phases this card passes through."""
+    match = re.search(r'"?\broute"?\s*:\s*"?([A-Za-z-]+)"?', body or "")
     return match.group(1).casefold() if match else None
 
 

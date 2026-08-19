@@ -127,7 +127,16 @@ class FakeAz:
             return self.make_item(fields)
         if head == ["boards", "work-item", "update"]:
             item = self.items[self.flag(args, "--id")]
-            item["fields"].update(self.fields(args))
+            written = self.fields(args)
+            if "System.Tags" in written:
+                # **This is the behaviour the old stub got wrong** (IDE-136).
+                # `az boards work-item update --fields` sends `op: add`, and
+                # Azure DevOps merges System.Tags on an add rather than
+                # replacing it. Modelling it as a plain string is what let a
+                # test pass while the live board wedged every card it touched.
+                written["System.Tags"] = merge_tags(item["fields"].get("System.Tags"),
+                                                    written["System.Tags"])
+            item["fields"].update(written)
             if "--state" in args:
                 item["fields"]["System.State"] = self.flag(args, "--state")
             if "--title" in args:
@@ -162,8 +171,33 @@ class FakeAz:
                 return {"id": "att-1", "url": self.attachment_url}
             return "downloaded markdown"
         if path.startswith("wit/workitems"):
-            return {"id": 1}
+            return self.patch_work_item(path, body)
         raise AssertionError(f"unexpected REST call: {method} {url}")
+
+    def patch_work_item(self, path, body):
+        """Apply a JSON patch the way the service does, so a test sees the result.
+
+        `replace` on a field replaces; `add` on `/relations/-` appends; `add` on
+        `System.Tags` merges. Modelling the difference is the whole point — the
+        stub that treated them alike is what IDE-136 was hiding behind.
+        """
+        identifier = path.split("/")[-1].split("?")[0]
+        item = self.items.get(identifier)
+        if item is None or not body:
+            return {"id": identifier}
+        for operation in json.loads(body.decode("utf-8")):
+            field = operation.get("path", "")
+            if field.startswith("/fields/"):
+                name = field[len("/fields/"):]
+                if operation["op"] == "replace":
+                    item["fields"][name] = operation["value"]
+                else:
+                    item["fields"][name] = (
+                        merge_tags(item["fields"].get(name), operation["value"])
+                        if name == "System.Tags" else operation["value"])
+            elif field == "/relations/-":
+                item.setdefault("relations", []).append(operation["value"])
+        return item
 
     def rest_matching(self, method, fragment):
         return [c for c in self.rest_calls
@@ -225,6 +259,19 @@ def stub(fake):
     with mock.patch.object(azure, "run_az", fake), \
          mock.patch.object(azure, "rest_call", fake.rest):
         yield fake
+
+
+def merge_tags(existing, incoming):
+    """Azure DevOps's own union: tags are a set, written as one string."""
+    seen = []
+    for part in list(_split_tags(existing)) + list(_split_tags(incoming)):
+        if part not in seen:
+            seen.append(part)
+    return "; ".join(seen)
+
+
+def _split_tags(value):
+    return [part.strip() for part in (value or "").split(";") if part.strip()]
 
 
 def make_board(profile=None, fake=None):
@@ -510,6 +557,57 @@ class MachineHeaderTests(ScriptTestCase):
         self.assertEqual(azure.acceptance_criteria(english),
                          ["the search answers in 300ms"])
 
+    def test_a_null_cid_is_the_absence_of_one_rather_than_a_value(self):
+        """`sdlc:cid=null` matched every card that had failed the same way.
+
+        Publication finds work items by that tag, so a re-run recognised an
+        unrelated card and updated it instead of its own output. A missing tag
+        would have been safe; the wrong tag turned identity into a collision
+        (IDE-143).
+        """
+        for absent in ('---\ncid: null\n---', '{"cid": null}', '{"cid": ""}',
+                       '---\ncid: none\n---', '---\ncid: ~\n---'):
+            with self.subTest(header=absent):
+                self.assertIsNone(azure.read_cid(absent))
+
+    def test_a_card_with_no_id_is_not_tagged_with_one(self):
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat", PROFILE).create_issue(
+                title="t", body='---\ntype: pbi\ncid: null\n---\n', parent="10",
+                project_id="Contoso Platform")
+        tags = fake.fields(fake.matching("boards", "work-item", "create")[0]).get(
+            "System.Tags", "")
+        self.assertNotIn("sdlc:cid=", tags)
+
+    def test_a_pbi_is_not_tagged_for_a_phase_it_never_passes_through(self):
+        """The kind and the route were both known, and neither was consulted.
+
+        `small-feature` is planning and development. A PBI on it has no design
+        phase on any route, and it arrived carrying `sdlc:ready-for-design`
+        because the profile mapped `design.ready` onto the status every new card
+        starts in (IDE-144).
+        """
+        body = '---\ntype: pbi\nroute: small-feature\n---\n'
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat", PROFILE).create_issue(
+                title="t", body=body, parent="10", status="New",
+                project_id="Contoso Platform")
+        tags = fake.fields(fake.matching("boards", "work-item", "create")[0]).get(
+            "System.Tags", "")
+        self.assertNotIn("sdlc:ready-for-design", tags)
+        self.assertNotIn("sdlc:feature-package", tags)
+
+    def test_a_feature_on_a_route_with_design_still_gets_the_tag(self):
+        body = '---\ntype: feature\nroute: feature\n---\n'
+        fake = FakeAz(work_item())
+        with stub(fake):
+            azure.Board("pat", PROFILE).create_issue(
+                title="t", body=body, status="New", project_id="Contoso Platform")
+        tags = fake.fields(fake.matching("boards", "work-item", "create")[0])["System.Tags"]
+        self.assertIn("sdlc:ready-for-design", tags)
+
     def test_read_cid_reads_both_renderings_of_the_same_fact(self):
         self.assertEqual(azure.read_cid("---\ncid: fp_1\n---"), "fp_1")
         self.assertEqual(azure.read_cid('{"cid": "fp_2"}'), "fp_2")
@@ -542,6 +640,31 @@ class CreateTests(ScriptTestCase):
         self.assertIn("sdlc:feature-package", tags)
         self.assertIn("sdlc:ready-for-design", tags)
         self.assertIn("sdlc:cid=fp_abc123", tags)
+
+    def test_the_criteria_are_not_repeated_in_the_description(self):
+        """The board renders the field as its own section; the body repeated it.
+
+        Two copies drift — somebody edits the field, because that is the one
+        Azure DevOps presents as *the* acceptance criteria, and the description
+        keeps the old wording (IDE-138).
+        """
+        body = ("## Result\n\nA thing happens.\n\n"
+                "## Acceptance criteria\n\n"
+                "* **AC-1** — the first one\n\n"
+                "## Where to look\n\n* somewhere\n")
+        fake, _ = self.create(body=body)
+        fields = fake.fields(fake.matching("boards", "work-item", "create")[0])
+
+        self.assertIn("AC-1", fields["Microsoft.VSTS.Common.AcceptanceCriteria"])
+        self.assertNotIn("AC-1", fields["System.Description"])
+        # Only that section goes. Everything on either side of it stays.
+        self.assertIn("A thing happens", fields["System.Description"])
+        self.assertIn("somewhere", fields["System.Description"])
+
+    def test_a_body_with_no_criteria_is_rendered_whole(self):
+        fake, _ = self.create(body="## Result\n\nJust prose.\n")
+        fields = fake.fields(fake.matching("boards", "work-item", "create")[0])
+        self.assertIn("Just prose", fields["System.Description"])
 
     def test_the_description_is_stored_as_html(self):
         fake, _ = self.create(body="## Зачем\n\nсрочно")
@@ -1188,9 +1311,35 @@ class TagCarriedPhaseTests(ScriptTestCase):
         self.assertIn("idp:in-design", result["labels"])
         # One write, not two. Two would leave a window in which the work item
         # has no position and a second agent reads it as unclaimed.
-        self.assertEqual(len(fake.writes), 1)
-        self.assertEqual(fake.fields(fake.writes[0]),
-                         {"System.Tags": "idp:in-design"})
+        self.assertEqual(len(fake.rest_calls), 1)
+        self.assertEqual(fake.rest_calls[0]["method"], "PATCH")
+
+    def test_the_old_phase_tag_is_gone_after_the_swap(self):
+        """The outcome, not the call count — which is what IDE-126 AC-5 counted.
+
+        `az boards work-item update --fields` sends `op: add`, and Azure DevOps
+        merges `System.Tags` on an add. The old tag survived every swap, the card
+        ended up carrying two, and `locate` raises on two by design: the work
+        item was wedged and only a person editing tags by hand could free it.
+        """
+        handle, fake = self.board_with(tags="sdlc:cid=fp_abc123; idp:in-design")
+        with stub(fake):
+            handle.finish_phase("42", "design")
+
+        after = _split_tags(fake.items["42"]["fields"]["System.Tags"])
+        self.assertEqual([t for t in after if t.startswith("idp:")],
+                         ["idp:design-review"])
+        # The correlation id lives in the same field, and idempotent publication
+        # finds work items by it.
+        self.assertIn("sdlc:cid=fp_abc123", after)
+
+    def test_the_patch_replaces_rather_than_adds(self):
+        handle, fake = self.board_with(tags="idp:in-design")
+        with stub(fake):
+            handle.finish_phase("42", "design")
+        patch = json.loads(fake.rest_calls[0]["body"].decode("utf-8"))
+        self.assertEqual(patch[0]["op"], "replace")
+        self.assertEqual(patch[0]["path"], "/fields/System.Tags")
 
     def test_the_correlation_id_survives_the_swap(self):
         # Idempotent publication finds work items by this tag. Losing it here

@@ -680,7 +680,6 @@ def pbi_meta(session, pbi, brief_url=None):
         "type": "pbi",
         "standard": STANDARD,
         "route": session.get("route", "feature"),
-        "cid": session.get("cid"),
         "feature": session["feature"],
         "key": pbi["key"],
         "branch": session["branch"],
@@ -688,6 +687,13 @@ def pbi_meta(session, pbi, brief_url=None):
         "paths": list(pbi.get("paths") or []),
         "depends_on": list(pbi.get("depends_on") or []),
     }
+    # Absent rather than `null`. A header carrying `"cid": null` was read back by
+    # the Azure DevOps adapter as the literal id `null` and stamped onto the card
+    # as `sdlc:cid=null`, where idempotent publication then matched every other
+    # card that had failed the same way (IDE-143). A key that is not there says
+    # what is true: this feature never had a correlation id.
+    if session.get("cid"):
+        payload["cid"] = session["cid"]
     if brief_url:
         payload["brief_url"] = brief_url
     return payload
@@ -948,6 +954,16 @@ def start_session(board, profile, identifier, state_module, adr_file=None,
         "adr": {"source": source, "hash": content_hash(adr_text)},
         "created_at": now(),
     }
+    if not session["cid"]:
+        # Not fatal — a feature created by hand on a foreign board has no id, and
+        # refusing here would stop the work. But the id is the spine that ties a
+        # feature to its ADR and to the PBIs cut from it, across boards, so its
+        # absence is said out loud rather than discovered later (IDE-143).
+        print(f"WARNING: {issue['identifier']} carries no correlation id, so the "
+              "PBIs cut from it cannot be traced back to it across boards. "
+              "Add `cid:` to the feature's machine header and re-run --resume "
+              "if you want that trace.", file=sys.stderr)
+
     save_adr(session, adr_text)
     transition(session, "RESOLVED")
     save_session(session)
