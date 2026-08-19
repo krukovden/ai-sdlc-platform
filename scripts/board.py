@@ -18,6 +18,7 @@ Usage:
     board.py init --team IDE --project <id> [--token-path P]
                                                 create and verify a profile
     board.py profile                            show the resolved profile
+    board.py writing                            how this project's prose is written
     board.py states                             list the statuses this team has
     board.py show IDE-90 [--body]               print one issue
     board.py list [--parent IDE-79] [--status S]
@@ -333,14 +334,25 @@ def cmd_init(args):
         profile["kinds"] = dict(args.kind)
     if args.wiki:
         profile["wiki"] = args.wiki
+    artifacts = {}
     if args.language:
-        profile["language"] = args.language
+        artifacts["language"] = args.language
+    if args.register:
+        artifacts["register"] = args.register
+    if args.audience:
+        artifacts["audience"] = args.audience
+    if artifacts:
+        # One block, because the three answers are one decision: who reads this
+        # project's artifacts, and therefore what they look like (IDE-140).
+        profile["artifacts"] = artifacts
 
-    if profile.get("language"):
+    if profile.get("artifacts") or profile.get("language"):
         # Verified before writing, like everything else in a profile: a language
-        # the platform has no headings for fails at `init`, not at publication.
+        # the platform has no headings for, or a register it does not know, fails
+        # at `init` rather than at publication.
         try:
             sections.language_of(profile)
+            sections.register_of(profile)
         except sections.SectionError as exc:
             fail(6, str(exc))
 
@@ -386,7 +398,16 @@ def cmd_init(args):
         print("  token:   none — this board signs in interactively")
     if profile.get("wiki"):
         print(f"  wiki:    {profile['wiki']}")
-    print(f"  language: {profile.get('language') or 'default'}")
+    print(f"  writing: {sections.writing_brief(profile)}")
+
+
+def cmd_writing(args):
+    """What every model writing prose for this project is told.
+
+    One command, so a skill does not have to reconstruct the answer from the
+    profile and get it subtly different from the next skill (IDE-140).
+    """
+    print(sections.writing_brief(load_profile()))
 
 
 def cmd_profile(args):
@@ -656,10 +677,16 @@ def main():
     p.add_argument("--language",
                    help="what this project's artifacts are written in. A property of "
                         "who reads them, not of the platform; see registry/sections.json")
+    p.add_argument("--register", help=f"how they are written: "
+                                      f"{', '.join(sorted(sections.REGISTERS))}")
+    p.add_argument("--audience", help="who reads them, in your own words")
     p.add_argument("--kind", nargs=2, action="append", metavar=("KIND", "TYPE"),
                    help="what this board calls one of our kinds, e.g. --kind pbi "
                         "'Product Backlog Item'. Repeatable")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("writing", help="how this project's artifacts are written")
+    p.set_defaults(func=cmd_writing)
 
     p = sub.add_parser("profile", help="show the resolved profile")
     p.set_defaults(func=cmd_profile)

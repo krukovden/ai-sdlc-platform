@@ -310,6 +310,21 @@ def wiki_address(package, page):
     return f"{package['wiki'].rstrip('/')}/{page}"
 
 
+# What a wiki page is for, in one sentence, because nothing in the platform said
+# it and the model wrote at whatever depth it chose. The first draft for the
+# field project ran to 1,150 lines across nine pages and the Product Owner cut it
+# three times, to 335 — every cut the same correction (IDE-139).
+WIKI_DEPTH_RULE = (
+    "A wiki page answers *what is this and how does it work*. A work item "
+    "answers *what exactly do we build*. A fact that only one feature cares "
+    "about is in the wrong place on a wiki page — it belongs on that feature or "
+    "its PBI. The audience of a project wiki is usually not the team building "
+    "the thing: someone opens a page to find out what a status means, not how "
+    "the engine is layered, and a page written at implementation depth is a page "
+    "they close."
+)
+
+
 def render_wiki_architecture(package, adr_url):
     """How it is built, now. Short, and never why.
 
@@ -317,6 +332,8 @@ def render_wiki_architecture(package, adr_url):
     answers how it is built, now, and is rewritten on every change. While that
     boundary holds the two do not diverge; the month this page starts explaining
     a decision is the month they do.
+
+    Depth is the other half of that boundary, and it is `WIKI_DEPTH_RULE`.
     """
     material = package["material"]
     words = load_sections()
@@ -419,10 +436,12 @@ def step_profile(board, state, package, published):
     }
     if package.get("wiki"):
         profile["wiki"] = package["wiki"]
-    if package.get("language"):
+    artifacts = {key: package[key] for key in ("language", "register", "audience")
+                 if package.get(key)}
+    if artifacts:
         # Written here so /idp-discovery, /idp-design and /idp-planning inherit
-        # it without anybody being asked the same question four times.
-        profile["language"] = package["language"]
+        # it without anybody being asked the same question four times (IDE-140).
+        profile["artifacts"] = artifacts
     target = Path(state["repository"]["address"]) / ".idp" / "profile.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",

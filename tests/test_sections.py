@@ -147,6 +147,47 @@ class ValidatorAcceptsBothTests(ScriptTestCase):
         self.assertIn("missing-heading", {v.rule for v in violations})
 
 
+class WritingBriefTests(ScriptTestCase):
+    """Who reads this project's artifacts, said once (IDE-140).
+
+    On the field run the answer — "simple language for non-native speakers, only
+    what we need" — was given after the first full draft existed, and it changed
+    every page. The profile can carry it from the start.
+    """
+
+    HANWHA = {"artifacts": {
+        "language": "en", "register": "plain",
+        "audience": "Sales operations staff; English is not their first language"}}
+
+    def test_the_brief_carries_all_three_answers(self):
+        brief = sections.writing_brief(self.HANWHA)
+        self.assertIn("English", brief)
+        self.assertIn("Short sentences", brief)
+        self.assertIn("Sales operations staff", brief)
+
+    def test_a_project_that_says_nothing_still_gets_an_answer(self):
+        brief = sections.writing_brief({})
+        self.assertIn("English", brief)
+        self.assertTrue(brief.strip())
+
+    def test_a_register_the_platform_does_not_know_is_refused(self):
+        with self.assertRaises(sections.SectionError) as caught:
+            sections.register_of({"artifacts": {"register": "baroque"}})
+        self.assertIn("plain", str(caught.exception))
+
+    def test_the_older_flat_language_key_still_works(self):
+        # Written by an earlier build of this same branch; a profile on disk is
+        # not rewritten just because the shape around it grew.
+        self.assertEqual(sections.language_of({"language": "ru"}), "ru")
+        self.assertIn("Russian", sections.writing_brief({"language": "ru"}))
+
+    def test_the_reviewer_prompt_carries_it(self):
+        reviewer = load_script("reviewer", REPO_ROOT / "skills" / "feature-discovery")
+        prompt = reviewer.build_prompt({"material": {}}, ["completeness"],
+                                       writing=sections.writing_brief(self.HANWHA))
+        self.assertIn("Sales operations staff", prompt)
+
+
 class ProfileTests(ScriptTestCase):
     """`language` is a profile setting because it is a fact about the audience."""
 

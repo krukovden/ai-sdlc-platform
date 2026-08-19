@@ -390,7 +390,7 @@ class NoProviderConfigured:
         pass
 
     @staticmethod
-    def build_prompt(package, lenses, kind="review"):
+    def build_prompt(package, lenses, kind="review", writing=None):
         return "prompt"
 
     @staticmethod

@@ -69,13 +69,71 @@ def default_language():
     return table()["default_language"]
 
 
+# What a project's artifacts are written like, and for whom. The profile already
+# holds everything else specific to a project — the board, the team, the epic,
+# the approvers — and this belongs in the same place for the same reason: it is a
+# property of the project's audience, not of the platform (IDE-140).
+#
+# `register` is a named way of writing, so that a preference given once is
+# carried into every artifact instead of being repeated on each one.
+REGISTERS = {
+    "plain": "Write in plain English for readers whose first language it is not. "
+             "Short sentences. Ordinary words — `replaces`, not `supersedes`; "
+             "`has`, not `carries`. One idea per sentence. No rhetorical turns.",
+    "standard": "Write clearly and directly, at the register of good technical "
+                "documentation.",
+}
+DEFAULT_REGISTER = "standard"
+
+
+def artifacts_block(profile=None):
+    """The profile's `artifacts` block, with the older flat keys still honoured."""
+    block = dict(((profile or {}).get("artifacts") or {}))
+    if "language" not in block and (profile or {}).get("language"):
+        block["language"] = profile["language"]
+    return block
+
+
+def register_of(profile=None):
+    name = str(artifacts_block(profile).get("register") or "").strip() or DEFAULT_REGISTER
+    if name not in REGISTERS:
+        raise SectionError(
+            f"the profile asks for register '{name}'; this platform knows "
+            f"{', '.join(sorted(REGISTERS))}. Add it to registry/sections.json, "
+            "or pick one of those.")
+    return name
+
+
+def audience_of(profile=None):
+    """Who reads what this project produces, in the Product Owner's own words."""
+    return str(artifacts_block(profile).get("audience") or "").strip() or None
+
+
+def writing_brief(profile=None):
+    """What every model writing prose for this project is told, in one place.
+
+    The alternative is what the field run did: the Product Owner said "use simple
+    language for non-native speakers, add only what we need" *after* the first
+    full draft, and it changed every page. Said once, in the profile, it reaches
+    every artifact from the start (IDE-140).
+    """
+    language = language_of(profile)
+    name = (table().get("language_names") or {}).get(language, language)
+    lines = [f"Write in {name}.", REGISTERS[register_of(profile)]]
+    audience = audience_of(profile)
+    if audience:
+        lines.append(f"The readers are: {audience}. Write for them, not for the "
+                     "person writing.")
+    return " ".join(lines)
+
+
 def language_of(profile=None):
     """What this project writes in.
 
     A property of the audience, not of the platform — Hanwha is English, and a
     project whose readers are Russian says so in one line of its profile.
     """
-    configured = str((profile or {}).get("language") or "").strip()
+    configured = str(artifacts_block(profile).get("language") or "").strip()
     if not configured:
         return default_language()
     if configured not in languages():

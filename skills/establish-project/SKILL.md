@@ -138,3 +138,40 @@ repository. It is idempotent: if it breaks, run it again.
 `0` done · `2` no provider answered · `3` schema or input · `4` illegal in this
 state · `5` a source that may not close this slot · `6` an address that does not
 resolve · `7` the architecture changed and the approvals are void.
+
+## How this project's prose is written
+
+Before you write a word of an artifact, ask the project:
+
+```bash
+python3 scripts/board.py writing
+```
+
+It answers with the language, the register and the audience the profile records.
+Follow it exactly. It is not a style preference — it is the Product Owner's
+answer to "who reads this", given once so nobody has to repeat it on every
+artifact. On the first field project it was given only after a full draft
+existed, and it changed every page (IDE-140).
+
+If there is no profile yet, write in English, in short plain sentences, for a
+reader whose first language is not English.
+
+## What belongs on a wiki, and what belongs on a card
+
+**A wiki page answers *what is this and how does it work*. A work item answers
+*what exactly do we build*.** A fact that only one feature cares about is in the
+wrong place on a wiki page — it belongs on that feature or its PBI.
+
+The audience of a project wiki is usually not the team building the thing.
+Someone opens a page to find out what a status means, not how the extraction
+engine is layered, and a page written at implementation depth is a page they
+close.
+
+The first draft for the field project ran to 1,150 lines across nine pages and
+was cut three times, to 335 — every cut the same correction: *why are you going
+into the details? We discuss the details in the features and the PBIs.* Nothing
+the model did broke a rule, because there was no rule (IDE-139).
+
+Two pages are generated here, `architecture` and `flow`, and they are short by
+design. If you are about to add a third, ask whether what it holds is a fact
+about the system or a fact about one feature.

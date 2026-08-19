@@ -167,3 +167,20 @@ are answers to the question this command exists to compute.
 Exit 7 means the design moved under you. Re-run `init` and cut again against the
 ADR that exists — a plan cut from one design and published against another puts
 a human's approval on a decomposition they never saw.
+
+## How this project's prose is written
+
+Before you write a word of an artifact, ask the project:
+
+```bash
+python3 scripts/board.py writing
+```
+
+It answers with the language, the register and the audience the profile records.
+Follow it exactly. It is not a style preference — it is the Product Owner's
+answer to "who reads this", given once so nobody has to repeat it on every
+artifact. On the first field project it was given only after a full draft
+existed, and it changed every page (IDE-140).
+
+If there is no profile yet, write in English, in short plain sentences, for a
+reader whose first language is not English.

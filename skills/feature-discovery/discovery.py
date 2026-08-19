@@ -868,6 +868,24 @@ def cmd_review(args):
           f"{len(response.get('resolved', []))} resolutions")
 
 
+def writing_brief():
+    """How this project writes, or nothing when there is no profile to ask.
+
+    Discovery runs in the Product Owner's own repository, which may not carry a
+    profile yet; a missing one is not a reason to refuse a review.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "idp_board", REPO_ROOT / "scripts" / "board.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("idp_board", module)
+        spec.loader.exec_module(module)
+        return load_sections().writing_brief(module.load_profile())
+    except SystemExit:
+        return None
+
+
 def load_sections():
     """`scripts/sections.py`: the one place a section id becomes words (IDE-132)."""
     existing = sys.modules.get("idp_sections")
@@ -904,7 +922,8 @@ def obtain_review(args, package, kind="review"):
 
     reviewer = load_reviewer_module()
     try:
-        prompt = reviewer.build_prompt(package, LENSES, kind=kind)
+        prompt = reviewer.build_prompt(package, LENSES, kind=kind,
+                                       writing=writing_brief())
         return reviewer.review(prompt)
     except reviewer.ReviewerError as exc:
         return None, "skipped", [str(exc)]

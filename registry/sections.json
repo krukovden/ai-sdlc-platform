@@ -583,5 +583,9 @@
       "en": "cost of reversal",
       "ru": "цена отката"
     }
+  },
+  "language_names": {
+    "en": "English",
+    "ru": "Russian"
   }
 }

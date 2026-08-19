@@ -142,3 +142,20 @@ Every session resumes from `state.json` alone. If something matters it is in a
 section, in the registry, in an alternative or in the journal — never only in
 what was said. A transcript cannot be validated, hashed or replayed, so it is
 not where anything lives.
+
+## How this project's prose is written
+
+Before you write a word of an artifact, ask the project:
+
+```bash
+python3 scripts/board.py writing
+```
+
+It answers with the language, the register and the audience the profile records.
+Follow it exactly. It is not a style preference — it is the Product Owner's
+answer to "who reads this", given once so nobody has to repeat it on every
+artifact. On the first field project it was given only after a full draft
+existed, and it changed every page (IDE-140).
+
+If there is no profile yet, write in English, in short plain sentences, for a
+reader whose first language is not English.

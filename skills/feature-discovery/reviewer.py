@@ -237,7 +237,7 @@ def review(prompt, providers=None, schema_name="reviewer.schema.json",
     return None, "skipped", failures
 
 
-def build_prompt(package, lenses, kind="review"):
+def build_prompt(package, lenses, kind="review", writing=None):
     """What the reviewer is given: the draft, the lenses, and the schema's shape.
 
     Deliberately not chatty. The reviewer's job is to find what is missing, and
@@ -252,8 +252,11 @@ def build_prompt(package, lenses, kind="review"):
         header = ("Another pass over the same draft. Report only gaps that are "
                   "genuinely new; repeating an earlier one wastes the round.")
 
-    return "\n\n".join([
+    return "\n\n".join([entry for entry in [
         header,
+        # How this project's prose is written, said once in the profile rather
+        # than by a person on every artifact (IDE-140).
+        writing,
         "Apply each of these lenses: " + ", ".join(lenses) + ".",
         "Every resolution must carry a confidence of evidence-backed or "
         "model-inference. Only evidence-backed answers close anything without "
@@ -261,4 +264,4 @@ def build_prompt(package, lenses, kind="review"):
         "Draft:", material,
         "Open questions so far: "
         + json.dumps(package.get("open_questions", []), ensure_ascii=False),
-    ])
+    ] if entry])

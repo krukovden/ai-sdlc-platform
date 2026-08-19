@@ -343,7 +343,7 @@ def transition(state, target):
 # ---------------------------------------------------------------------------
 
 def new_package(slug, cid, epic, repository, wiki, architecture_hash,
-                architecture_text, language=None):
+                architecture_text, language=None, register=None, audience=None):
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "project-establish-package",
@@ -353,10 +353,12 @@ def new_package(slug, cid, epic, repository, wiki, architecture_hash,
         "epic": epic,
         "repository": repository,
         "wiki": wiki,
-        # The language the project's artifacts are written in — a property of
-        # who reads them, decided once here and written into the profile this
-        # phase creates, so every later phase inherits it (IDE-132).
+        # How this project's artifacts are written and who for — a property of
+        # the audience, decided once here and written into the profile this phase
+        # creates, so every later phase inherits it (IDE-132, IDE-140).
         "language": language or load_sections().default_language(),
+        "register": register or load_sections().DEFAULT_REGISTER,
+        "audience": audience or None,
         "architecture_hash": architecture_hash,
         "architecture_text": architecture_text,
         "material": {},
@@ -794,7 +796,8 @@ def cmd_init(args):
     }
     package = new_package(slug, cid, args.epic, repository["address"] or "", args.wiki,
                           content_hash({"architecture": text}), text,
-                          language=args.language)
+                          language=args.language, register=args.register,
+                          audience=args.audience)
     package["provenance"]["registry_version"] = registry["registry_version"]
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -812,7 +815,7 @@ def cmd_init(args):
     print(f"repository:  {repository['address'] or '— none yet'} "
           f"({repository['verified']})")
     print(f"wiki:        {args.wiki or '— none; the phase runs without one'}")
-    print(f"language:    {package['language']}")
+    print(f"writing:     {load_sections().writing_brief({'artifacts': package})}")
     print(f"slots:       {len(order)} in registry {registry['registry_version']}")
 
 
@@ -1370,6 +1373,8 @@ def build_parser():
     p.add_argument("--language",
                    help="what this project's artifacts are written in; a property of "
                         "who reads them, not of the platform")
+    p.add_argument("--register", help="how they are written: plain, standard")
+    p.add_argument("--audience", help="who reads them, in your own words")
     p.add_argument("--slug")
     p.add_argument("--registry", help="override the project slot registry")
     p.add_argument("--force", action="store_true")
