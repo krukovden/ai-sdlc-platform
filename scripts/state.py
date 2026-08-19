@@ -130,8 +130,10 @@ def phase_map(profile, adapter_default):
     """The status names this board uses, per phase and position.
 
     Lives in the profile so a foreign team maps its existing statuses instead
-    of creating nine new ones. A phase whose status is null on that board is
-    recorded as a comment instead — see the fallback in IDE-71.
+    of creating nine new ones. Where a board has no status for a position, the
+    profile carries `{"tag": "idp:..."}` and the position rides on a tag
+    (IDE-125). Null is the last resort below that: the phase is recorded as a
+    comment and claim degrades to comment order — the fallback in IDE-71.
     """
     configured = profile.get("phases") or adapter_default
 
@@ -256,7 +258,8 @@ def resolve(board, profile, identifier, phases=None):
             answer["next"] = f"tag {identifier} with '{opens['tag']}'"
         else:
             answer["next"] = (f"the '{first}' phase has no status and no tag on this "
-                              "board; record it as a comment instead")
+                              "board; give it one in the profile — "
+                              '{"tag": "idp:..."} — or record it as a comment')
         return answer
 
     if kind != "pbi" and phase not in ROUTES[route]:

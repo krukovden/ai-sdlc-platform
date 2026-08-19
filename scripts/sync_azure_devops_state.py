@@ -1142,7 +1142,8 @@ class Board:
         if kind not in states:
             if PHASE_STATES.get(phase, {}).get(kind):
                 fail(3, f"this board has no status for '{phase}' · '{kind}': the profile "
-                        f"sets it to null. Record that phase as a comment instead.")
+                        f"sets it to null. Carry it with a tag instead — "
+                        '{"tag": "idp:..."} — or record that phase as a comment.')
             known = ", ".join(sorted(states)) or "none"
             fail(3, f"phase '{phase}' has no '{kind}' state. It has: {known}")
         return states[kind]

@@ -569,9 +569,9 @@ class Board:
         The names below are what we created in IdeaHub. A foreign team maps
         its own statuses in the profile instead of creating nine new ones,
         which is why the map lives there and only defaults here. A position
-        set to null means that board cannot express the phase as a status; the
-        phase is recorded as a comment instead, and claim degrades to comment
-        order (IDE-71).
+        set to null means that board cannot express the phase as a status and
+        is not carrying it as a tag either; the phase is recorded as a comment
+        and claim degrades to comment order (IDE-71).
         """
         configured = (self.profile or {}).get("phases")
         if not configured:
@@ -636,7 +636,8 @@ class Board:
                 # configured absence, not a typo. Say which, or the reader goes
                 # looking for a bug that is actually a setting.
                 fail(3, f"this board has no status for '{phase}' · '{kind}': the profile "
-                        f"sets it to null. Record that phase as a comment instead.")
+                        f"sets it to null. Carry it with a tag instead — "
+                        '{"tag": "idp:..."} — or record that phase as a comment.')
             known = ", ".join(sorted(states)) or "none"
             fail(3, f"phase '{phase}' has no '{kind}' state. It has: {known}")
         return states[kind]
