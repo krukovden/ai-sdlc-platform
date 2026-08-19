@@ -831,5 +831,29 @@ class _Args:
         self.__dict__.update(fields)
 
 
+class BoldHeadingTests(ScriptTestCase):
+    """A line that is nothing but bold is a heading (IDE-135).
+
+    Every board's web editor writes them, and a card written by a person is the
+    input the `small-feature` route plans from.
+    """
+
+    def test_a_bold_line_counts_as_a_section(self):
+        sections = planning.adr_sections("**Why**\n\nbecause.\n\n**What**\n\na thing.\n")
+        self.assertEqual([s["title"] for s in sections], ["Why", "What"])
+
+    def test_bold_inside_a_sentence_is_not_a_heading(self):
+        sections = planning.adr_sections("This is **important** and inline.\n")
+        self.assertEqual(sections, [])
+
+    def test_the_same_heading_in_both_forms_is_one_section(self):
+        sections = planning.adr_sections("## Why\n\ntext\n\n**Why**\n")
+        self.assertEqual(len(sections), 1)
+
+    def test_a_reference_to_a_bold_heading_resolves(self):
+        sections = planning.adr_sections("**Contract fields**\n\ntext\n")
+        self.assertIsNotNone(planning.resolve_section("Contract fields", sections))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -432,6 +432,14 @@ def parallel_groups(pbis, graph, closure):
 # ---------------------------------------------------------------------------
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$", re.MULTILINE)
+
+# A line that is nothing but bold text is a heading too. Every board's web editor
+# produces one, and a card read back from Azure DevOps used to carry only these:
+# `adr_sections` found no sections at all, so every plan on the `small-feature`
+# route — the route whose ADR *is* the feature card — was refused with a message
+# naming a set that could never be satisfied (IDE-135). The adapter now writes
+# real headings; this accepts the ones written by a person.
+BOLD_HEADING = re.compile(r"^\s*\*\*(.+?)\*\*\s*$", re.MULTILINE)
 NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)[.)]?\s+(.*)$")
 MARKER = re.compile(r"§\s*(\d+(?:\.\d+)*)")
 
@@ -443,8 +451,14 @@ def _fold(text):
 def adr_sections(adr_text):
     """Every section the ADR actually has: its number, its title, its heading."""
     sections = []
-    for _, raw in HEADING.findall(adr_text or ""):
+    seen = set()
+    raw_headings = [raw for _, raw in HEADING.findall(adr_text or "")]
+    raw_headings += BOLD_HEADING.findall(adr_text or "")
+    for raw in raw_headings:
         heading = raw.strip().strip("*").strip()
+        if not heading or _fold(heading) in seen:
+            continue
+        seen.add(_fold(heading))
         match = NUMBERED.match(heading)
         number, title = (match.group(1), match.group(2)) if match else (None, heading)
         sections.append({"number": number, "title": title, "heading": heading})

@@ -194,7 +194,15 @@ def resolve(board, profile, identifier, phases=None):
     phases = phases if phases is not None else phase_map(profile, board.phase_states())
 
     header = parse_machine_header(issue.get("description"))
-    kind = header.get("type") or ("pbi" if issue.get("parent") else "feature")
+    # Three answers in order of authority: what the artifact says it is, what the
+    # board says it is, and — only when neither speaks — the parent heuristic.
+    #
+    # The heuristic was the first answer until IDE-134, and it is inverted on
+    # Azure DevOps: the hierarchy is Epic → Feature → Story, so every feature has
+    # a parent and every feature was read as a PBI. On a board that knows the
+    # work item type, guessing from parentage is guessing with the answer in hand.
+    kind = (header.get("type") or issue.get("kind")
+            or ("pbi" if issue.get("parent") else "feature"))
     route = header.get("route") or DEFAULT_ROUTE
     if route not in ROUTES:
         route = DEFAULT_ROUTE
@@ -262,7 +270,12 @@ def resolve(board, profile, identifier, phases=None):
                               '{"tag": "idp:..."} — or record it as a comment')
         return answer
 
-    if kind != "pbi" and phase not in ROUTES[route]:
+    if phase != "pbi" and phase not in ROUTES[route]:
+        # The route decides, whatever the card is. This used to be skipped for
+        # anything the resolver thought was a PBI, so a wrong kind silently
+        # removed a check — and the kind was wrong on every Azure DevOps feature
+        # (IDE-134). A card sitting in the `pbi` phase is the one case the route
+        # has nothing to say about: `pbi` is a phase no route passes through.
         answer["reason"] = f"route '{route}' does not pass through the {phase} phase"
         return answer
 

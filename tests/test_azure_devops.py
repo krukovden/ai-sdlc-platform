@@ -236,7 +236,8 @@ class FakeAz:
 
 
 def work_item(identifier="42", title="Feature: offline search", state="New",
-              description="body text", tags="", parent=None):
+              description="body text", tags="", parent=None,
+              work_item_type="Feature"):
     fields = {
         "System.Id": int(identifier),
         "System.Title": title,
@@ -244,7 +245,7 @@ def work_item(identifier="42", title="Feature: offline search", state="New",
         "System.Description": description,
         "System.Tags": tags,
         "System.TeamProject": "Contoso Platform",
-        "System.WorkItemType": "Feature",
+        "System.WorkItemType": work_item_type,
     }
     if parent:
         fields["System.Parent"] = int(parent)
@@ -480,7 +481,7 @@ class ReadTests(ScriptTestCase):
 
         self.assertEqual(set(briefs[0]),
                          {"identifier", "title", "url", "status", "status_type",
-                          "parent", "labels"})
+                          "parent", "labels", "kind"})
 
     def test_state_types_fall_back_to_a_table_and_the_profile_overrides_it(self):
         handle = azure.Board(None, PROFILE)
@@ -505,6 +506,46 @@ class ReadTests(ScriptTestCase):
         # A position carried by a tag is not a state, and offering it as one
         # would hand the caller a status no work item can be moved to.
         self.assertFalse([n for n in names if n.startswith("idp:")], names)
+
+
+class HeadingRoundTripTests(ScriptTestCase):
+    """A heading has to survive the trip to a card and back (IDE-135).
+
+    It did not: `render_description` wrote bold-in-a-div, `_plain` stripped the
+    tag with no replacement, and `planning.adr_sections` — which looks for `#` —
+    found nothing on any card read from this board. Thirteen of the eighteen
+    features on the first field project are routed `small-feature`, where the
+    card *is* the ADR, so none of them could be planned.
+    """
+
+    def test_a_heading_is_written_as_a_heading(self):
+        markup = azure.render_description("## Why\n\nbecause.\n")
+        self.assertIn("<h2>Why</h2>", markup)
+
+    def test_every_level_keeps_its_level(self):
+        for level in range(1, 7):
+            with self.subTest(level=level):
+                markup = azure.render_description("#" * level + " Deep\n")
+                self.assertIn(f"<h{level}>Deep</h{level}>", markup)
+
+    def test_a_heading_comes_back_as_markdown(self):
+        text = azure.html_to_text(azure.render_description(
+            "## Why\n\nbecause.\n\n### How\n\nlike this.\n"))
+        self.assertIn("## Why", text)
+        self.assertIn("### How", text)
+
+    def test_the_heading_is_not_glued_to_the_prose_around_it(self):
+        # `<p>intro</p><h2>Why</h2><p>text</p>` used to come back as `introWhytext`.
+        text = azure.html_to_text("<div>intro</div><h2>Why</h2><div>text</div>")
+        self.assertIn("\n## Why\n", text)
+
+    def test_planning_can_find_the_sections_of_a_card_from_this_board(self):
+        planning = load_script("planning", REPO_ROOT / "skills" / "planning")
+        body = "## Why\n\nbecause.\n\n## What we build\n\na thing.\n"
+        text = azure.html_to_text(azure.render_description(body))
+        titles = [section["title"] for section in planning.adr_sections(text)]
+        self.assertIn("Why", titles)
+        self.assertIn("What we build", titles)
 
 
 class MachineHeaderTests(ScriptTestCase):
@@ -1200,12 +1241,55 @@ class StateResolverIntegrationTests(ScriptTestCase):
         # `New` opens design on a feature and opens work on a backlog item —
         # one status name, two levels, which is true of every Azure DevOps
         # process. What the card *is* decides which one is meant (IDE-129).
-        fake = FakeAz(work_item(state="New", parent=10))
+        fake = FakeAz(work_item(state="New", parent=10, work_item_type="User Story"))
         with stub(fake):
             answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
 
         self.assertEqual((answer["phase"], answer["position"]), ("pbi", "ready"))
         self.assertEqual(answer["next"], "/idp-development 42")
+
+    def test_the_board_says_what_the_card_is_rather_than_its_parent(self):
+        """Every Azure DevOps Feature has a parent — the Epic (IDE-134).
+
+        The parent heuristic is inverted on this board, so it classified every
+        feature as a PBI; and because the route check was skipped for PBIs, a
+        missing header became a wrong instruction with nothing on screen.
+        """
+        fake = FakeAz(work_item(state="New", parent=2445, work_item_type="Feature"))
+        with stub(fake):
+            answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
+        self.assertEqual((answer["phase"], answer["position"]), ("design", "ready"))
+        self.assertEqual(answer["next"], "/idp-design 42")
+
+    def test_the_header_still_beats_the_board(self):
+        # Three answers in order of authority; the artifact's own is the first.
+        item = work_item(state="New", parent=2445, work_item_type="Feature",
+                         description="---\ntype: pbi\n---\n")
+        fake = FakeAz(item)
+        with stub(fake):
+            answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
+        self.assertEqual(answer["kind"], "pbi")
+
+    def test_a_route_without_the_phase_refuses_whatever_the_card_is(self):
+        """`kind != "pbi"` as a guard meant a wrong kind removed a check.
+
+        The route says which phases exist for this unit of work. That holds
+        whether the card is a feature or a backlog item.
+        """
+        # A card the board calls a User Story, carrying the tag that means
+        # `design · active`, on a route with no design phase. The old guard let
+        # it through and answered "an agent holds this card".
+        item = work_item(state="New", parent=2445, work_item_type="User Story",
+                         tags="idp:in-design",
+                         description="---\nroute: small-feature\n---\n")
+        fake = FakeAz(item)
+        with stub(fake):
+            answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
+
+        self.assertEqual(answer["kind"], "pbi")
+        self.assertEqual(answer["phase"], "design")
+        self.assertIn("does not pass through", answer["reason"])
+        self.assertIsNone(answer["next"])
 
     def test_a_closed_card_is_finished_rather_than_sent_back_to_discovery(self):
         fake = FakeAz(work_item(state="Closed"))

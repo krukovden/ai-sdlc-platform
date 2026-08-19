@@ -565,7 +565,13 @@ def render_description(text):
             flush()
         elif stripped.startswith("#"):
             flush()
-            blocks.append(f"<div><b>{inline(stripped.lstrip('#').strip())}</b></div>")
+            # A real heading, not bold-in-a-div. Bold does not survive the trip
+            # back: `adr_sections` looks for `#`, found none on any card read
+            # from this board, and every plan on the `small-feature` route — the
+            # route whose ADR *is* the card — was refused (IDE-135). It also
+            # reads better in Azure DevOps, which renders <h2> as a heading.
+            level = min(len(stripped) - len(stripped.lstrip("#")), 6)
+            blocks.append(f"<h{level}>{inline(stripped.lstrip('#').strip())}</h{level}>")
         elif stripped in ("---", "***", "___"):
             flush()
             blocks.append("<hr>")
@@ -637,6 +643,12 @@ def without_acceptance_criteria(text):
 
 def _plain(chunk):
     text = re.sub(r"(?i)<div>\s*<br\s*/?>\s*</div>", "\n\n", chunk)
+    # Headings first, and with their level: without this the tag was stripped
+    # like any other and the heading text was glued to the prose on either side
+    # of it — `<p>intro</p><h2>Why</h2><p>text</p>` came back as `introWhytext`.
+    text = re.sub(r"(?is)<h([1-6])[^>]*>(.*?)</h\1>",
+                  lambda m: "\n" + "#" * int(m.group(1)) + " " + m.group(2).strip() + "\n",
+                  text)
     text = re.sub(r'(?is)<a href="([^"]*)">(.*?)</a>', r"[\2](\1)", text)
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = re.sub(r"(?i)</div>", "\n", text)
@@ -790,6 +802,27 @@ class Board:
         configured.update(self.profile.get("work_item_types") or {})
         return configured.get(kind, DEFAULT_WORK_ITEM_TYPES.get(kind, "Task"))
 
+    def kind_of_type(self, work_item_type):
+        """Our kind, for the type name this board uses. The board already knows.
+
+        The resolver used to guess from parentage — a card with a parent is a
+        PBI — and **on Azure DevOps every Feature has one**, the Epic. So every
+        feature was classified as a PBI, and because the route check was skipped
+        for PBIs, a missing header turned into a wrong instruction with nothing
+        on screen suggesting it (IDE-134). The authoritative answer was sitting
+        unread in the same response.
+        """
+        name = (work_item_type or "").strip().casefold()
+        if not name:
+            return None
+        configured = dict(DEFAULT_WORK_ITEM_TYPES)
+        configured.update(self.profile.get("work_item_types") or {})
+        configured.update(self.profile.get("kinds") or {})
+        for kind, type_name in configured.items():
+            if str(type_name).casefold() == name:
+                return kind
+        return None
+
     def state_type(self, name):
         """unstarted / started / completed / canceled, for a status name."""
         overrides = {k.casefold(): v for k, v in
@@ -900,6 +933,9 @@ class Board:
             "status_type": self.state_type(status),
             "parent": _parent_of(item),
             "labels": _tags_of(fields),
+            # What the board says this is. Beaten only by an explicit `type:` in
+            # the artifact's own header (IDE-134).
+            "kind": self.kind_of_type(fields.get("System.WorkItemType")),
         }
 
     def query(self, where, columns=None, project=None):
@@ -955,6 +991,7 @@ class Board:
             "status_type": self.state_type(status),
             "parent": str(parent) if parent else None,
             "labels": _tags_of(fields),
+            "kind": self.kind_of_type(fields.get("System.WorkItemType")),
         }
 
     # -- writes -------------------------------------------------------------
