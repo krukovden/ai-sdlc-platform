@@ -278,13 +278,21 @@ def describe_stale(findings):
 
 
 def check_drift(registry, issues, profile, do_fetch=True):
-    """Two questions, both answered against the remote.
+    """Three questions, all answered against the remote.
 
     1. Does every registry entry have code behind it — commits carrying its own
        identifier, or one of its PBIs'?
     2. Is every feature merged into `main` in the registry?
+    3. Does every card the board calls finished have commits behind it?
 
-    Reports both. Fixes neither: a detector that edits the thing it checks can
+    The third was added by IDE-128, which is the case that got past the first
+    two: a work item closed as Done whose code was on nobody's `main`. Rule 1
+    only looks at cards the registry names, and the registry names features;
+    rule 2 starts from the identifiers that appear in commit messages, so a card
+    with no commits at all is invisible to it by construction. Between them sat
+    every closed work item — which is most of what this project closes.
+
+    Reports all three. Fixes none: a detector that edits the thing it checks can
     only ever agree with itself.
     """
     parents = {i["identifier"]: i.get("parent") for i in issues}
@@ -299,20 +307,53 @@ def check_drift(registry, issues, profile, do_fetch=True):
             fetch(repo)
 
     findings = {"unbacked": [], "unregistered": [], "unrecorded_removals": [],
-                "process": [], "covered_by_children": {},
+                "closed_without_commits": [], "process": [], "covered_by_children": {},
                 "repositories": [str(r) for r in repos]}
+
+    asked = {}
+
+    def backed(identifiers):
+        """Do commits exist for any of these, in any repository this project spans?
+
+        Memoised: rules 1 and 3 ask about overlapping sets, and a `git log` per
+        card per repository per rule is paid for nothing.
+        """
+        for repo in repos:
+            for identifier in identifiers:
+                key = (str(repo), identifier)
+                if key not in asked:
+                    asked[key] = commits_mentioning(repo, identifier)
+                if asked[key]:
+                    return True
+        return False
 
     for entry in registry["features"]:
         issue = entry["issue"]
-        wanted = [issue, *children.get(issue, [])]
-        found = any(commits_mentioning(repo, ident)
-                    for repo in repos for ident in wanted)
-        if not found:
+        if not backed([issue, *children.get(issue, [])]):
             findings["unbacked"].append(entry)
 
     registered = {f["issue"] for f in registry["features"]}
     recorded_removed = {i for r in registry["removed"] for i in r.get("issues", [])}
     process_label = profile.get("process_label", DEFAULT_PROCESS_LABEL).casefold()
+
+    # 3. Closed work with nothing behind it. A card the board calls Done whose
+    # identifier appears in no commit message is either work that never landed
+    # or work that landed without saying so — and the two are indistinguishable
+    # from here, which is why this reports rather than judges. A parent is
+    # satisfied by its children, as in rule 1: the identifier that carries the
+    # commits is the one that did the work. A process feature is skipped and the
+    # skip is stated: rules and documentation are closed on the board and land
+    # nowhere in git, and a detector that cried wolf on every one of them would
+    # be ignored by the time it was right.
+    for issue in issues:
+        if issue.get("status_type") != "completed":
+            continue
+        identifier = issue["identifier"]
+        if process_label in [l.casefold() for l in issue.get("labels") or []]:
+            findings["process"].append(identifier)   # deduplicated below
+            continue
+        if not backed([identifier, *children.get(identifier, [])]):
+            findings["closed_without_commits"].append(identifier)
 
     mentioned = set()
     for repo in repos:
@@ -371,6 +412,13 @@ def describe_drift(findings):
         for issue in findings["unrecorded_removals"]:
             lines.append(f"  {issue}")
         lines.append("  A removal without a recorded reason invites its own reintroduction.")
+    if findings["closed_without_commits"]:
+        lines.append("Closed cards whose identifier is in no commit message:")
+        for issue in findings["closed_without_commits"]:
+            lines.append(f"  {issue}")
+        lines.append("  Either the work never landed, or it landed without the "
+                     "identifier. Both leave the next session reading a card that "
+                     "promises code it cannot find.")
     # Stated, not silent. A detector that quietly drops things from its own
     # scope, or quietly accepts them by a route other than the obvious one, is
     # indistinguishable from one that missed them.

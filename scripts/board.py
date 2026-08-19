@@ -570,7 +570,8 @@ def cmd_memory(args):
                     print("", file=sys.stderr)
                     print(warning, file=sys.stderr)
             if any(findings[k] for k in ("unbacked", "unregistered",
-                                          "unrecorded_removals")):
+                                          "unrecorded_removals",
+                                          "closed_without_commits")):
                 sys.exit(1)
     except memory.MemoryError_ as exc:
         fail(3, str(exc))

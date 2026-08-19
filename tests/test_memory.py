@@ -254,6 +254,55 @@ class WordBoundaryTests(ScriptTestCase):
         self.assertIn(memory.word_pattern("IDE-93"), seen["args"])
 
 
+class ClosedWithoutCommitsTests(ScriptTestCase):
+    """The case that got past both original rules (IDE-128).
+
+    IDE-125 was closed as Done and none of its code was on `main`. Rule 1 only
+    looks at cards the registry names, and the registry names features; rule 2
+    starts from identifiers that appear in commit messages, so a card with no
+    commits at all cannot reach it. A closed work item sat between them.
+    """
+
+    def setUp(self):
+        self.registry = memory.parse_registry(DOCUMENT)
+
+    def check(self, issues, backed=("IDE-93",)):
+        with mock.patch.object(memory, "fetch"), \
+             mock.patch.object(memory, "commits_mentioning",
+                               side_effect=lambda r, i, **k: ["abc"] if i in backed else []), \
+             mock.patch.object(memory, "identifiers_on", return_value=set(backed)):
+            return memory.check_drift(self.registry, issues, {"repositories": ["/repo"]})
+
+    def test_a_closed_work_item_with_no_commits_anywhere_is_reported(self):
+        issues = [issue("IDE-93"), issue("IDE-125", parent="IDE-93")]
+        findings = self.check(issues)
+
+        self.assertEqual(findings["closed_without_commits"], ["IDE-125"])
+        text = memory.describe_drift(findings)
+        self.assertIn("IDE-125", text)
+        self.assertIn("no commit message", text)
+
+    def test_a_card_still_open_is_not_asked_the_question(self):
+        # Work that has not been claimed to be finished is not drift.
+        issues = [issue("IDE-93"), issue("IDE-125", parent="IDE-93",
+                                         status_type="started")]
+        self.assertEqual(self.check(issues)["closed_without_commits"], [])
+
+    def test_a_parent_is_satisfied_by_the_child_that_carried_the_commits(self):
+        issues = [issue("IDE-92"), issue("IDE-95", parent="IDE-92")]
+        findings = self.check(issues, backed=("IDE-95",))
+        self.assertEqual(findings["closed_without_commits"], [])
+
+    def test_the_report_exits_nonzero_through_the_same_door_as_the_others(self):
+        # board.py treats it as drift, not as a note: the whole job of this
+        # command is to catch closed work whose commits are missing.
+        issues = [issue("IDE-93"), issue("IDE-125", parent="IDE-93")]
+        findings = self.check(issues)
+        self.assertTrue(any(findings[k] for k in ("unbacked", "unregistered",
+                                                  "unrecorded_removals",
+                                                  "closed_without_commits")))
+
+
 class StaleDocumentationTests(ScriptTestCase):
     """A summary of the code is a claim about the code, and claims rot (IDE-131)."""
 
