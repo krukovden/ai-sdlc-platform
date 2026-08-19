@@ -38,12 +38,20 @@ SCRIPTS = REPO_ROOT / "scripts"
 META_BLOCK = "idp-meta"
 APPROVAL_BLOCK = "idp-approval"
 
-# The status a feature is created in. IDE-71 owns this: a card enters the
-# feature route at Ready for Design, and moving it to In Design is the claim.
-# The design originally said `Todo` with a stage:* label doing the claiming;
-# that was reconciled away in IDE-68 §8.1 because a label swap leaves no
-# history for the claim protocol to read.
-CREATED_IN = "Ready for Design"
+# Where a feature enters the route. IDE-71 owns the *position* — `design` ·
+# `ready`, and moving it to `In Design` is the claim; the design originally said
+# `Todo` with a stage:* label doing the claiming, and that was reconciled away in
+# IDE-68 §8.1 because a label swap leaves no history for the claim protocol to
+# read. What that position is *called* belongs to the board, so it is asked
+# rather than named here: `Ready for Design` is a Linear status and no Azure
+# DevOps process has one (IDE-129).
+def created_in(board):
+    """The marker a newly published feature must carry to be in `design · ready`."""
+    return board.phase_marker("design", "ready")
+
+
+def describe_created_in(board):
+    return board.describe_marker(created_in(board))
 
 
 def fail(code, message):
@@ -206,7 +214,8 @@ def publish(board, profile, package, discovery, dry_run=False):
         action = f"update {existing['identifier']}" if existing else "create"
         print(f"would {action}: {title}")
         print(f"  correlation_id: {package['correlation_id']}")
-        print(f"  status:         {CREATED_IN}" if not existing else "  status: unchanged")
+        print(f"  status:         {describe_created_in(board)}"
+              if not existing else "  status: unchanged")
         print(f"  document:       {package['slug']} — specification")
         print(f"  comment:        {APPROVAL_BLOCK} by {package['approval']['approver']}")
         return {"identifier": existing["identifier"] if existing else None,
@@ -220,10 +229,17 @@ def publish(board, profile, package, discovery, dry_run=False):
         identifier = existing["identifier"]
         created = False
     else:
-        issue = board.create_issue(title=title, body=body, status=CREATED_IN,
+        opens = created_in(board)
+        # A board that has a status for this position gets it in the create
+        # call; a board that carries the position as a tag gets one extra write,
+        # because a work item cannot be created already tagged with it.
+        issue = board.create_issue(title=title, body=body,
+                                   status=opens.get("status"),
                                    project_id=project_id)
         identifier = issue["identifier"]
         created = True
+        if opens.get("tag"):
+            board.apply_marker(identifier, opens)
 
     board.attach_document(f"{package['slug']} — specification",
                           specification_document(package), identifier=identifier)

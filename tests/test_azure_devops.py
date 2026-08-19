@@ -173,7 +173,7 @@ class FakeAz:
         raise AssertionError(f"unexpected invoke resource: {resource}")
 
 
-def work_item(identifier="42", title="Feature: offline search", state="Ready for Design",
+def work_item(identifier="42", title="Feature: offline search", state="New",
               description="body text", tags="", parent=None):
     fields = {
         "System.Id": int(identifier),
@@ -319,7 +319,7 @@ class ReadTests(ScriptTestCase):
 
         self.assertEqual(issue["identifier"], "42")
         self.assertEqual(issue["title"], "Feature: offline search")
-        self.assertEqual(issue["status"], "Ready for Design")
+        self.assertEqual(issue["status"], "New")
         self.assertEqual(issue["status_type"], "unstarted")
         self.assertEqual(issue["parent"], "10")
         self.assertEqual(issue["labels"], ["sdlc:feature-package", "sdlc:cid=fp_1"])
@@ -373,8 +373,11 @@ class ReadTests(ScriptTestCase):
 
         with mock.patch.object(azure, "run_az", refuse):
             names = [s["name"] for s in azure.Board(None, PROFILE).list_states()]
-        self.assertIn("Ready for Design", names)
-        self.assertIn("In Development", names)
+        self.assertIn("New", names)
+        self.assertIn("Resolved", names)
+        # A position carried by a tag is not a state, and offering it as one
+        # would hand the caller a status no work item can be moved to.
+        self.assertFalse([n for n in names if n.startswith("idp:")], names)
 
 
 class MachineHeaderTests(ScriptTestCase):
@@ -435,7 +438,7 @@ class MachineHeaderTests(ScriptTestCase):
 
 class CreateTests(ScriptTestCase):
 
-    def create(self, body=None, parent=None, status="Ready for Design", profile=None):
+    def create(self, body=None, parent=None, status="New", profile=None):
         fake = FakeAz()
         with stub(fake):
             result = azure.Board(None, profile or PROFILE).create_issue(
@@ -475,17 +478,19 @@ class CreateTests(ScriptTestCase):
         self.assertIn("<b>AC-1</b>", criteria)
 
     def test_a_status_is_a_second_call_because_create_takes_no_state(self):
-        fake, _ = self.create(status="Ready for Design")
+        fake, _ = self.create(status="New")
         updates = fake.matching("boards", "work-item", "update")
         self.assertEqual(len(updates), 1)
-        self.assertEqual(fake.flag(updates[0], "--state"), "Ready for Design")
+        self.assertEqual(fake.flag(updates[0], "--state"), "New")
 
-    def test_a_child_is_created_as_a_product_backlog_item_and_linked(self):
+    def test_a_child_is_created_as_the_backlog_item_type_and_linked(self):
+        # Agile's name, because Agile is what most Azure DevOps projects are
+        # created with. `Product Backlog Item` exists only in Scrum (IDE-129).
         fake, _ = self.create(parent="10", status=None)
         create = fake.matching("boards", "work-item", "create")[0]
         link = fake.matching("boards", "work-item", "relation", "add")[0]
 
-        self.assertEqual(fake.flag(create, "--type"), "Product Backlog Item")
+        self.assertEqual(fake.flag(create, "--type"), "User Story")
         self.assertEqual(fake.flag(link, "--relation-type"), "parent")
         self.assertEqual(fake.flag(link, "--target-id"), "10")
 
@@ -596,15 +601,17 @@ class T9ForAzureDevOps(ScriptTestCase):
 
 class PhaseTests(ScriptTestCase):
 
-    def test_start_phase_moves_a_ready_card_to_active(self):
-        fake = FakeAz(work_item(state="Ready for Design"))
+    def test_start_phase_claims_a_fresh_work_item_with_no_profile_at_all(self):
+        # The point of IDE-129: this is a stock work item on a stock process and
+        # an empty profile. Before, it needed all three phases overridden first.
+        fake = FakeAz(work_item(state="New"))
         with stub(fake):
             result = azure.Board(None, PROFILE).start_phase("42", "design")
-        self.assertEqual(result["status"], "In Design")
+        self.assertIn("idp:in-design", result["labels"])
         self.assertTrue(result["changed"])
 
     def test_a_card_in_the_wrong_status_is_refused_and_nothing_is_written(self):
-        fake = FakeAz(work_item(state="New"))
+        fake = FakeAz(work_item(state="Closed"))
         with stub(fake):
             message = self.assert_exits(3, azure.Board(None, PROFILE).start_phase,
                                         "42", "design")
@@ -612,16 +619,35 @@ class PhaseTests(ScriptTestCase):
         self.assertEqual(fake.writes, [])
 
     def test_finishing_a_phase_nobody_started_is_refused_without_a_write(self):
-        fake = FakeAz(work_item(state="Ready for Design"))
+        fake = FakeAz(work_item(state="New"))
         with stub(fake):
             self.assert_exits(3, azure.Board(None, PROFILE).finish_phase, "42", "design")
         self.assertEqual(fake.writes, [])
 
     def test_finishing_design_lands_on_the_human_gate(self):
-        fake = FakeAz(work_item(state="In Design"))
+        fake = FakeAz(work_item(state="New", tags="idp:in-design"))
         with stub(fake):
             result = azure.Board(None, PROFILE).finish_phase("42", "design")
-        self.assertEqual(result["status"], "Design Review")
+        self.assertIn("idp:design-review", result["labels"])
+
+    def test_every_shipped_default_is_reachable_on_a_stock_process(self):
+        """A default nobody can reach is not a default, it is a precondition.
+
+        `Ready for Design` and `Blocked - Needs Design` are Linear statuses this
+        platform created by hand; no Azure DevOps process ships either, and no
+        `az` call can create one. Everything shipped here is therefore either a
+        state a stock process already has, or an `idp:` tag (IDE-129).
+        """
+        stock = {"new", "active", "resolved", "closed", "removed",
+                 "in progress", "done", "proposed"}
+        for phase, positions in azure.PHASE_STATES.items():
+            for position, value in positions.items():
+                with self.subTest(phase=phase, position=position):
+                    marker = state.as_marker(value)
+                    if marker.get("tag"):
+                        self.assertTrue(marker["tag"].startswith("idp:"))
+                    else:
+                        self.assertIn(marker["status"].casefold(), stock)
 
     def test_a_profile_maps_this_processs_own_status_names(self):
         profile = dict(PROFILE, phases={"design": {"ready": "New", "active": "Active"}})
@@ -773,7 +799,7 @@ class WriteRefusalTests(ScriptTestCase):
         fake = HalfBroken()
         with stub(fake):
             message = self.assert_exits(2, azure.Board(None, PROFILE).create_issue,
-                                        title="t", status="Ready for Design",
+                                        title="t", status="New",
                                         project_id="Contoso Platform")
         self.assertIn("500", message)
         self.assertIn("was created", message)
@@ -791,12 +817,23 @@ class StateResolverIntegrationTests(ScriptTestCase):
     """The resolver knows no tracker; it has to answer over this adapter too."""
 
     def test_a_card_ready_for_design_asks_for_the_design_command(self):
-        fake = FakeAz(work_item(state="Ready for Design"))
+        fake = FakeAz(work_item(state="New"))
         with stub(fake):
             answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
 
         self.assertEqual((answer["phase"], answer["position"]), ("design", "ready"))
         self.assertEqual(answer["next"], "/idp-design 42")
+
+    def test_a_backlog_item_in_the_same_status_is_not_sent_to_design(self):
+        # `New` opens design on a feature and opens work on a backlog item —
+        # one status name, two levels, which is true of every Azure DevOps
+        # process. What the card *is* decides which one is meant (IDE-129).
+        fake = FakeAz(work_item(state="New", parent=10))
+        with stub(fake):
+            answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
+
+        self.assertEqual((answer["phase"], answer["position"]), ("pbi", "ready"))
+        self.assertEqual(answer["next"], "/idp-development 42")
 
     def test_a_closed_card_is_finished_rather_than_sent_back_to_discovery(self):
         fake = FakeAz(work_item(state="Closed"))

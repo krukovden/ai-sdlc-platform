@@ -87,6 +87,19 @@ class StubBoard:
         self.comments.append({"identifier": identifier, "body": body})
         return "https://example.invalid/comment"
 
+    # Where a feature enters the route is the board's answer, not the skill's:
+    # `Ready for Design` is a Linear status and no Azure DevOps process has one
+    # (IDE-129). This stub answers as Linear does.
+    def phase_marker(self, phase, kind):
+        return {"status": "Ready for Design"}
+
+    def describe_marker(self, marker):
+        return f"'{marker['status']}'" if "status" in marker else f"tag '{marker['tag']}'"
+
+    def apply_marker(self, identifier, marker):
+        self.updated.append({"identifier": identifier, "marker": marker})
+        return {"identifier": identifier}
+
 
 PROFILE = {"project_id": "project-uuid", "board": "linear", "team_key": "IDE"}
 
@@ -106,6 +119,17 @@ class PublishTests(ScriptTestCase):
         # first carried left no history for the claim protocol to read.
         board, _ = self.publish(approved_package())
         self.assertEqual(board.created[0]["status"], "Ready for Design")
+
+    def test_the_opening_position_is_asked_of_the_board_not_named_by_the_skill(self):
+        # A board that carries `design · ready` as a tag gets the card created
+        # with no status and then tagged — one extra write, because a work item
+        # cannot be created already carrying a tag (IDE-129).
+        board = StubBoard()
+        board.phase_marker = lambda phase, kind: {"tag": "idp:ready-for-design"}
+        board, _ = self.publish(approved_package(), board=board)
+
+        self.assertIsNone(board.created[0]["status"])
+        self.assertEqual(board.updated[-1]["marker"], {"tag": "idp:ready-for-design"})
 
     def test_writes_the_correlation_id_into_the_card_body(self):
         board, _ = self.publish(approved_package())

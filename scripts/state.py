@@ -146,7 +146,7 @@ def phase_map(profile, adapter_default):
     return merged
 
 
-def locate(status, phases, tags=()):
+def locate(status, phases, tags=(), kind=None):
     """Reverse the phase map: which phase and position is this card in?
 
     **A tag beats a status.** The ordinary case on a board that cannot express
@@ -161,14 +161,25 @@ def locate(status, phases, tags=()):
             f"this card carries {len(carried)} phase tags: {', '.join(sorted(carried))}. "
             "One card is in one position; pick which, then re-run")
 
+    # A board is allowed to spend one status name on two levels, and every Azure
+    # DevOps process does: `New` opens design on a Feature and opens work on a
+    # backlog item. Which one is meant is decided by what the card *is*, so the
+    # phases that can apply to this kind are searched first. `pbi` is never on a
+    # route and a feature is never in it, so this cannot mask a real answer —
+    # without it, a backlog item sitting in `New` is told to run /idp-design.
+    ordered = list(phases)
+    if kind:
+        wants_pbi = kind == "pbi"
+        ordered.sort(key=lambda phase: 0 if (phase == "pbi") == wants_pbi else 1)
+
     for source, wanted in (("tag", carried[0] if carried else None),
                            ("status", status)):
         if not wanted:
             continue
         folded = wanted.casefold()
         for position in POSITION_ORDER:
-            for phase, positions in phases.items():
-                marker = positions.get(position) or {}
+            for phase in ordered:
+                marker = phases[phase].get(position) or {}
                 name = marker.get(source)
                 if name and name.casefold() == folded:
                     return phase, position
@@ -187,7 +198,7 @@ def resolve(board, profile, identifier, phases=None):
         route = DEFAULT_ROUTE
 
     status = issue.get("status")
-    phase, position = locate(status, phases, issue.get("labels") or ())
+    phase, position = locate(status, phases, issue.get("labels") or (), kind)
 
     answer = {
         "identifier": issue["identifier"],

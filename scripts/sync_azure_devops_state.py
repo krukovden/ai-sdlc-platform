@@ -34,7 +34,9 @@ merely signed out must not be told their board is broken.
     area_path         optional, stamped on every work item this platform creates
     iteration_path    optional, likewise
     work_item_types   optional map: {"feature": "Feature", "pbi": "Product Backlog Item"}
-    phases            optional: this board's status names, per phase and position
+                      — what this process calls each kind. The default is Agile's
+    phases            optional: what carries each phase position on this board.
+                      A string is a status name, {"tag": "idp:..."} is a tag
     state_types       optional: status name -> unstarted/started/completed/canceled
 
     Verification status
@@ -106,43 +108,73 @@ NOT_FOUND_MARKERS = (
     "no work item found",
 )
 
+# What this board calls each of the platform's kinds. Azure DevOps has all four
+# as real work item types, but only two of the names are stable across processes:
+# `Epic`, `Feature` and `Task` exist in Agile, Scrum and CMMI alike, while the
+# backlog item does not. Agile calls it **User Story**, Scrum calls it Product
+# Backlog Item and CMMI calls it Requirement. Agile is the default because it is
+# the process most Azure DevOps projects are created with — and because a Scrum
+# team overriding one entry in the profile is cheaper than every Agile team
+# overriding one (IDE-129).
 DEFAULT_WORK_ITEM_TYPES = {
+    "epic": "Epic",
     "feature": "Feature",
-    "pbi": "Product Backlog Item",
+    "pbi": "User Story",
+    "task": "Task",
 }
 
 # ---------------------------------------------------------------------------
-# The phase map: abstract state -> the status name this board uses.
+# The phase map: abstract state -> what this board uses to carry the position.
 #
-# The nine names below are the ones this platform creates. A foreign Azure
-# DevOps process almost certainly has its own — Agile ships New/Active/
-# Resolved/Closed — and maps them in the profile's `phases` table instead of
-# inventing nine new states in a process template. A position set to null
-# means the board cannot express that phase as a status at all; it is recorded
-# as a comment and claim degrades to comment order (IDE-71).
+# **These are not the nine names this platform creates on Linear.** Azure DevOps
+# states belong to the work item type, so adding a state means an inherited
+# process and an administrator; `Ready for Design` is not a state any process
+# ships and never will be. Shipping Linear's names here made every phase command
+# fail on a fresh project until the profile overrode all of them, which is the
+# opposite of what a default is for (IDE-129).
+#
+# So the default carries each position with whatever a fresh project can already
+# reach:
+#
+#   * `New` opens the design phase — a Feature is created in it on Agile and
+#     Scrum, and on the custom processes derived from them. CMMI starts at
+#     `Proposed`, which is a one-line override.
+#   * The backlog item keeps real states, `New` / `Active` / `Resolved`. They are
+#     the Agile and CMMI lifecycle, they move the card across the board's
+#     columns, and this is the level where a board being readable by eye is worth
+#     most. A Scrum team maps its own — `Approved`, `Committed`, `Done`.
+#   * Everything else is carried by an `idp:` tag (IDE-125, IDE-126). The two
+#     human gates and `blocked` are positions no process ships at all, and the
+#     rest belong to a Feature whose states differ per process. A tag needs no
+#     administrator. What it costs is stated in IDE-125: a phase carried by a tag
+#     does not move a card across a board column.
+#
+# A team that *can* create real states maps them in the profile's `phases` table
+# and gets the columns back. That is the profile adapting a working default, not
+# repairing a broken one.
 # ---------------------------------------------------------------------------
 
 PHASE_STATES = {
     "design": {
-        "ready": "Ready for Design",
-        "active": "In Design",
-        "next": "Design Review",          # a human gate
+        "ready": "New",                              # where a fresh Feature already is
+        "active": {"tag": "idp:in-design"},
+        "next": {"tag": "idp:design-review"},        # a human gate: no process ships one
     },
     "planning": {
-        "ready": "Ready for Planning",
-        "active": "In Planning",
-        "next": "Ready for Development",  # no gate: straight to the next queue
+        "ready": {"tag": "idp:ready-for-planning"},
+        "active": {"tag": "idp:in-planning"},
+        "next": {"tag": "idp:ready-for-development"},  # no gate: straight to the queue
     },
     "development": {
-        "ready": "Ready for Development",
-        "active": "In Development",
-        "next": "PR Review",              # a human gate
+        "ready": {"tag": "idp:ready-for-development"},
+        "active": {"tag": "idp:in-development"},
+        "next": {"tag": "idp:pr-review"},            # a human gate
     },
     "pbi": {
         "ready": "New",
         "active": "Active",
         "next": "Resolved",
-        "blocked": "Blocked - Needs Design",
+        "blocked": {"tag": "idp:blocked-needs-design"},
     },
 }
 
@@ -585,8 +617,14 @@ class Board:
         names = [entry.get("name") for entry in (data or {}).get("value", [])
                  if entry.get("name")]
         if not names:
-            names = sorted({name for positions in self.phase_states().values()
-                            for name in positions.values()})
+            # Only the positions this board carries as a *state* are states. A
+            # position carried by an `idp:` tag is not one, and listing it here
+            # would offer the caller a status no work item can be moved to.
+            as_marker = _state_module().as_marker
+            names = sorted({marker["status"]
+                            for positions in self.phase_states().values()
+                            for marker in (as_marker(v) for v in positions.values())
+                            if marker and marker.get("status")})
 
         states = [{"name": name, "type": self.state_type(name)} for name in names]
         return sorted(states, key=lambda s: (STATE_ORDER.get(s["type"], 9), s["name"]))

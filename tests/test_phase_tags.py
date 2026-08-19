@@ -76,6 +76,25 @@ class LocateTests(ScriptTestCase):
         self.assertIn("idp:in-design", message)
         self.assertIn("idp:design-review", message)
 
+    def test_one_status_on_two_levels_is_decided_by_what_the_card_is(self):
+        # Every Azure DevOps process spends `New` twice: it opens design on a
+        # feature and opens work on a backlog item. Without the kind, position
+        # order alone decides, and a backlog item gets told to run /idp-design.
+        phases = state.phase_map({"phases": {
+            "design": {"ready": "New", "active": {"tag": "idp:in-design"}},
+            "pbi": {"ready": "New", "active": "Active"},
+        }}, {})
+        self.assertEqual(state.locate("New", phases, kind="feature"), ("design", "ready"))
+        self.assertEqual(state.locate("New", phases, kind="pbi"), ("pbi", "ready"))
+
+    def test_a_kind_narrows_the_search_but_never_hides_the_only_answer(self):
+        # A board whose map has no `pbi` phase at all still answers for one.
+        phases = state.phase_map({"phases": {
+            "development": {"ready": "Ready for Development", "active": "In Development"},
+        }}, {})
+        self.assertEqual(state.locate("In Development", phases, kind="pbi"),
+                         ("development", "active"))
+
     def test_a_label_outside_the_namespace_is_ignored(self):
         self.assertEqual(state.locate("New", self.phases(), ["bug", "urgent"]),
                          ("design", "ready"))
