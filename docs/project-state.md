@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-19T18:15:30Z
+**Generated:** 2026-08-19T21:08:46Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 63 live (9 in progress, 38 done) · 15 archived
+**Issues:** 74 live (11 in progress, 38 done) · 15 archived
 
 ## Project documents
 
@@ -186,13 +186,24 @@ The milestone is not the fix queue for the platform's known debt — only for wh
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-127](https://linear.app/krukov-idea-hub/issue/IDE-127/fit-bugs) | FIT: bugs | Backlog | — | `krukovden/ide-127-fit-bugs` | — |
-| [IDE-132](https://linear.app/krukov-idea-hub/issue/IDE-132/every-artifact-the-platform-produces-is-russian-only-and-the-validator) | Every artifact the platform produces is Russian-only, and the validator enforces it | Backlog | — | `krukovden/ide-132-every-artifact-the-platform-produces-is-russian-only-and-the` | child of IDE-127, related IDE-111 |
 | [IDE-133](https://linear.app/krukov-idea-hub/issue/IDE-133/the-wiki-writer-writes-nothing-no-adapter-implements-write-wiki-page) | The wiki writer writes nothing: no adapter implements write_wiki_page | Backlog | — | `krukovden/ide-133-the-wiki-writer-writes-nothing-no-adapter-implements` | child of IDE-127, related IDE-121, related IDE-128 |
+| [IDE-134](https://linear.app/krukov-idea-hub/issue/IDE-134/every-azure-devops-feature-is-classified-as-a-pbi-which-silently) | Every Azure DevOps feature is classified as a PBI, which silently disables the route check | Backlog | — | `krukovden/ide-134-every-azure-devops-feature-is-classified-as-a-pbi-which` | child of IDE-127, related IDE-138 |
+| [IDE-135](https://linear.app/krukov-idea-hub/issue/IDE-135/planning-cannot-complete-on-azure-devops-a-heading-never-survives-the) | Planning cannot complete on Azure DevOps: a heading never survives the round trip to a card | Backlog | — | `krukovden/ide-135-planning-cannot-complete-on-azure-devops-a-heading-never` | child of IDE-127, related IDE-72 |
+| [IDE-136](https://linear.app/krukov-idea-hub/issue/IDE-136/a-phase-tag-is-never-removed-on-azure-devops-so-the-first-swap-wedges) | A phase tag is never removed on Azure DevOps, so the first swap wedges the card | Backlog | — | `krukovden/ide-136-a-phase-tag-is-never-removed-on-azure-devops-so-the-first` | child of IDE-127, related IDE-126 |
+| [IDE-138](https://linear.app/krukov-idea-hub/issue/IDE-138/acceptance-criteria-are-written-twice-on-an-azure-devops-card) | Acceptance criteria are written twice on an Azure DevOps card | Backlog | — | `krukovden/ide-138-acceptance-criteria-are-written-twice-on-an-azure-devops` | child of IDE-127, related IDE-132 |
+| [IDE-139](https://linear.app/krukov-idea-hub/issue/IDE-139/nothing-says-what-belongs-on-a-wiki-and-what-belongs-in-a-work-item) | Nothing says what belongs on a wiki and what belongs in a work item | Backlog | — | `krukovden/ide-139-nothing-says-what-belongs-on-a-wiki-and-what-belongs-in-a` | child of IDE-127, related IDE-132 |
+| [IDE-140](https://linear.app/krukov-idea-hub/issue/IDE-140/the-platform-has-no-idea-who-an-artifact-is-written-for) | The platform has no idea who an artifact is written for | Backlog | — | `krukovden/ide-140-the-platform-has-no-idea-who-an-artifact-is-written-for` | child of IDE-127, related IDE-139, related IDE-132 |
+| [IDE-141](https://linear.app/krukov-idea-hub/issue/IDE-141/establish-project-cannot-start-a-project-that-has-no-repository-yet) | establish-project cannot start a project that has no repository yet | Backlog | — | `krukovden/ide-141-establish-project-cannot-start-a-project-that-has-no` | child of IDE-127, related IDE-133, related IDE-137 |
+| [IDE-142](https://linear.app/krukov-idea-hub/issue/IDE-142/nothing-covers-the-epics-own-description-which-is-the-first-thing) | Nothing covers the epic's own description, which is the first thing anyone reads | Backlog | — | `krukovden/ide-142-nothing-covers-the-epics-own-description-which-is-the-first` | child of IDE-127 |
+| [IDE-143](https://linear.app/krukov-idea-hub/issue/IDE-143/a-published-card-is-tagged-sdlccidnull-which-breaks-idempotent) | A published card is tagged sdlc:cid=null, which breaks idempotent publication | Backlog | — | `krukovden/ide-143-a-published-card-is-tagged-sdlccidnull-which-breaks` | child of IDE-127 |
+| [IDE-144](https://linear.app/krukov-idea-hub/issue/IDE-144/a-pbi-is-tagged-ready-for-design-on-a-route-that-has-no-design-phase) | A PBI is tagged ready-for-design on a route that has no design phase | Backlog | — | `krukovden/ide-144-a-pbi-is-tagged-ready-for-design-on-a-route-that-has-no` | child of IDE-127, related IDE-134 |
 | [IDE-126](https://linear.app/krukov-idea-hub/issue/IDE-126/work-item-ide-92-azure-devops-phase-positions-carried-by-tags) | [Work Item · IDE-92] Azure DevOps: phase positions carried by tags | In Development | — | `krukovden/ide-126-work-item-ide-92-azure-devops-phase-positions-carried-by` | child of IDE-92, related IDE-127 |
 | [IDE-128](https://linear.app/krukov-idea-hub/issue/IDE-128/ide-125-is-done-and-its-code-is-not-on-main) | IDE-125 is Done and its code is not on main | In Development | — | `krukovden/ide-128-ide-125-is-done-and-its-code-is-not-on-main` | child of IDE-127, related IDE-71, related IDE-126, related IDE-125 |
 | [IDE-129](https://linear.app/krukov-idea-hub/issue/IDE-129/azure-devops-phase-defaults-are-linear-status-names) | Azure DevOps phase defaults are Linear status names | In Development | — | `krukovden/ide-129-azure-devops-phase-defaults-are-linear-status-names` | child of IDE-127, related IDE-125, related IDE-126 |
 | [IDE-130](https://linear.app/krukov-idea-hub/issue/IDE-130/azure-devops-under-a-pat-the-profile-cannot-say-where-it-is-and-an) | Azure DevOps under a PAT: the profile cannot say where it is, and an expired one gives the wrong advice | In Development | — | `krukovden/ide-130-azure-devops-under-a-pat-the-profile-cannot-say-where-it-is` | child of IDE-127, related IDE-100 |
 | [IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed) | CLAUDE.md Known gaps lists two gaps that are closed | In Development | — | `krukovden/ide-131-claudemd-known-gaps-lists-two-gaps-that-are-closed` | child of IDE-127, related IDE-130, related IDE-111, related IDE-128, related IDE-125 |
+| [IDE-132](https://linear.app/krukov-idea-hub/issue/IDE-132/every-artifact-the-platform-produces-is-russian-only-and-the-validator) | Every artifact the platform produces is Russian-only, and the validator enforces it | In Development | — | `krukovden/ide-132-every-artifact-the-platform-produces-is-russian-only-and-the` | child of IDE-127, related IDE-69, related IDE-78, related IDE-111 |
+| [IDE-137](https://linear.app/krukov-idea-hub/issue/IDE-137/attach-document-cannot-upload-anything-az-devops-invoke-parses-in-file) | attach_document cannot upload anything: az devops invoke parses --in-file as JSON | In Development | — | `krukovden/ide-137-attach_document-cannot-upload-anything-az-devops-invoke` | child of IDE-127, related IDE-130, related IDE-133, related IDE-136, related IDE-87 |
 
 ## How to use this file
 
