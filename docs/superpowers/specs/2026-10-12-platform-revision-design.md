@@ -7,7 +7,7 @@
 
 The platform already has the right skeleton. The board is the synchronisation point. The feature's files are attachments on the card. The script owns the process and the model owns the text. One state resolver means that moving to autonomy changes the caller and leaves the logic alone. None of that changes here.
 
-Four things do change. All four came out of studying CRAP (ServiceTitan's Claude Code plugin, which its users find stable) next to this platform and next to `krukovden/sdlc`:
+Four things do change. All four came out of studying CRAP, the team's own Claude Code plugin, which its users find stable and of which this work is the next version, next to this platform and next to `krukovden/sdlc`:
 
 1. **The chain inside a PBI is the expensive shape.** CRAP started with an orchestrator, parallel builders, a verifier, reviewers and an orientation agent. Then it measured them. Quality was the same as one agent per phase, and cost was 2–3x higher; all of the extra cost was sub-agents re-reading what one agent would read once (`docs/research/execute-north-star-charter.md`, `fixed-tax-anatomy.md` in CRAP). Only two things paid for themselves: a review at the end, and the reuse and simplification lenses. Our `coder → reviewer → security → rubber duck → tester → lead` per PBI is the shape they retired.
 2. **The claim protocol has a race.** `start_phase` reads the tags, then writes `replace` with no revision test (`scripts/sync_azure_devops_state.py`). Two agents both get "ok". The protocol also leans on revision history attributing a `System.Tags` change to its author, which Known gaps lists as unconfirmed.
@@ -26,9 +26,22 @@ Phases are the only vocabulary in this document. A phase has one owner at a time
 | | 3.1 Planning | inside phase 3 | PBIs, feature branch, feature journal |
 | | 3.2 Building | inside phase 3, parallel workers | Each PBI merged into the feature branch |
 | | 3.3 Integration | inside phase 3 | Full test run green, no duplicates, summary written |
-| 4 | **QA** | Platform runs the tests; testers write them through engineering-catalog | Feature tests green → PR feature → main → ⏸ **human merges** |
+| 4 | **QA** | **Now:** a person, through the QA Testing PBI. **Later:** the platform runs the testers' Playwright tests | ⏸ **The human decides the feature is done**: closes the QA Testing PBI and merges the PR into main |
 
-There are two human gates, design approval and the PR into main. Every pull request that does not target `main` merges automatically once its checks pass.
+There are two human gates: design approval, and QA acceptance together with the merge into main. Every pull request that does not target `main` is merged by the runner once its checks pass.
+
+**Every feature ends at QA Testing for now.** Until the automated QA run exists (phase 4's own spec), the pipeline stops after 3.3. The runner then:
+
+1. opens the PR feature → `main`, so the AI review pipeline and the full suite run on it;
+2. moves the QA Testing PBI to `doing` and assigns it to the human;
+3. sets `idp:qa`.
+
+The human tests the feature, in the QA environment deployed from the feature branch's build artifact where the project has one, and decides:
+
+- **Done:** close the QA Testing PBI and merge the PR. The Feature goes to done.
+- **Not done:** file Bugs under the Feature (engineering-catalog's `qa-ado-work-item`) and set `idp:development`. The runner builds the Bugs as in 3.2, runs 3.3 again, and returns to `idp:qa`.
+
+Nothing in the pipeline marks a feature done on its own.
 
 **How this fits the team's CI/CD.** Pipelines come from the central Template Pipelines repository. **Build** produces a versioned artifact (in blob storage and as a pipeline artifact). **Deploy** is separate and can install any stored version, forward or back. **AI review and the full test suite** run only on a PR into `main`. The platform fits that shape and adds no pipeline of its own:
 
@@ -47,11 +60,12 @@ A Feature carries exactly one phase tag. The `idp:` namespace stays mutually exc
 | `idp:design` | Needs a design | Task formation |
 | `idp:design-review` | ADR attached, waiting for a human | Design |
 | `idp:development` | Approved; phase 3 may start | **Human** (this is the approval) |
-| `idp:qa` | Phase 3 done; tests may run | Development |
-| `idp:pr-review` | Tests green, PR into main open | QA |
-| `idp:blocked` | Stopped; the reason is a comment | Any phase |
+| `idp:qa` | Phase 3 done; the PR into main is open; the QA Testing PBI is with the human | Development |
+| `idp:pr-review` | Reserved for automated QA: tests green, waiting for the merge | QA, later |
 
-Two more tags can sit next to the phase tag:
+Three more tags can sit next to the phase tag:
+
+- `idp:blocked` is a **modifier, not a phase**. The phase tag stays, so the card keeps its resume position, and the reason is a comment. Unblocking is removing this one tag.
 
 - `idp:owner:<run-id>` means someone is working on this. No owner tag means the phase is waiting and anyone may take it.
 - `idp:paused:<run-id>` replaces the owner tag when a run stopped on purpose or ran out of tokens and left a handoff. Any run may take a paused card at once, with the same claim write, and does not wait for the lease to expire.
@@ -59,6 +73,21 @@ Two more tags can sit next to the phase tag:
 Native states move only coarsely, so the team's ordinary boards stay true: Feature `New → Active → Done`, PBI `New → Active → Resolved`. PBIs carry no phase tag. They carry an owner tag, `idp:owner:<run-id>/w<N>`, while a worker holds them.
 
 This replaces the fourteen `idp:in-*` / `idp:ready-for-*` tags in `PHASE_STATES`. The live board holds only test cards, so nothing needs migrating.
+
+### Transitions
+
+Every phase-tag change is a row in one table, `TRANSITIONS[(from, to)] = actor`, and the single tag writer refuses anything not in it:
+
+| From → to | Actor |
+| -- | -- |
+| `idp:design` → `idp:design-review` | runner |
+| `idp:design-review` → `idp:development` | **human only** |
+| `idp:design-review` → `idp:design` | **human only** |
+| `idp:development` → `idp:qa` | runner |
+| `idp:qa` → `idp:development` | **human only** |
+| `idp:qa` → Feature done | **human only**, by merging into `main` |
+
+In local mode the runner holds the human's credential, so "human only" cannot be checked by identity. It is checked by code: the runner's writer has no path to those targets. A card that carries two phase tags (a human added one and forgot to remove the other) resolves to `conflict`. It is not a crash: the card is blocked with a comment naming both tags.
 
 ### Claim
 
@@ -80,20 +109,30 @@ Handing off is the same kind of write: the next phase tag goes on and the owner 
 A claim is a lease, not a lock. A run that dies at 3 a.m. must not wedge the card until a human finds it.
 
 - The owner posts a heartbeat comment from `<run-id>` every 15 minutes while it works.
-- `run.py reap` removes any owner tag whose latest heartbeat is older than 60 minutes. It puts the card back in its waiting position and comments why.
+- `run.py reap` removes any owner tag whose latest heartbeat is older than 60 minutes, by the **server's** comment timestamps, never the local clock. It puts the card back in its waiting position and comments why. Reaping a Feature also releases every `idp:owner:<run>/wN` on its PBIs.
+- **Fencing against a zombie owner.** A laptop that slept past its lease wakes up believing it still owns the card. Two rules stop it from writing:
+  - before every write, the runner re-reads the card, checks that the owner tag is still its own run, and only then writes with `test /rev`; on a mismatch it aborts without pushing;
+  - PBI branches carry a generation, `pbi/<id>-<slug>/g<N>`. A new owner branches `g<N+1>` from the remote tip of `g<N>`, and finalize reads only the branch named in the current owner's claim comment. Whatever the zombie pushes to `g<N>` is ignored.
+- Only the Feature's current owner may claim that Feature's PBIs.
 - The next owner continues from `handoff.md` on the branch, if there is one. Otherwise it continues from git and the board alone.
 - **Explicit takeover.** A human who knows a run is dead (their own laptop, a session that ran out of tokens) does not have to wait out the lease. `run.py takeover <card>` shows the current owner and its last heartbeat, asks for confirmation, then claims with the same `test /rev` write. In agent mode it is never done automatically.
 
 ### Exit codes
 
-Every worker session and every phase uses the same codes. The runner routes on them and nothing else.
+The runner routes on one closed table, `scripts/exit_codes.py`, and nothing else. No script, skill or test writes a numeric exit literal anywhere outside it (a lint enforces this).
 
 | Code | Meaning | Runner does |
 | -- | -- | -- |
 | `0` | Done | finalize, then hand off |
-| `2` | Blocked | `idp:blocked` + reason comment; the card waits for a human |
-| `3` | Refused: the signal is not the one this phase starts from; nothing changed | report and skip |
+| `2` | Blocked | add `idp:blocked` + reason comment; the card waits for a human |
+| `3` | Refused: the signal is not the one this phase starts from; nothing changed | report once (deduplicated) and back off; never re-poll the same card in a hot loop |
 | `4` | Context running out: `handoff.md` committed | start a fresh session on the same card |
+
+**A worker does not report through its process exit code.** `claude -p` and `copilot -p` exit with their own codes, not the model's verdict. The worker skill ends by calling `run.py report --code N --reason …`, which writes `.idp/result.json` in the worktree. No result file means the session crashed (handoff layer 3). It never means done.
+
+**The existing scripts' codes are mapped, never passed through.** Today `design.py` and `planning.py` use `3` and `4` with their own meanings (`fail(4)` when their local state is missing). The runner translates each script's codes through a per-script table, so a phase script's `4` can never be read as "start a fresh session".
+
+**Local state is a cache.** `design.py` keeps `~/.idp/design/…/state.json` and `planning.py` keeps `~/.feature-discovery/planning/…`. After a takeover on another machine those files do not exist. Both scripts must rebuild that state from the board and git, or restart their sub-phase from the last artifact on the card. A missing cache is never an error. Without this, a takeover loops forever between "state missing" and "start fresh". CRAP's 24-hour wedge was exactly this: metadata on one disk, no self-heal.
 
 ## The runner
 
@@ -169,6 +208,7 @@ The existing `/idp-design` is unchanged: architect, practice, critic on a differ
 
 - The ADR's machine header gains `scope: small | medium | large`, the designer's answer to "how much are we rewriting".
 - Finalize checks: the ADR passes `validate.py`; the critic's record exists; `scope` is present; the attachment uploads **and reads back** byte-identical.
+- **The approval is bound to the bytes.** The design-review comment states the ADR's sha256. A redesign **replaces** the attachment: the old relation is removed, and the journal is replaced the same way. Today `attach_document` appends a relation every time, which leaves two ADRs side by side. Phase 3 refuses to start (exit 3) unless the Feature carries exactly one ADR whose hash matches the approved one.
 
 Hand-off: `idp:design` → `idp:design-review`. The human either sets `idp:development`, which approves the design, or comments and sets `idp:design` again.
 
@@ -198,31 +238,62 @@ Planning also starts the **feature journal**: why the feature was cut this way, 
 ### 3.2 Building
 
 ```text
-while any child PBI or Bug of the Feature is not Resolved:
-    ready = items in New whose dependencies are all Resolved
-    while free workers < parallel (profile, default 3) and ready is not empty:
-        claim the item (test /rev + idp:owner:<run>/w<N>), state → Active
-        git worktree from the feature branch, branch pbi/<id>-<slug>
-        start a worker through the executor: role `worker`, the development skill, the item id
-    wait for any worker, route on its exit code
+preflight: resolve every role once; if `review` cannot resolve to a different
+           agent+model than `worker`, refuse to start, with the reason
+work = child PBIs and Bugs of the Feature, excluding the QA Testing PBI
+while any item in work is not done:
+    ready = items in work that are todo, unblocked, with every dependency done
+    if no worker is running and ready is empty:
+        add idp:blocked to the Feature, comment naming the blocked items and
+        everything waiting on them, exit 2
+    while free workers < parallel and ready is not empty:
+        claim the item (owner check + test /rev + idp:owner:<run>/w<N>), state → doing
+        fetch; base = the origin/feature SHA, recorded in the claim comment
+        git worktree at base, branch pbi/<id>-<slug>/g<N>
+        write .idp/context/ (Feature requirements, ADR, PBI card, brief)
+        start a worker through the executor: role `worker`, the development skill
+    wait for any worker, route on .idp/result.json
 ```
 
-**The worker** is one model session for one PBI. It reads the Feature's requirements, the ADR attachment, the PBI card and its brief, and `handoff.md` if one exists. It checks that the declared paths and the seams the brief names still exist; if they don't, it exits `2` (`Blocked - Needs Design`). Then it writes the code **and** the tests: coder and tester are one agent. Every commit carries `#<pbi-id>`, and **every commit is pushed at once**. Work that is not on the remote does not exist for another machine, so the most a dead session can lose is what it wrote since its last commit. Before exiting `0`, it runs the PBI's acceptance commands itself.
+The loop always terminates. Without the termination rule, one blocked PBI starves the PBIs that depend on it while the runner waits for a worker that does not exist. Without excluding QA Testing, the runner would start a worker on the human's PBI.
+
+**Model processes hold no board credential.** The runner pre-fetches everything a worker or reviewer needs into `.idp/context/` and starts their processes **without** `AZURE_DEVOPS_EXT_PAT` or any other board token. Only the runner writes to the board. This is a guarantee, where "the reviewer is read-only" in prose is only a request.
+
+**The worker** is one model session for one PBI. It reads `.idp/context/` (the Feature's requirements, the ADR, the PBI card and its brief) and `handoff.md` if one exists. It checks that the declared paths and the seams the brief names still exist; if they don't, it exits `2` (`Blocked - Needs Design`). Then it writes the code **and** the tests: coder and tester are one agent. Every commit carries `#<pbi-id>`, and **every commit is pushed at once**. Work that is not on the remote does not exist for another machine, so the most a dead session can lose is what it wrote since its last commit. Before exiting `0`, it runs the PBI's acceptance commands itself.
 
 **Finalize** is done by the runner, and this is where "done" is proven rather than reported:
 
-1. Merge the current feature branch into the PBI branch.
-2. Run every acceptance command on the card, each with a timeout.
-3. Compare the changed files with the declared paths. Leaving them is reported as a comment, not a failure, because the planner over-declares by design.
-4. Run the security scanner, if the profile names one.
+1. Delete `handoff.md` from the branch, so the evidence below is produced on the commit that will ship.
+2. Merge the current feature branch into the PBI branch. Record `tested = {feature SHA F, PBI SHA P, merge SHA M}`.
+3. Run every witness of this PBI. **Witnesses come from the plan committed at planning, never from the card.** The card can be edited by anyone; the plan's hash is pinned in the planning comment, and finalize reads it from that commit. A PBI diff that touches the plan file is refused. **Zero witnesses is a failure, not a pass.** Each witness runs:
+   - with an allowlisted environment, with no board token and no model keys;
+   - with its own timeout, inside a phase budget; a witness whose worst case does not fit the budget is refused up front;
+   - leaving a per-AC record attached to the PBI: SHA, command, exit, duration, log tail.
+4. Compare the changed files with the declared paths. Leaving them is reported as a comment, not a failure, because the planner over-declares by design.
+5. Run the security scanner, if the profile names one.
 
-A failure sends the output back to a fresh worker session on the same PBI. After 3 attempts the PBI gets `idp:blocked`.
+**Every failure has one outcome from a closed set, and each outcome has one route:**
+
+| Outcome | Route |
+| -- | -- |
+| `defect` (a witness fails on the code) | a fresh worker session, with the output; counts as an attempt |
+| `infra` (network, Azure DevOps 5xx, a runner error) | the runner retries with backoff; **does not** count as an attempt |
+| `witness_timeout`, `budget` | block the PBI and send it back to planning: the witness is wrong, not the code |
+| `malformed` (bad plan, missing witness) | block at once |
+| `conflict` (the merge in step 2 conflicts) | a conflict-resolution worker session with both sides; counts as an attempt |
+
+Three attempts, then `idp:blocked`. **Counters live on the board, not in memory.** Every counted event is a structured runner comment (`<!-- idp:event {"kind":"attempt","n":2,"sha":"…"} -->`), and every counter is the number of such comments. That way a counter survives a reap, a crash and a takeover. An exit `4` with no new pushed commit since the previous `4` counts as an attempt too, otherwise "context running out" could loop forever.
 
 **The rubber duck** reviews the PBI's diff against the feature branch, with read-only tools (`git diff`, `git log`, file reads). It is the `review` role, and it resolves through the executor under the hard review rule above, so it always runs on a different tool or model than the worker. With the default list, work written by Claude is reviewed by Copilot on a non-Claude model, and work written by Copilot or Codex is reviewed by the first other available entry.
 
-Availability is checked with a real authenticated probe, not just by finding the binary on `PATH`. Without it, a night run fails silently at the first review. The review looks for defects, departures from the ADR, and **duplicates of what sibling PBIs already merged into the feature branch**. Critical and important findings go back to the worker and count as an attempt. Minor ones become PR comments.
+Availability is checked with a real authenticated probe, not just by finding the binary on `PATH`. Without it, a night run fails silently at the first review. The review looks for defects, departures from the ADR, and **duplicates of what sibling PBIs already merged into the feature branch**. A finding without a `file:line` inside this diff is dropped, because a non-deterministic reviewer must not block a PBI with noise. Critical and high findings go back to the worker. Review rounds have their own cap of 2, separate from attempts. Medium and low findings become PR comments; low-confidence ones go to the report's `Unverified` section.
 
-**The tech lead is the runner, not a model.** Once finalize and the rubber duck pass, it opens the PR with `az repos pr create --source pbi/... --target feature/... --work-items <id> --auto-complete --squash`. The PR merges when the feature branch's policies pass. The PBI goes to Resolved, the owner tag comes off, and a summary comment is posted. If the merge conflicts because the feature branch moved, the PBI goes back to finalize step 1.
+**The tech lead is the runner, not a model, and it merges only what was tested.** Once finalize and the rubber duck pass, it opens the PR (`az repos pr create --source pbi/…/g<N> --target feature/… --work-items <id> --squash`) **without auto-complete**, so the merge happens when the runner says, not when a policy happens to clear. PRs are completed **one at a time per Feature**:
+
+- if the feature branch head is still `F` from `tested`, the runner completes the PR, pinning `lastMergeSourceCommit` to `M`;
+- if the head has moved (a sibling merged first), the runner re-runs finalize steps 2–3 on the new head first. That is **not** charged as an attempt.
+
+Then the PBI goes to done, the owner tag comes off, and a summary comment is posted. This is what makes "done" mean "this exact combination was tested", rather than "something like it passed earlier".
 
 ### Handoff when a session ends early
 
@@ -232,19 +303,19 @@ A session can end early for three reasons: context pressure, running out of toke
 
 | Layer | Fires | Who writes the handoff | Quality |
 | -- | -- | -- | -- |
-| 1. **Before the cliff** | The Claude status line receives `context_window.used_percentage` and, on Pro/Max plans, `rate_limits.five_hour.used_percentage`. Its script writes them to a file. A `PostToolUse` hook reads the file, and at 90% injects: finish the task in flight, commit, write `handoff.md`, push, exit `4`. | The model, while it still can | Best: it records intent, gotchas and the next step |
+| 1. **Before the cliff** | The Claude status line receives `context_window.used_percentage` and, on Pro/Max plans, `rate_limits.five_hour.used_percentage`. Its script writes them to a file. A `PostToolUse` hook reads the file, and at 90% injects: finish the task in flight, commit, write `handoff.md`, push, exit `4`. | The model, while it still can | Richest when it works, but **not a guarantee**: CRAP measured its advisory firing about 20 times with no handoff ever committed |
 | 2. **At the cliff** | Claude `StopFailure` (`error`: `rate_limit`, `billing_error`, `overloaded`, …); Copilot `errorOccurred` / `sessionEnd`. | A script, with no model | Mechanical |
 | 3. **After the cliff** | `run.py` sees its worker exit non-zero with a limit error (in `stream-json`, a `system/api_retry` event carrying `rate_limit` or `overloaded`, followed by a non-zero exit) | The runner, with no model | Mechanical, and independent of any hook firing |
 
 Layers 2 and 3 run the same script:
 
-1. `git add -A`, commit `wip(handoff): <reason>` with the work item mention, push the branch. It refuses on `main` or the feature branch and acts only on a `pbi/*` branch.
+1. Stage everything **except** ignored files, files over 5 MB, and anything that matches the secret patterns (`.env*`, keys, tokens); list what was left out in the handoff. Commit `wip(handoff): <reason>` with the work item mention and push the branch. It refuses on `main` or the feature branch and acts only on a `pbi/*` branch.
 2. Write a mechanical `handoff.md`: the branch, the card, the last commit, the files that were uncommitted, the reason, and the model's last message if the event carried one. Commit and push it.
 3. Swap `idp:owner:<run>` for `idp:paused:<run>` in one `test /rev` write, so another machine can take the card at once.
 
 A `wip(handoff)` commit may not build. That is safe, because a PBI branch merges only through finalize, and finalize runs the acceptance commands.
 
-Layer 1 is Claude-only until Copilot is shown to expose the same numbers. Layer 2 depends on a hook being able to run a command at that event, which is not documented for `StopFailure`, so it is an experiment below. Layer 3 always works when the work runs under `run.py`. Interactive sessions without the runner rely on layers 1 and 2.
+**Layer 3 is the only guarantee.** Layer 1 is Claude-only until Copilot is shown to expose the same numbers, and it depends on the model obeying. Layer 2 depends on a hook being able to run a command at that event, which is not documented for `StopFailure`, so it is an experiment below. Interactive sessions without the runner rely on layers 1 and 2, best-effort.
 
 ### 3.3 Integration
 
@@ -254,14 +325,14 @@ This sub-phase starts once every child is Resolved. Two siblings that ran at the
 - **One model session** on the diff of the feature branch against `main`. It looks for duplicates across PBIs, anything in the ADR that was not built, anything built that the ADR did not ask for, and inconsistent naming, errors or patterns. It writes a summary into the feature journal.
 - Findings become new child PBIs, and 3.2 runs again. The Feature allows **at most 2 integration rounds**; the third failure sets `idp:blocked`, so a night run cannot loop.
 
-Hand-off: `idp:development` → `idp:qa`, and the journal is uploaded.
+Hand-off, for now: open the PR feature → `main`, move the QA Testing PBI to `doing` assigned to the human, set `idp:qa`, and upload the journal (see *Every feature ends at QA Testing for now*).
 
 ## Phase 4 — QA
 
-This document defines QA as a contract only. Its own spec follows.
+**Today phase 4 is the human's.** The QA Testing PBI is where the person tests and decides done (see *Phases*). The automated run below is the contract for later, and it gets its own spec.
 
 - **Writing tests is the testers' job, done in parallel with phase 3** through a skill in engineering-catalog. Test cases come from the Feature's acceptance criteria. Playwright code lives in the QA repository. Every test is tagged `@ado-<feature-id>`. When they are done, the tester closes their Task in the QA Testing PBI.
-- **The platform's QA phase only finds and runs.** It starts when the Feature is in `idp:qa` and the tester's Task is done. It brings the environment up through the team's build and deploy templates when the project has them (feature-branch artifact → QA environment), otherwise locally from the profile (`run`, `base_url`, dependencies), runs every test tagged with the Feature id, and uploads the report as an attachment.
+- **The platform's QA phase only finds and runs.** It starts when the Feature is in `idp:qa` and the tester's Task is done. **Zero tests found for the Feature is a failure, never green.** It brings the environment up through the team's build and deploy templates when the project has them (feature-branch artifact → QA environment), otherwise locally from the profile (`run`, `base_url`, dependencies), runs every test tagged with the Feature id, and uploads the report as an attachment.
 - **Green:** open the PR feature → main, set `idp:pr-review`. **Red:** a Bug under the Feature for each failure, then back to `idp:development` (3.2 builds Bugs like PBIs, then 3.3 runs). At most 2 QA rounds before `idp:blocked`.
 
 ## Board tracking is deterministic
@@ -304,12 +375,10 @@ Where a category holds two states, discovery asks once and records the answer.
 | -- | -- | -- |
 | Planning creates PBIs and Tasks | all `todo` | `run.py` |
 | A worker claims a PBI | PBI and its first Task → `doing` | `run.py` |
-| A commit with `#<task>` is pushed | that Task → `doing` if still `todo` | git `post-commit` hook (catalog), or the runner |
 | A Task's witness passes at finalize | Task → `done`, next Task → `doing` | `run.py` |
-| A PBI's PR merges | PBI and its remaining Tasks → `done` | Azure DevOps (PR option "complete linked work items"), checked by `run.py` |
-| Every development PBI is `done` | QA Testing PBI → `doing` | `run.py` |
-| The tester finishes the tests | their Task → `done` | the tester, through the catalog skill |
-| The feature's tests pass | QA Testing PBI → `done` | `run.py` |
+| A PBI's PR merges | PBI and its remaining Tasks → `done` | `run.py`, as it completes the PR |
+| 3.3 hands off | QA Testing PBI → `doing`, assigned to the human | `run.py` |
+| The human accepts the feature | QA Testing PBI → `done` | **the human** |
 | The PR into `main` merges | Feature → `done` | Azure DevOps, checked by `reconcile` |
 
 Every move posts a comment naming the commits, the PR or the witness behind it. That trail is the progress record developers otherwise don't write.
@@ -320,22 +389,65 @@ Hooks do not always fire. `reconcile` compares git with the board and repairs th
 
 | It sees | It does |
 | -- | -- |
-| Commits referencing `#123`, item 123 still `todo` | 123 → `doing` |
-| A merged PR, its PBI not `done` | PBI → `done` |
-| Every child of a Feature `done`, the Feature not | Feature → its next position |
-| An item `doing` with no commit for N days | comment "no movement", listed in the report |
-| Commits on a task branch without a work item mention | listed in the report as untracked work |
+| A branch `feature/ADO-123-…` or `pbi/123-…` with pushed commits, item 123 still `todo` | 123 → `doing` |
+| A completed PR (found through the PR API, because squash merges leave no merge commits) whose item is not `done` | item → `done` |
+| An item `doing` with no pushed commit for N days | comment "no movement", listed in the report |
+| Pushed work on a branch that names no work item | listed in the report as untracked work |
 
-It runs at the end of every phase in `run.py`, from a `SessionStart` hook (the agent opens with "two of your items have not moved"), and on a schedule (an Orca automation or a pipeline).
+**`reconcile` never moves a card that carries an `idp:` tag.** On those cards the runner is the only writer, and a second writer could, for example, close a Feature before the human merged it. It also never moves a card backwards, and never touches Removed. A Bug's Resolved is not done: it means awaiting verification and is reported as its own bucket.
+
+It runs at the end of every phase in `run.py`, on demand, and on a schedule (an Orca automation or a pipeline). In a session it is one throttled line inside engineering-catalog's existing `catalog-freshness` hook. It is not a second `SessionStart` hook, because on Copilot two context hooks on one event lose both messages.
 
 ### Without the platform
 
 A developer using only the catalog gets the same movement, with no model in the loop:
 
-- the `commit-msg` hook takes the work item id from the branch name (`feature/ADO-123-…`) and adds `#123`;
-- the `post-commit` hook moves the item to `doing`;
-- `ado-pull-request` links the work items and sets them to complete on merge;
-- the scheduled `reconcile` catches whatever the hooks missed.
+- `ado-branch` puts the work item id in the branch name, which is all `reconcile` needs;
+- `ado-pull-request` links the work items and puts `#<id>` in the PR body, which survives the squash into `main`;
+- `reconcile`, on demand or on a schedule, moves what the facts say.
+
+There are no per-commit git hooks: squash merges make commit mentions disappear, and a network call inside a git hook would slow every commit and need a credential there.
+
+## Determinism rules
+
+The platform's promise is that the same board and the same git produce the same outcome, and that a crash at any point leaves state another run can continue from. The sections above apply these rules one by one. This section collects them, together with the rules that belong to no single phase.
+
+**Idempotency.** Every item the runner creates (PBI, Task, Bug) carries a correlation key `(feature, round, source hash)` and is looked up before it is created (`find_by_correlation` already exists). Every runner comment carries a dedupe key. Running any phase twice changes nothing the second time.
+
+**Profile discipline.** `schemas/profile.schema.json` with `additionalProperties: false` and closed enums (backend, roles, agents), so a typo such as `"paralel"` is an error, not a silent default. The profile also carries a `schema_version`, with migrations, and removed keys (the per-agent token map, `epic_id`) are hard errors that name the fix. `states discover` is the only writer of `state_map`. The profile's hash goes into every claim comment, so a run is reproducible from the board.
+
+**Explicit bases.** Every worktree starts from a SHA recorded in the claim comment, never from a branch name resolved later. Experiment 5 records which ref Orca's `--worktree new-child` actually branches from.
+
+**Meta-lints keep the scripts honest.** They enforce:
+
+- only the adapter calls Azure DevOps;
+- only the tag writer writes `System.Tags`;
+- no numeric `fail(…)` / `sys.exit(…)` literal outside `exit_codes.py`;
+- every refusal message carries a FIX line;
+- no `az boards` calls in skill prose.
+
+**Prove it with a simulation.** Correctness is not argued, it is tested:
+
+- a fake board that honours `test /rev`, and a scripted executor;
+- a test that crashes the runner after **every** side effect, resumes, and must reach the same final board;
+- a test that runs every phase twice and asserts zero changes the second time.
+
+Every experiment is pre-registered (hypothesis, n, pass rule, stop rule), and every fault injection checks that the fault really fired. CRAP retracted a result once because an injected fault never happened.
+
+**The checklist.** Every phase satisfies all twelve before it ships:
+
+1. All state is on the board or in git. A local file is a cache that can be rebuilt; losing it never ends in exit 3 or 4.
+2. Every transition is in the transition table with its actor. The single writer refuses anything else, and the runner cannot write human gates.
+3. Every write is fenced: re-read the owner, then `test /rev`. Branch names carry the lease generation.
+4. "Done" equals the witness record of a named tested SHA, and only that SHA merges.
+5. Witnesses come from a hash-pinned, committed plan and run with an allowlisted environment, a timeout and a budget. Zero witnesses is a failure.
+6. Outcomes come from closed enums, each class has one route, and infrastructure failures never consume attempts.
+7. Every loop has a bound kept on the board (attempts, rounds, consecutive exit 4 without progress) and a termination rule for when nothing is runnable.
+8. Every creation and every comment is idempotent through a correlation or dedupe key.
+9. Model processes hold no board credential. The runner is the only writer to Azure DevOps.
+10. The profile is schema-validated with closed enums, and its hash is in every claim.
+11. Every worktree base is an explicit SHA, recorded in the claim comment.
+12. The phase's crash-and-resume simulation passes, with faults keyed on git or board state, and its experiments were pre-registered.
 
 ## Area blueprints: documentation as part of delivery
 
@@ -385,7 +497,7 @@ The routes from IDE-90 stay, re-expressed as phases.
 
 | Route | Phases |
 | -- | -- |
-| feature | 1 → 2 → 3 → 4 |
+| feature | 1 → 2 → 3 → 4 (4 is the human's QA for now) |
 | small feature | 1 → 3 → 4. No ADR; the human creating the Feature with `idp:development` is the approval |
 | bug | 1 → 2 as a short verdict with no review gate → 3 with a single PBI → 4 |
 
@@ -410,7 +522,7 @@ The routes from IDE-90 stay, re-expressed as phases.
 ## Before implementation
 
 1. **A feature card and a design card in Linear**, per this project's rule that nothing is built ahead of an approved design. Then this document is published as the ADR and registered on the HUB.
-2. **Experiment: claim race.** Two processes claim one Azure DevOps card at once with `test /rev`. Exactly one may win, every time, over 50 runs. If this fails, the board cannot be the coordination point, and the claim moves to a git ref before anything else is built.
+2. **Experiment: claim race.** Two processes claim one Azure DevOps card at once with `test /rev`. Exactly one may win, every time, over 50 runs. Also record whether **adding a comment bumps `/rev`**. If it does, the owner's own heartbeat would make its next write conflict, and heartbeats must move to a field or to the owner's own fenced re-read. If the race test fails, the board cannot be the coordination point, and the claim moves to a git ref before anything else is built.
 3. **Experiment: attachment round trip.** Upload, replace and download `design.md` through `rest_call`; the bytes must survive (IDE-137 is the precedent for why this gets tested, not assumed).
 4. **Experiment: the cliff hooks.** Hit a real usage or rate limit in Claude and in Copilot. Record whether `StopFailure` and `errorOccurred` fire, what `error` value arrives, whether a command hook can still `git push` at that point, and what `claude -p` prints and returns. Record the results in the project's facts file. Until then, layer 2 is a best-effort extra and layer 3 is the guarantee.
 5. **Experiment: a script as Orca coordinator.** Orca's guide assumes the coordinator is an agent. Check that `run.py`, running in an Orca terminal, can `run-create`, `worker-start`, `check --wait` and `worker-release` over `--json` with no model in the loop. If it cannot, the `orca` backend waits and `subprocess` carries everything.
@@ -420,19 +532,19 @@ The routes from IDE-90 stay, re-expressed as phases.
 ## Build order
 
 0. engineering-catalog: state discovery, the move commands, `reconcile` and the git hooks (its own spec). The platform's build steps below call them.
-1. Adapter: the new tag set, the `test /rev` claim, owner tags, lease and `reap`. Both adapters, with tests that never touch the network.
+1. Adapter: the new tag set, the transition table and single writer, the fenced `test /rev` claim, owner tags, the lease, `reap`, `exit_codes.py`, and the fake board plus the crash-and-resume simulation harness. Both adapters, with tests that never touch the network.
 2. `run.py`: the phase skeleton, the local mode and the `subprocess` executor with roles, preferences and the review rule, running phase 2 end to end.
-3. Phase 3: orchestrator, worker skill, finalize, rubber duck, PR and auto-merge.
-4. Integration (3.3), then the documenter and area blueprints.
+3. Phase 3: the orchestrator with its termination rule, `.idp/context/`, the worker skill and `run.py report`, finalize with plan-pinned witnesses and the outcome table, the rubber duck, and serial tested-SHA merges. The design and planning scripts' local state becomes a rebuildable cache.
+4. Integration (3.3), the hand-off to the human's QA Testing PBI, then the documenter and area blueprints.
 5. `run.py --agent`, `stop` and `takeover`; `idp:paused`.
 6. The `orca` executor backend, once experiments 5 and 6 pass.
 7. The handoff layers: the runner path first (layer 3), then the hook script (layer 2) once the experiment says it can run, then the status-line watcher (layer 1).
 8. The phase-skill borrowings (D1–D8, G1–G4, P1–P3, W1–W4) and the `max_po_questions` fix. Each is independent and can land any time after step 2.
-9. QA: its own spec, the testers' skill in engineering-catalog, then the phase.
+9. Automated QA: its own spec, the testers' skill in engineering-catalog, then the phase. Until then, features end at the human's QA Testing.
 
 ## Borrowed from CRAP
 
-CRAP (`servicetitan/crap`) is read for ideas, and where its licence allows, for text and logic. Its README states MIT, but the checkout has no `LICENSE` file. Before anything marked *text* or *logic* is copied, confirm the licence with its owners and record it in `ATTRIBUTION.md`.
+CRAP is the team's own plugin, and this work is its next version, so text and logic are taken freely wherever they fit.
 
 | # | What | Source in CRAP | Kind | Where here |
 | -- | -- | -- | -- | -- |
@@ -493,7 +605,7 @@ Bug found during the comparison: `max_po_questions: 25` (`skills/feature-discove
 | W1 | Staleness gate before building: named seams still exist, otherwise stop; minor drift absorbed in one line | `skills/crap-execute/SKILL.md:21-25` | as-is |
 | W2 | Test discipline by category: bug-fix → failing test first, verified red; refactor → baseline run first, no new behaviour | `skills/crap-execute/SKILL.md:29` | as-is |
 | W3 | Check a sub-agent's report against the diff ("the diff is authoritative; the report is auxiliary"); every new defensive construct names its upstream cause, or it is symptom suppression | `crap-process/references/implementation-discipline.md:216-241,284-302` | as-is, in the worker skill and the integration session |
-| W4 | Findings discipline for the rubber duck: ≥90% confidence, consolidate more than 5 minors, re-examine zero findings on a non-trivial scope, flag only what the change touched, read-only includes git state | `skills/persona-rich/SKILL.md:16-51`, `crap-review/references/expert-runner.md:73-87` | as-is |
+| W4 | Findings discipline for the rubber duck: generate everything and filter downstream, so low confidence goes to `Unverified` and is never silently dropped (CRAP's own authoring rule outranks persona-rich's 90% cut-off); consolidate more than 5 minors, re-examine zero findings on a non-trivial scope, flag only what the change touched, read-only includes git state | `skills/persona-rich/SKILL.md:16-51`, `crap-review/references/expert-runner.md:73-87` | as-is |
 
 **Kept from our side, and not to be regressed:** the design machinery (reversibility with no default, the alternatives budget, practice before the critic, objections overruled but never dropped); the path-overlap graph; ACs written against a verified branch-point baseline; the cross-vendor critic and the impossibility of skipping review silently; code-enforced non-goals and decisions-vs-assumptions; the approval hash.
 
@@ -501,4 +613,14 @@ Bug found during the comparison: `max_po_questions: 25` (`skills/feature-discove
 
 Board tracking, review quality and enforcement hooks are borrowed into engineering-catalog instead. See that repository's `docs/superpowers/specs/2026-10-12-catalog-crap-borrowings-design.md`.
 
-**Not taken:** the Bun engine, the HTTP hook server, the per-requirement blueprint, cross-repo changesets, the persona spec lane, multi-workspace, and everything bound to GitHub or Jira.
+**Not taken:**
+
+- the Bun engine and the HTTP hook daemon (a shared, host-global daemon once ran two engine builds at once and looped eight remediation rounds);
+- re-arming local deny guards (CRAP's own research concluded "at most once; if unsure, do not enforce");
+- the event stream with checkpoint and replay (nothing in CRAP calls it, and structured board comments do the job here);
+- advisory checks that carry blocking severity (they caused CRAP's ship deadlock);
+- the per-requirement blueprint (taken in a lighter, per-area form);
+- the persona spec lane and multi-workspace;
+- GitHub- and Jira-bound behaviour.
+
+Cross-repo changesets come back, as an idea only, in engineering-catalog's deferred `ado-changeset`.
