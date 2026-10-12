@@ -45,11 +45,10 @@ A Feature carries exactly one phase tag. The `idp:` namespace stays mutually exc
 | `idp:pr-review` | Tests green, PR into main open | QA |
 | `idp:blocked` | Stopped; the reason is a comment | Any phase |
 
-Two tags sit next to the phase tag:
+Two more tags can sit next to the phase tag:
 
 - `idp:owner:<run-id>` means someone is working on this. No owner tag means the phase is waiting and anyone may take it.
 - `idp:paused:<run-id>` replaces the owner tag when a run stopped on purpose or ran out of tokens and left a handoff. Any run may take a paused card at once, with the same claim write, and does not wait for the lease to expire.
-- `idp:needs-tests` is set by the runner the first time it claims a Feature for phase 3, and removed by the tester once the Feature's tests exist. QA does not start while it is present. The runner sets it rather than the human, so approving a design stays one tag change.
 
 Native states move only coarsely, so the team's ordinary boards stay true: Feature `New → Active → Done`, PBI `New → Active → Resolved`. PBIs carry no phase tag. They carry an owner tag, `idp:owner:<run-id>/w<N>`, while a worker holds them.
 
@@ -175,6 +174,19 @@ One run owns the Feature for the whole phase.
 
 The existing `/idp-planning` is unchanged: vertical slices, declared paths, dependencies, acceptance criteria as commands someone has actually run, two descriptions per PBI. It already guarantees that two PBIs whose paths intersect are ordered by a dependency, which is what makes the parallelism below safe without a separate overlap check.
 
+Planning always creates the same shape on the board:
+
+```text
+Feature
+ ├─ PBI 1 ─ Task 1.1, 1.2, …        one Task per brief step, each with its own witness
+ ├─ PBI 2 ─ Task 2.1, …
+ └─ PBI "QA Testing"                depends on every other PBI
+      ├─ Task "Write test cases and Playwright"   the tester
+      └─ Task "Run the feature's tests"           the platform
+```
+
+With the QA Testing PBI, the board tells the truth with no extra reading. Development PBIs close as they merge, and "everything written, nothing tested" shows as exactly one open PBI. It also replaces a hidden tag with a visible task that the tester owns.
+
 Planning also starts the **feature journal**: why the feature was cut this way, what was tried and rejected, what changed during the build. It is a working file in the run's worktree. It is uploaded as an attachment on the Feature at the end of every sub-phase, so a phase that moves to another machine, or dies, loses nothing. It follows the existing feature-file naming rule (`02` is Tried & Rejected).
 
 ### 3.2 Building
@@ -242,9 +254,78 @@ Hand-off: `idp:development` → `idp:qa`, and the journal is uploaded.
 
 This document defines QA as a contract only. Its own spec follows.
 
-- **Writing tests is the testers' job, done in parallel with phase 3** through a skill in engineering-catalog. Test cases come from the Feature's acceptance criteria. Playwright code lives in the QA repository. Every test is tagged `@AB#<feature-id>`. The tester removes `idp:needs-tests` when they are done.
-- **The platform's QA phase only finds and runs.** It starts when the Feature is in `idp:qa` and `idp:needs-tests` is gone. It brings the environment up from the profile (`run`, `base_url`, dependencies), runs every test tagged with the Feature id, and uploads the report as an attachment.
+- **Writing tests is the testers' job, done in parallel with phase 3** through a skill in engineering-catalog. Test cases come from the Feature's acceptance criteria. Playwright code lives in the QA repository. Every test is tagged `@AB#<feature-id>`. When they are done, the tester closes their Task in the QA Testing PBI.
+- **The platform's QA phase only finds and runs.** It starts when the Feature is in `idp:qa` and the tester's Task is done. It brings the environment up from the profile (`run`, `base_url`, dependencies), runs every test tagged with the Feature id, and uploads the report as an attachment.
 - **Green:** open the PR feature → main, set `idp:pr-review`. **Red:** a Bug under the Feature for each failure, then back to `idp:development` (3.2 builds Bugs like PBIs, then 3.3 runs). At most 2 QA rounds before `idp:blocked`.
+
+## Board tracking is deterministic
+
+One rule shapes this platform as much as code quality does: **all work is visible on the board, and the board moves itself.** A developer who runs a large project alone and never moves a card is the normal case, not the exception. So no status change depends on a human remembering, or on a model following an instruction. A script moves cards on facts: a commit exists, a witness passed, a PR merged.
+
+### It lives in engineering-catalog, and the platform calls it
+
+The developer who never moves cards often doesn't use this platform at all. They use the catalog's tools: `ado-branch`, `commit`, `ado-pull-request`. Tracking that lived only here would miss exactly that developer. So the mechanism belongs to engineering-catalog (Node, no runtime dependencies, Claude and Copilot alike), and `run.py` calls it rather than reimplementing it.
+
+The boundary keeps two implementations from drifting:
+
+| engineering-catalog owns | this platform owns |
+| -- | -- |
+| Work item **states**: discovering a process's states, moving Feature / PBI / User Story / Task through todo → doing → done, progress comments, `reconcile`, the git hooks | **Phase tags**, claims, owner / paused tags, leases, the executors |
+
+The catalog's own design (a unit, its scripts, its evals) is a separate spec in that repository. This section is the contract the platform depends on.
+
+### Any process, through state categories
+
+Every Azure DevOps process names its states differently, but every state belongs to a category: Proposed, InProgress, Resolved, Completed or Removed (`_apis/wit/workitemtypes/{type}/states`). A one-time `states discover` writes a map into the project's configuration, and every later move uses only `todo / doing / done`:
+
+```json
+"state_map": {
+  "Product Backlog Item": {"todo": "New",   "doing": "Committed",   "done": "Done"},
+  "User Story":           {"todo": "New",   "doing": "Active",      "done": "Closed"},
+  "Task":                 {"todo": "To Do", "doing": "In Progress", "done": "Done"}
+}
+```
+
+Where a category holds two states, discovery asks once and records the answer.
+
+### Who moves what
+
+| Event | Move | Done by |
+| -- | -- | -- |
+| Planning creates PBIs and Tasks | all `todo` | `run.py` |
+| A worker claims a PBI | PBI and its first Task → `doing` | `run.py` |
+| A commit with `AB#<task>` is pushed | that Task → `doing` if still `todo` | git `post-commit` hook (catalog), or the runner |
+| A Task's witness passes at finalize | Task → `done`, next Task → `doing` | `run.py` |
+| A PBI's PR merges | PBI and its remaining Tasks → `done` | Azure DevOps (PR option "complete linked work items"), checked by `run.py` |
+| Every development PBI is `done` | QA Testing PBI → `doing` | `run.py` |
+| The tester finishes the tests | their Task → `done` | the tester, through the catalog skill |
+| The feature's tests pass | QA Testing PBI → `done` | `run.py` |
+| The PR into `main` merges | Feature → `done` | Azure DevOps, checked by `reconcile` |
+
+Every move posts a comment naming the commits, the PR or the witness behind it. That trail is the progress record developers otherwise don't write.
+
+### Reconcile is the guarantee
+
+Hooks do not always fire. `reconcile` compares git with the board and repairs the difference. It is idempotent, so running it twice changes nothing the second time.
+
+| It sees | It does |
+| -- | -- |
+| Commits referencing `AB#123`, item 123 still `todo` | 123 → `doing` |
+| A merged PR, its PBI not `done` | PBI → `done` |
+| Every child of a Feature `done`, the Feature not | Feature → its next position |
+| An item `doing` with no commit for N days | comment "no movement", listed in the report |
+| Commits on a task branch without `AB#` | listed in the report as untracked work |
+
+It runs at the end of every phase in `run.py`, from a `SessionStart` hook (the agent opens with "two of your items have not moved"), and on a schedule (an Orca automation or a pipeline).
+
+### Without the platform
+
+A developer using only the catalog gets the same movement, with no model in the loop:
+
+- the `commit-msg` hook takes the work item id from the branch name (`feature/ADO-123-…`) and adds `AB#123`;
+- the `post-commit` hook moves the item to `doing`;
+- `ado-pull-request` links the work items and sets them to complete on merge;
+- the scheduled `reconcile` catches whatever the hooks missed.
 
 ## Memory
 
@@ -269,7 +350,7 @@ The routes from IDE-90 stay, re-expressed as phases.
 | `coder → reviewer → security → rubber duck → tester → lead` inside each PBI | One worker (code + tests) + runner finalize + one cross-tool review + scanner | CRAP measured the chain: same quality at 2–3x the cost |
 | "Sixteen participants" | Four phases, each with one owner | Participants were a staffing chart; the board only needs to know who holds a card |
 | Claim read from revision history; the per-agent token map | `test /rev` + owner tag + lease | History attribution of tags is unconfirmed, and the write races either way |
-| `idp:in-*`, `idp:ready-for-*` (14 tags) | 6 phase tags + owner + `needs-tests` | Sub-phases are the owner's business, not the board's |
+| `idp:in-*`, `idp:ready-for-*` (14 tags) | 6 phase tags + owner + paused; a QA Testing PBI instead of a tests tag | Sub-phases are the owner's business, not the board's |
 | Every phase started by a human | `run.py <feature>` and `run.py --agent` | A pipeline you cannot leave running is a wizard |
 | Feature registry on the epic | `memory/index.md` in the repository | One store, no rule for which wins |
 
@@ -291,6 +372,7 @@ The routes from IDE-90 stay, re-expressed as phases.
 
 ## Build order
 
+0. engineering-catalog: state discovery, the move commands, `reconcile` and the git hooks (its own spec). The platform's build steps below call them.
 1. Adapter: the new tag set, the `test /rev` claim, owner tags, lease and `reap`. Both adapters, with tests that never touch the network.
 2. `run.py`: the phase skeleton, the local mode and the `subprocess` executor with roles, preferences and the review rule, running phase 2 end to end.
 3. Phase 3: orchestrator, worker skill, finalize, rubber duck, PR and auto-merge.
