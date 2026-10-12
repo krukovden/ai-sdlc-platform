@@ -48,6 +48,7 @@ A Feature carries exactly one phase tag. The `idp:` namespace stays mutually exc
 Two tags sit next to the phase tag:
 
 - `idp:owner:<run-id>` means someone is working on this. No owner tag means the phase is waiting and anyone may take it.
+- `idp:paused:<run-id>` replaces the owner tag when a run stopped on purpose or ran out of tokens and left a handoff. Any run may take a paused card at once, with the same claim write, and does not wait for the lease to expire.
 - `idp:needs-tests` is set by the runner the first time it claims a Feature for phase 3, and removed by the tester once the Feature's tests exist. QA does not start while it is present. The runner sets it rather than the human, so approving a design stays one tag change.
 
 Native states move only coarsely, so the team's ordinary boards stay true: Feature `New → Active → Done`, PBI `New → Active → Resolved`. PBIs carry no phase tag. They carry an owner tag, `idp:owner:<run-id>/w<N>`, while a worker holds them.
@@ -76,6 +77,7 @@ A claim is a lease, not a lock. A run that dies at 3 a.m. must not wedge the car
 - The owner posts a heartbeat comment from `<run-id>` every 15 minutes while it works.
 - `run.py reap` removes any owner tag whose latest heartbeat is older than 60 minutes. It puts the card back in its waiting position and comments why.
 - The next owner continues from `handoff.md` on the branch, if there is one. Otherwise it continues from git and the board alone.
+- **Explicit takeover.** A human who knows a run is dead (their own laptop, a session that ran out of tokens) does not have to wait out the lease. `run.py takeover <card>` shows the current owner and its last heartbeat, asks for confirmation, then claims with the same `test /rev` write. In agent mode it is never done automatically.
 
 ### Exit codes
 
@@ -141,7 +143,7 @@ while any child PBI or Bug of the Feature is not Resolved:
     wait for any worker, route on its exit code
 ```
 
-**The worker** is one model session for one PBI. It reads the Feature's requirements, the ADR attachment, the PBI card and its brief, and `handoff.md` if one exists. It checks that the declared paths and the seams the brief names still exist; if they don't, it exits `2` (`Blocked - Needs Design`). Then it writes the code **and** the tests: coder and tester are one agent. Every commit carries `AB#<pbi-id>`. Before exiting `0`, it runs the PBI's acceptance commands itself.
+**The worker** is one model session for one PBI. It reads the Feature's requirements, the ADR attachment, the PBI card and its brief, and `handoff.md` if one exists. It checks that the declared paths and the seams the brief names still exist; if they don't, it exits `2` (`Blocked - Needs Design`). Then it writes the code **and** the tests: coder and tester are one agent. Every commit carries `AB#<pbi-id>`, and **every commit is pushed at once**. Work that is not on the remote does not exist for another machine, so the most a dead session can lose is what it wrote since its last commit. Before exiting `0`, it runs the PBI's acceptance commands itself.
 
 **Finalize** is done by the runner, and this is where "done" is proven rather than reported:
 
@@ -162,6 +164,28 @@ A failure sends the output back to a fresh worker session on the same PBI. After
 "Available" means two checks: the binary is on `PATH`, and a cheap authenticated probe succeeds. Without the second check, a night run fails silently at the first review. The review looks for defects, departures from the ADR, and **duplicates of what sibling PBIs already merged into the feature branch**. Critical and important findings go back to the worker and count as an attempt. Minor ones become PR comments.
 
 **The tech lead is the runner, not a model.** Once finalize and the rubber duck pass, it opens the PR with `az repos pr create --source pbi/... --target feature/... --work-items <id> --auto-complete --squash`. The PR merges when the feature branch's policies pass. The PBI goes to Resolved, the owner tag comes off, and a summary comment is posted. If the merge conflicts because the feature branch moved, the PBI goes back to finalize step 1.
+
+### Handoff when a session ends early
+
+`handoff.md` describes **one branch**, which means one PBI or one phase's working state. It answers "where did this agent stop". The Feature's overall state is the board plus the feature journal, never `handoff.md`. The file is committed, pushed, and deleted by finalize when the PBI ships, so it never outlives its branch.
+
+A session can end early for three reasons: context pressure, running out of tokens or usage, or a crash. Three layers cover them, and each one backs up the one above it.
+
+| Layer | Fires | Who writes the handoff | Quality |
+| -- | -- | -- | -- |
+| 1. **Before the cliff** | The Claude status line receives `context_window.used_percentage` and, on Pro/Max plans, `rate_limits.five_hour.used_percentage`. Its script writes them to a file. A `PostToolUse` hook reads the file, and at 90% injects: finish the task in flight, commit, write `handoff.md`, push, exit `4`. | The model, while it still can | Best: it records intent, gotchas and the next step |
+| 2. **At the cliff** | Claude `StopFailure` (`error`: `rate_limit`, `billing_error`, `overloaded`, …); Copilot `errorOccurred` / `sessionEnd`. | A script, with no model | Mechanical |
+| 3. **After the cliff** | `run.py` sees its worker exit non-zero with a limit error (in `stream-json`, a `system/api_retry` event carrying `rate_limit` or `overloaded`, followed by a non-zero exit) | The runner, with no model | Mechanical, and independent of any hook firing |
+
+Layers 2 and 3 run the same script:
+
+1. `git add -A`, commit `wip(handoff): <reason>` with the `AB#` trailer, push the branch. It refuses on `main` or the feature branch and acts only on a `pbi/*` branch.
+2. Write a mechanical `handoff.md`: the branch, the card, the last commit, the files that were uncommitted, the reason, and the model's last message if the event carried one. Commit and push it.
+3. Swap `idp:owner:<run>` for `idp:paused:<run>` in one `test /rev` write, so another machine can take the card at once.
+
+A `wip(handoff)` commit may not build. That is safe, because a PBI branch merges only through finalize, and finalize runs the acceptance commands.
+
+Layer 1 is Claude-only until Copilot is shown to expose the same numbers. Layer 2 depends on a hook being able to run a command at that event, which is not documented for `StopFailure`, so it is an experiment below. Layer 3 always works when the work runs under `run.py`. Interactive sessions without the runner rely on layers 1 and 2.
 
 ### 3.3 Integration
 
@@ -220,6 +244,7 @@ The routes from IDE-90 stay, re-expressed as phases.
 1. **A feature card and a design card in Linear**, per this project's rule that nothing is built ahead of an approved design. Then this document is published as the ADR and registered on the HUB.
 2. **Experiment: claim race.** Two processes claim one Azure DevOps card at once with `test /rev`. Exactly one may win, every time, over 50 runs. If this fails, the board cannot be the coordination point, and the claim moves to a git ref before anything else is built.
 3. **Experiment: attachment round trip.** Upload, replace and download `design.md` through `rest_call`; the bytes must survive (IDE-137 is the precedent for why this gets tested, not assumed).
+4. **Experiment: the cliff hooks.** Hit a real usage or rate limit in Claude and in Copilot. Record whether `StopFailure` and `errorOccurred` fire, what `error` value arrives, whether a command hook can still `git push` at that point, and what `claude -p` prints and returns. Record the results in the project's facts file. Until then, layer 2 is a best-effort extra and layer 3 is the guarantee.
 
 ## Build order
 
@@ -227,8 +252,9 @@ The routes from IDE-90 stay, re-expressed as phases.
 2. `run.py`: the phase skeleton and the local mode, running phase 2 end to end.
 3. Phase 3: orchestrator, worker skill, finalize, rubber duck, PR and auto-merge.
 4. Integration (3.3).
-5. `run.py --agent` and `stop`.
-6. QA: its own spec, the testers' skill in engineering-catalog, then the phase.
+5. `run.py --agent`, `stop` and `takeover`; `idp:paused`.
+6. The handoff layers: the runner path first (layer 3), then the hook script (layer 2) once the experiment says it can run, then the status-line watcher (layer 1).
+7. QA: its own spec, the testers' skill in engineering-catalog, then the phase.
 
 ## Sources
 
