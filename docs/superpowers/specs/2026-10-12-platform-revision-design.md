@@ -382,13 +382,26 @@ The routes from IDE-90 stay, re-expressed as phases.
 7. The handoff layers: the runner path first (layer 3), then the hook script (layer 2) once the experiment says it can run, then the status-line watcher (layer 1).
 8. QA: its own spec, the testers' skill in engineering-catalog, then the phase.
 
-## Sources
+## Borrowed from CRAP
 
-From CRAP (`servicetitan/crap`), read for ideas, never imported:
+CRAP (`servicetitan/crap`) is read for ideas, and where its licence allows, for text and logic. Its README states MIT, but the checkout has no `LICENSE` file. Before anything marked *text* or *logic* is copied, confirm the licence with its owners and record it in `ATTRIBUTION.md`.
 
-- `docs/research/execute-north-star-charter.md`: one agent per phase, concurrency outside the session, engine-owned mechanism.
-- `docs/research/fixed-tax-anatomy.md`: where the multi-agent overhead went.
-- `skills/crap-execute/SKILL.md`: orient, staleness gate, implement, ship through the engine, handoff on context pressure.
-- `skills/crap-spec/exemplars/tasks/v2.yaml`: tasks with witnesses; the model for acceptance commands as proof.
-- `skills/agent-mode/SKILL.md` and the Agent Mode section of CRAP's `CLAUDE.md`: what unattended means at a gate.
-- `.claude/rules/agent-vs-deterministic.md`: what the runner does and what the model does.
+| # | What | Source in CRAP | Kind | Where here |
+| -- | -- | -- | -- | -- |
+| 1 | The phase-execution skill: orient by reading everything in the work directory, staleness gate, implement by category (bug-fix starts with a red test), ship through the runner, handoff on context pressure, hard rules (no sub-agents, act don't narrate) | `skills/crap-execute/SKILL.md` | text; `crap-engine` → `run.py` | the phase-3 worker skill |
+| 2 | Acceptance criteria and witnesses: an AC is a machine-verifiable claim; one AC, one observable; exactly one witness (`command` / `evidence` / `manual`); repo-local and deterministic | `skills/crap-spec/references/ac-witness-authoring-contract.md`, `exemplars/tasks/v2.yaml` | text | `/idp-planning`, merged with its executable-AC rules |
+| 3 | Witness failure reasons (dropped id, non-zero, timeout, budget exceeded) and a dedicated exit code | `engine/src/witness/reason-codes.ts` | logic | `run.py` finalize |
+| 4 | Finalize as one re-runnable command that routes on stage + exit code | `engine/src/session/execute-finalize.ts`; the finalize section of CRAP's `CLAUDE.md` | logic → Python | `run.py` finalize |
+| 5 | Decision journal entry: Context / Decision / Rationale / Sign-off / Load-bearing / Alternative. Agent mode records every call; humans are shown the load-bearing ones | `skills/crap-process/references/decision-journal.md` | text | night-mode comments, feature journal |
+| 6 | Agent-mode semantics: approvals continue and are logged, `blocked` always halts, merge is forbidden | `skills/agent-mode/SKILL.md`; the Agent Mode section of CRAP's `CLAUDE.md` | text | `run.py --agent` |
+| 7 | Context watch: threshold, fire once per session, recommend a fresh session | `engine/src/hooks/context-watch.ts` | logic | handoff layer 1 |
+| 8 | Handoff lifecycle: committed with the task, deleted when the work ships | `engine/src/session/handoff.ts` | logic | handoff |
+| 9 | Source hash for evidence freshness: skip re-running a green witness when nothing it covers changed | `engine/src/gates/source-hash.ts` | logic, optional | finalize |
+| 10 | Unattended-run guards: one concurrency group per unit of work, recursion guard | `workflow-templates/crap-maintenance.yml` | idea | the later Azure DevOps pipeline |
+| 11 | One agent per phase, and the measurements behind it | `docs/research/execute-north-star-charter.md`, `fixed-tax-anatomy.md` | idea | *Why a revision* |
+| 12 | Kill-and-resume and mutation evals against persisted baselines | `docs/research/execute-ns-kill-resume-eval.md` and neighbours | idea | the claim, lease and handoff experiments |
+| 13 | What the runner does versus what the model does | `.claude/rules/agent-vs-deterministic.md` | idea | *The runner* |
+
+Board tracking, review quality and enforcement hooks are borrowed into engineering-catalog instead. See that repository's `docs/superpowers/specs/2026-10-12-catalog-crap-borrowings-design.md`.
+
+**Not taken:** the Bun engine, the HTTP hook server, the per-requirement blueprint, cross-repo changesets, the persona spec lane, multi-workspace, and everything bound to GitHub or Jira.
