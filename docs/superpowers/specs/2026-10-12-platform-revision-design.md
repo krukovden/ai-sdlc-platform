@@ -30,6 +30,12 @@ Phases are the only vocabulary in this document. A phase has one owner at a time
 
 There are two human gates, design approval and the PR into main. Every pull request that does not target `main` merges automatically once its checks pass.
 
+**How this fits the team's CI/CD.** Pipelines come from the central Template Pipelines repository. **Build** produces a versioned artifact (in blob storage and as a pipeline artifact). **Deploy** is separate and can install any stored version, forward or back. **AI review and the full test suite** run only on a PR into `main`. The platform fits that shape and adds no pipeline of its own:
+
+- PBI → feature-branch PRs are reviewed locally by the rubber duck and merged by the runner. The server-side AI review is not spent on them.
+- The feature → `main` PR is the one that meets the AI review pipeline and the full suite, before the human. The rubber duck and the AI review pipeline use the same review rubric, owned by engineering-catalog, so the two layers judge by the same rules.
+- QA (phase 4) does not build the application on a developer's machine when the pipelines can do it. It runs the **build** template on the feature branch and deploys that artifact with the **deploy** template to a QA environment. The environment then matches what production will receive, and the artifact the human approves is the artifact that was tested.
+
 ## The board model
 
 ### Phase tags
@@ -255,7 +261,7 @@ Hand-off: `idp:development` → `idp:qa`, and the journal is uploaded.
 This document defines QA as a contract only. Its own spec follows.
 
 - **Writing tests is the testers' job, done in parallel with phase 3** through a skill in engineering-catalog. Test cases come from the Feature's acceptance criteria. Playwright code lives in the QA repository. Every test is tagged `@ado-<feature-id>`. When they are done, the tester closes their Task in the QA Testing PBI.
-- **The platform's QA phase only finds and runs.** It starts when the Feature is in `idp:qa` and the tester's Task is done. It brings the environment up from the profile (`run`, `base_url`, dependencies), runs every test tagged with the Feature id, and uploads the report as an attachment.
+- **The platform's QA phase only finds and runs.** It starts when the Feature is in `idp:qa` and the tester's Task is done. It brings the environment up through the team's build and deploy templates when the project has them (feature-branch artifact → QA environment), otherwise locally from the profile (`run`, `base_url`, dependencies), runs every test tagged with the Feature id, and uploads the report as an attachment.
 - **Green:** open the PR feature → main, set `idp:pr-review`. **Red:** a Bug under the Feature for each failure, then back to `idp:development` (3.2 builds Bugs like PBIs, then 3.3 runs). At most 2 QA rounds before `idp:blocked`.
 
 ## Board tracking is deterministic
