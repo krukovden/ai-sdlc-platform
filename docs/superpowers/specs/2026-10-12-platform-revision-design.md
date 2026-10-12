@@ -70,7 +70,7 @@ Three more tags can sit next to the phase tag:
 - `idp:owner:<run-id>` means someone is working on this. No owner tag means the phase is waiting and anyone may take it.
 - `idp:paused:<run-id>` replaces the owner tag when a run stopped on purpose or ran out of tokens and left a handoff. Any run may take a paused card at once, with the same claim write, and does not wait for the lease to expire.
 
-Native states move only coarsely, so the team's ordinary boards stay true: Feature `New → Active → Done`, PBI `New → Active → Resolved`. PBIs carry no phase tag. They carry an owner tag, `idp:owner:<run-id>/w<N>`, while a worker holds them.
+Native states move only coarsely, so the team's ordinary boards stay true: Feature `New → Active → Done`, PBI todo → doing → done, through the state map. PBIs carry no phase tag. They carry an owner tag, `idp:owner:<run-id>/w<N>`, while a worker holds them.
 
 This replaces the fourteen `idp:in-*` / `idp:ready-for-*` tags in `PHASE_STATES`. The live board holds only test cards, so nothing needs migrating.
 
@@ -319,7 +319,7 @@ A `wip(handoff)` commit may not build. That is safe, because a PBI branch merges
 
 ### 3.3 Integration
 
-This sub-phase starts once every child is Resolved. Two siblings that ran at the same time could not see each other in review, so this is the last place a duplicate can be caught.
+This sub-phase starts once every item in the 3.2 work list is done. Two siblings that ran at the same time could not see each other in review, so this is the last place a duplicate can be caught.
 
 - **Deterministic:** full build and full test suite on the feature branch.
 - **One model session** on the diff of the feature branch against `main`. It looks for duplicates across PBIs, anything in the ADR that was not built, anything built that the ADR did not ask for, and inconsistent naming, errors or patterns. It writes a summary into the feature journal.
