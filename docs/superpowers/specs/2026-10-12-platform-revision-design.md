@@ -92,7 +92,7 @@ Every worker session and every phase uses the same codes. The runner routes on t
 
 ## The runner
 
-`scripts/run.py` is a Python stdlib script, not a model. It owns the loop, the claims, the leases, the finalize checks and the merges. Models are started as separate processes, `claude -p` or `copilot -p`, one per unit of work, each in its own git worktree. No model orchestrates another.
+`scripts/run.py` is a Python stdlib script, not a model. It owns the loop, the claims, the leases, the finalize checks and the merges. Models are started through an **executor** (next section), one per unit of work, each in its own git worktree. No model orchestrates another.
 
 ```text
 run.py <feature-id>      run that Feature from its current phase to the next human gate,
@@ -111,6 +111,52 @@ Agent mode follows CRAP's semantics. Approvals that a phase would ask a human fo
 Every phase has the same shape: claim → worker session with that phase's skill → deterministic finalize (up to 3 attempts, then `idp:blocked`) → hand off. Phases differ only in the skill and in what finalize checks. Phase 3 is the one exception, because it fans out into parallel workers.
 
 Moving a phase to the cloud later means an Azure DevOps pipeline calls `run.py` when a tag appears, instead of a human running it. Nothing inside the phase changes.
+
+## Executors
+
+`run.py` never starts a model itself. It asks an executor for a role on a card ("role `worker` for PBI 4532, in this worktree") and gets back the same exit codes as everywhere else. Which agent and model fill the role, and how the process is launched, is the executor's business.
+
+### Two backends
+
+| Backend | Used when | Launches with | Liveness from |
+| -- | -- | -- | -- |
+| `orca` | `run.py` runs inside Orca (`orca status --json` answers) | `orca orchestration worker-start --agent <id> --model <id> --worktree new-child`; tasks with `--deps` mirror PBI dependencies | Orca's `worker-list` liveness and `worker_done --outcome`, mapped to `0` / `2` / `4` |
+| `subprocess` | Anywhere else: a machine without Orca, an Azure DevOps pipeline, CI | `claude -p`, `copilot -p`, `codex exec`, … | The process itself, plus the Claude `stream-json` events |
+
+`backend: auto` picks `orca` when it is reachable and `subprocess` otherwise. One run may use both. An agent that Orca cannot launch (see experiments) goes through `subprocess` while the others go through Orca.
+
+Orca also covers two later needs without Azure DevOps Pipelines: a remote Orca server (`worker-start --on <environment>`) is a cloud worker, and `orca automations create --trigger cron` can start `run.py --agent` at night.
+
+### Orca executes; the board decides
+
+Orca's Run, Task and Dispatch state lives on one Orca host. Another machine, a Copilot session in the cloud, or a teammate without Orca cannot see it. So:
+
+- Claims, phase tags, `idp:paused`, leases and handoffs stay on Azure DevOps and in git, exactly as above. Orca state is never read to decide who owns a card.
+- The runner still posts its heartbeat comment on the card. Orca's liveness only tells the runner on *this* machine that its own worker is alive.
+- The two human gates stay tags on the board. Mirroring a gate into Orca with `gate-create`, so the question shows up in the Orca window, is allowed as a convenience and never replaces the tag.
+
+### Roles, preferences and limits
+
+The profile maps each role to an ordered list of `agent[:model]`. The executor takes the first entry that is available, which means two checks: the agent can be launched, and a cheap authenticated probe succeeds.
+
+```json
+"executors": {
+  "backend": "auto",
+  "roles": {
+    "design":      ["claude:opus", "codex"],
+    "worker":      ["codex", "claude:sonnet", "copilot"],
+    "review":      ["copilot:gpt", "codex", "claude:opus"],
+    "integration": ["claude:opus", "codex"]
+  },
+  "parallel": {"codex": 2, "claude": 2, "copilot": 1}
+}
+```
+
+- `parallel` caps concurrent workers **per agent**. The orchestrator's overall `parallel` is the sum of what is available, so every subscription the user has is used without any single one hitting its limit first.
+- With only one agent installed, every role resolves to it. The review rule below then forces a different model of the same agent.
+- When a preferred agent runs out of tokens mid-run, the handoff layers pause the card, and the next claim resolves the role again and gets the next available entry. Switching provider costs nothing extra, because no state lives in the provider.
+
+**The review rule is hard:** the `review` role never resolves to the same agent **and** model that wrote the work it reviews. The executor skips those entries. If nothing is left, the review fails loudly, and the PBI is not merged unreviewed.
 
 ## Phase 2 — Design
 
@@ -139,7 +185,7 @@ while any child PBI or Bug of the Feature is not Resolved:
     while free workers < parallel (profile, default 3) and ready is not empty:
         claim the item (test /rev + idp:owner:<run>/w<N>), state → Active
         git worktree from the feature branch, branch pbi/<id>-<slug>
-        start a worker: claude -p | copilot -p, with the development skill and the item id
+        start a worker through the executor: role `worker`, the development skill, the item id
     wait for any worker, route on its exit code
 ```
 
@@ -156,12 +202,9 @@ A failure sends the output back to a fresh worker session on the same PBI. After
 
 **The rubber duck** reviews the PBI's diff against the feature branch, with read-only tools (`git diff`, `git log`, file reads). It must run on a different tool or model than the worker:
 
-| Worker | Rubber duck | If unavailable |
-| -- | -- | -- |
-| Claude | `copilot -p` pinned to a non-Claude model | Claude on a different model |
-| Copilot | `claude -p` | Copilot on a different model |
+The rubber duck is the `review` role. It resolves through the executor under the hard review rule above, so it always runs on a different tool or model than the worker. With the default list, work written by Claude is reviewed by Copilot on a non-Claude model, and work written by Copilot or Codex is reviewed by the first other available entry.
 
-"Available" means two checks: the binary is on `PATH`, and a cheap authenticated probe succeeds. Without the second check, a night run fails silently at the first review. The review looks for defects, departures from the ADR, and **duplicates of what sibling PBIs already merged into the feature branch**. Critical and important findings go back to the worker and count as an attempt. Minor ones become PR comments.
+Availability is checked with a real authenticated probe, not just by finding the binary on `PATH`. Without it, a night run fails silently at the first review. The review looks for defects, departures from the ADR, and **duplicates of what sibling PBIs already merged into the feature branch**. Critical and important findings go back to the worker and count as an attempt. Minor ones become PR comments.
 
 **The tech lead is the runner, not a model.** Once finalize and the rubber duck pass, it opens the PR with `az repos pr create --source pbi/... --target feature/... --work-items <id> --auto-complete --squash`. The PR merges when the feature branch's policies pass. The PBI goes to Resolved, the owner tag comes off, and a summary comment is posted. If the merge conflicts because the feature branch moved, the PBI goes back to finalize step 1.
 
@@ -245,16 +288,19 @@ The routes from IDE-90 stay, re-expressed as phases.
 2. **Experiment: claim race.** Two processes claim one Azure DevOps card at once with `test /rev`. Exactly one may win, every time, over 50 runs. If this fails, the board cannot be the coordination point, and the claim moves to a git ref before anything else is built.
 3. **Experiment: attachment round trip.** Upload, replace and download `design.md` through `rest_call`; the bytes must survive (IDE-137 is the precedent for why this gets tested, not assumed).
 4. **Experiment: the cliff hooks.** Hit a real usage or rate limit in Claude and in Copilot. Record whether `StopFailure` and `errorOccurred` fire, what `error` value arrives, whether a command hook can still `git push` at that point, and what `claude -p` prints and returns. Record the results in the project's facts file. Until then, layer 2 is a best-effort extra and layer 3 is the guarantee.
+5. **Experiment: a script as Orca coordinator.** Orca's guide assumes the coordinator is an agent. Check that `run.py`, running in an Orca terminal, can `run-create`, `worker-start`, `check --wait` and `worker-release` over `--json` with no model in the loop. If it cannot, the `orca` backend waits and `subprocess` carries everything.
+6. **Experiment: which agents Orca launches.** Orca 1.4.222 lists claude, codex, cursor, antigravity, muse, zcode and opencode for `--agent`. Copilot and Grok are not in that list. Find out whether they launch through Orca, through opencode, or only through `subprocess`, and record the answer per agent in the profile documentation.
 
 ## Build order
 
 1. Adapter: the new tag set, the `test /rev` claim, owner tags, lease and `reap`. Both adapters, with tests that never touch the network.
-2. `run.py`: the phase skeleton and the local mode, running phase 2 end to end.
+2. `run.py`: the phase skeleton, the local mode and the `subprocess` executor with roles, preferences and the review rule, running phase 2 end to end.
 3. Phase 3: orchestrator, worker skill, finalize, rubber duck, PR and auto-merge.
 4. Integration (3.3).
 5. `run.py --agent`, `stop` and `takeover`; `idp:paused`.
-6. The handoff layers: the runner path first (layer 3), then the hook script (layer 2) once the experiment says it can run, then the status-line watcher (layer 1).
-7. QA: its own spec, the testers' skill in engineering-catalog, then the phase.
+6. The `orca` executor backend, once experiments 5 and 6 pass.
+7. The handoff layers: the runner path first (layer 3), then the hook script (layer 2) once the experiment says it can run, then the status-line watcher (layer 1).
+8. QA: its own spec, the testers' skill in engineering-catalog, then the phase.
 
 ## Sources
 
