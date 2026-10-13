@@ -108,13 +108,6 @@ class Git:
             return False
         raise GitError(args, text, answer.returncode)
 
-    def ensure_remote_branch(self, branch, sha):
-        """Create `branch` on the remote at `sha` unless it is there already."""
-        if self.remote_sha(branch) is None:
-            self.push(sha, branch)
-            return True
-        return False
-
     def url(self):
         return self.run("remote", "get-url", self.remote)
 
