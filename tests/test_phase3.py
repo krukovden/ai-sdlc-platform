@@ -1301,11 +1301,30 @@ class FencingTests(Phase3TestCase):
             mover.move(board, "5", "doing", "claimed", "run-1")
         self.assertEqual(calls, [])
 
+    def test_an_idp_tagged_card_uses_the_fenced_adapter_path_not_the_catalog(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("5", tags_=["idp:owner:run-1/w1"], kind="pbi")
+        calls = []
+
+        def replacement_owner(_card):
+            board.cards["5"]["tags"] = ["idp:owner:run-2/w1"]
+            board.cards["5"]["rev"] += 1
+
+        board.on_read = replacement_owner
+        mover = phase3.states.CatalogStates(board, "/catalog/ado-board.js", PROFILE,
+                                            run=lambda argv, **kw: calls.append(argv))
+        with self.assertRaises(lease.OwnershipLost):
+            mover.move(board, "5", "doing", "claimed", "run-1", owner="run-1/w1")
+        self.assertEqual(calls, [])
+        self.assertEqual(board.cards["5"]["status"], "New")
+        self.assertEqual(board.cards["5"]["tags"], ["idp:owner:run-2/w1"])
+
     def test_the_catalog_path_checks_the_feature_and_the_owner_after_the_move(self):
         from fakeboard import FakeBoard
         board = FakeBoard(profile=PROFILE)
         board.add_card(FEATURE, tags_=[tags.DEVELOPMENT, "idp:owner:run-1"])
-        board.add_card("5", tags_=["idp:owner:run-1/w1"], kind="pbi")
+        board.add_card("5", kind="pbi")
 
         class Answer:
             returncode, stdout, stderr = 0, "{}", ""
