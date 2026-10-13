@@ -24,30 +24,53 @@ executors = load_package(SCRIPTS_DIR / "executors", "idp_executors")
 EXIT = executors.EXIT
 
 
+# Who fills each role when a test names no resolver: three different agents, so
+# the review rule always has somewhere to go.
+ROLES = {"design": ["claude:opus"], "worker": ["codex:gpt-5"], "review": ["copilot:gpt-4.1"]}
+
+
 class ScriptedExecutor(executors.Executor):
-    """Runs scripted steps in order; the last one repeats once the script runs out."""
+    """Runs scripted steps in order; the last one repeats once the script runs out.
+
+    Roles resolve through a real `Resolver` over a table of available agents, so
+    the review rule and the `parallel` caps are the production code's. A step
+    returns a code, None (a crash with no result file), or a dict — a crash with
+    details, such as `{"limit": "rate_limit", "last_message": "..."}`.
+    """
 
     backend = "scripted"
 
-    def __init__(self, *steps, agent="claude", model="opus"):
-        super().__init__(resolver=None)
+    def __init__(self, *steps, agent="claude", model="opus", executors_profile=None,
+                 available=None):
+        profile = executors_profile or {"roles": ROLES, "parallel": {"codex": 2}}
+        resolver = executors.Resolver(
+            profile, launchable=lambda name: available is None or name in available,
+            probe=lambda choice: True)
+        super().__init__(resolver=resolver)
         self.steps = list(steps)
         self.calls = []
         self.choice = executors.Choice(agent, model)
+        self.lock = __import__("threading").Lock()
 
-    def run_role(self, role, card, worktree, prompt, context=None, author=None):
-        self.calls.append({"role": role, "card": card, "worktree": str(worktree),
-                           "prompt": prompt, "context": dict(context or {})})
-        step = self.steps.pop(0) if len(self.steps) > 1 else self.steps[0]
+    def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                 choice=None):
+        with self.lock:
+            self.calls.append({"role": role, "card": card, "worktree": str(worktree),
+                               "prompt": prompt, "context": dict(context or {}),
+                               "choice": str(choice) if choice else None,
+                               "author": str(author) if author else None})
+            step = self.steps.pop(0) if len(self.steps) > 1 else self.steps[0]
+        who = executors.roles.as_choice(choice) if choice else self.choice
         executors.clear_result(worktree)
         outcome = step(role, card, Path(worktree), prompt, dict(context or {}))
         if isinstance(outcome, dict):                       # a crash with details
-            return self.finish(role, card, self.choice, None, crashed=True,
-                               limit=outcome.get("limit"), returncode=1)
+            return self.finish(role, card, who, None, crashed=True,
+                               limit=outcome.get("limit"), returncode=1,
+                               last_message=outcome.get("last_message"))
         if outcome is None:
-            return self.finish(role, card, self.choice, None, crashed=True, returncode=1)
+            return self.finish(role, card, who, None, crashed=True, returncode=1)
         executors.write_result(worktree, outcome, f"scripted {outcome}")
-        return self.finish(role, card, self.choice, executors.read_result(worktree))
+        return self.finish(role, card, who, executors.read_result(worktree))
 
 
 SECTIONS_TEXT = "The local index answers in under 300 ms without the network."

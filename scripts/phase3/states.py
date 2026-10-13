@@ -1,0 +1,165 @@
+"""Moving work items through todo → doing → done, behind one interface.
+
+Board tracking belongs to engineering-catalog (IDE-147, *Board tracking is
+deterministic*): its `ado-board` unit discovers each process's states and moves
+an item forward with an evidence comment, and the runner calls it rather than
+reimplementing it. The contract the runner depends on is two commands with
+`--json`:
+
+    node ado-board.js states discover --json
+    node ado-board.js move <id> <todo|doing|verify|done> --comment TEXT --allow-idp --json
+
+`--allow-idp` because every item the runner moves carries its own `idp:owner`
+tag, and `move` refuses `idp:` cards without it.
+
+When no catalog is installed — or the board is Linear, which the catalog does
+not serve — the runner falls back to the adapter's own state map and says so
+once. Both implementations are the same interface, `StateMover`, injected into
+the orchestrator, so a test uses either without a network.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from .common import EXIT, lease
+
+BUCKETS = ("todo", "doing", "done")
+POSITIONS = {"todo": "ready", "doing": "active", "done": "next"}
+CATALOG_TIMEOUT = 120
+
+# Where an installed engineering-catalog keeps the unit, newest convention first.
+CATALOG_CANDIDATES = (
+    "~/.claude/skills/ado-board/scripts/ado-board.js",
+    "~/.copilot/skills/ado-board/scripts/ado-board.js",
+    "~/.agents/skills/ado-board/scripts/ado-board.js",
+)
+
+
+def _fold(text):
+    return str(text or "").strip().casefold()
+
+
+class StateMover:
+    """todo / doing / done for one board. `move` is forward only and idempotent."""
+
+    name = None
+
+    def bucket(self, issue):
+        raise NotImplementedError
+
+    def move(self, board, identifier, bucket, evidence):
+        raise NotImplementedError
+
+
+class AdapterStates(StateMover):
+    """The adapter's own state map: the profile's `state_map`, else the PBI phase map.
+
+    Every move posts an event comment naming the evidence, keyed on the item and
+    the bucket, so a move repeated after a crash posts nothing the second time.
+    """
+
+    name = "adapter"
+
+    def __init__(self, board, profile=None):
+        self.board = board
+        self.profile = profile or {}
+
+    def names(self, issue=None):
+        mapped = self.profile.get("state_map") or {}
+        kind = (issue or {}).get("work_item_type") or (issue or {}).get("type")
+        if kind and kind in mapped:
+            return dict(mapped[kind])
+        states = {}
+        for bucket, position in POSITIONS.items():
+            try:
+                states[bucket] = self.board.phase_status("pbi", position)
+            except SystemExit:
+                states[bucket] = None
+        return states
+
+    def bucket(self, issue):
+        names = self.names(issue)
+        status = _fold(issue.get("status"))
+        if issue.get("status_type") in ("completed", "canceled") or \
+                status == _fold(names.get("done")):
+            return "done"
+        if status == _fold(names.get("doing")) or issue.get("status_type") == "started":
+            return "doing"
+        return "todo"
+
+    def move(self, board, identifier, bucket, evidence):
+        issue = board.get_issue(identifier)
+        current = self.bucket(issue)
+        if BUCKETS.index(current) >= BUCKETS.index(bucket):
+            return {"moved": False, "bucket": current}
+        target = self.names(issue).get(bucket)
+        if not target:
+            return {"moved": False, "bucket": current,
+                    "reason": f"this board has no '{bucket}' state for {identifier}"}
+        board.update_issue(identifier, status=target)
+        lease.post_event(board, identifier, "move", f"move:{identifier}:{bucket}",
+                         text=f"Moved to {target}: {evidence}", bucket=bucket,
+                         status=target)
+        return {"moved": True, "bucket": bucket}
+
+
+class CatalogStates(AdapterStates):
+    """engineering-catalog's `ado-board move`, read through `--json`.
+
+    The bucket of an item is still read from the board's own answer, with the
+    adapter's map; only writes go through the catalog, which owns the process's
+    state names and the evidence comment.
+    """
+
+    name = "engineering-catalog"
+
+    def __init__(self, board, script, profile=None, run=subprocess.run, cwd=None):
+        super().__init__(board, profile)
+        self.script = str(script)
+        self.call = run
+        self.cwd = cwd
+
+    def move(self, board, identifier, bucket, evidence):
+        current = self.bucket(board.get_issue(identifier))
+        if BUCKETS.index(current) >= BUCKETS.index(bucket):
+            return {"moved": False, "bucket": current}
+        answer = self.call(["node", self.script, "move", str(identifier), bucket,
+                            "--comment", evidence, "--allow-idp", "--json"],
+                           capture_output=True, text=True, timeout=CATALOG_TIMEOUT,
+                           cwd=self.cwd, stdin=subprocess.DEVNULL)
+        if answer.returncode != EXIT.OK:
+            raise RuntimeError(f"ado-board move {identifier} {bucket} failed: "
+                               f"{(answer.stderr or answer.stdout).strip()}")
+        try:
+            data = json.loads(answer.stdout or "{}")
+        except ValueError:
+            data = {}
+        return {"moved": True, "bucket": bucket, "catalog": data}
+
+
+def find_catalog(environ=None):
+    environ = os.environ if environ is None else environ
+    configured = environ.get("IDP_ADO_BOARD", "").strip()
+    if configured:
+        return Path(configured) if Path(configured).exists() else None
+    for candidate in CATALOG_CANDIDATES:
+        path = Path(candidate).expanduser()
+        if path.exists():
+            return path
+    return None
+
+
+def select(board, profile, out=None, environ=None, run=subprocess.run, cwd=None):
+    """The catalog on Azure DevOps when it is installed; the adapter's map otherwise."""
+    out = out or sys.stderr
+    if (profile or {}).get("board") == "azure-devops":
+        script = find_catalog(environ)
+        if script is not None:
+            return CatalogStates(board, script, profile, run=run, cwd=cwd)
+        print("engineering-catalog's ado-board is not installed here; work item states "
+              "move through the adapter's own state map instead (IDE-147, Board "
+              "tracking).", file=out)
+    return AdapterStates(board, profile)

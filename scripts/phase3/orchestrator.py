@@ -1,0 +1,1060 @@
+"""Phase 3, development: one run owns the Feature for the whole phase (IDE-147).
+
+3.1 **Planning** runs `/idp-planning` as the owner's first sub-phase and always
+creates the same board shape — PBIs with their Tasks, and a QA Testing PBI that
+depends on every other one — plus the feature branch, the plan committed to it
+and pinned by hash in a planning comment, and the feature journal.
+
+3.2 **Building** is the loop of the ADR, exactly:
+
+    preflight: resolve every role once; if `review` cannot resolve to a different
+               agent+model than `worker`, refuse to start, with the reason
+    work = child PBIs and Bugs of the Feature, excluding the QA Testing PBI
+    while any item in work is not done:
+        ready = items in work that are waiting, unblocked, with every dependency done
+        if no worker is running and ready is empty:
+            add idp:blocked to the Feature, comment naming the blocked items and
+            everything waiting on them, exit 2
+        while free workers < parallel and ready is not empty:
+            claim the item (owner check + test /rev + idp:owner:<run>/w<N>), state → doing
+            fetch; base = the origin/feature SHA, recorded in the claim comment
+            git worktree at base, branch pbi/<id>-<slug>/g<N>
+            write .idp/context/ (Feature requirements, ADR, PBI card, brief)
+            start a worker through the executor: role `worker`, the development skill
+        wait for any worker, route on .idp/result.json
+
+"Waiting" is wider than the ADR's `todo` on purpose: a PBI left in `doing` by a
+crash, a reap or a pause has no live owner and must be picked up again, or the
+termination rule would block a Feature that only needed a resume.
+
+Every write is idempotent through a dedupe key, every counter is a count of
+event comments, and every step a crash can interrupt is recognised on the
+next run from the board and git alone: a claim, a finalize, a review verdict, a
+pull request, a merge. So a crash after any side effect, then a resume, reaches
+the same board as a run that never crashed, and a second run changes nothing.
+"""
+
+import json
+import os
+import queue
+import re
+import sys
+import threading
+import time
+from pathlib import Path
+
+from .common import EXIT, event_text, flat, handoff_module, lease, memory, \
+    planning_module, tags
+from . import finalize as fin
+from . import plan as plans
+from . import review as reviews
+from . import shape, states
+from . import merge as merges
+from .gitops import Git, GitError, local_excludes, mention as mention_of, \
+    repository_name, slug
+from .journal import Journal
+
+MAX_ATTEMPTS = 3
+MAX_RETESTS = 5
+MAX_LOOPS = 10000
+INFRA_BACKOFF = (5, 30, 120)
+REVIEW_RETRIES = 1
+
+ATTEMPT = "attempt"
+FINALIZED = "finalized"
+REVIEWED = "review"
+PULL_REQUEST = "pull-request"
+MERGED = "merged"
+SUMMARY = "summary"
+HANDOFF = "handoff"
+PAUSE = "pause"
+BUILT = "built"
+REFUSAL = "refusal"
+INFRA = "infra"
+PATHS = "paths"
+
+PLANNING_PROMPT = """You are the planning session for {feature}, started by run.py (IDE-147).
+Follow the planning skill exactly: {skill}
+
+What you need is already here, and you hold no board credential and need none:
+{context}/card.json is the card, feature.md its requirements, comments.md what people
+said on it, and adr.md the approved ADR (absent on the small-feature route, where the
+Feature itself is the input).
+
+Drive the process with `python3 {planning_py}` and nothing else:
+  1. `init {feature} --resume`, then `context {feature} --json`
+  2. cut the plan, write it to a file, `propose {feature} --plan-file <file>`
+  3. `graph {feature}`, then `finalize {feature}`
+  4. then finish with: python3 {run_py} report --code 0 --reason "plan ready"
+
+Never run publish_planning.py and never call a tracker: the runner commits the plan,
+pins it and creates the cards. If a human has to decide something first, finish with
+`report --code 2 --reason "<the question>"`; if your context is running out,
+`report --code 4 --reason "<where you stopped>"`.
+{feedback}"""
+
+WORKER_PROMPT = """You are the development worker for PBI {pbi} of Feature {feature}, started by run.py (IDE-147).
+Follow the development skill exactly: {skill}
+
+Everything you need is in {context}: card.json, feature.md (the Feature's requirements),
+adr.md (the approved ADR, if the Feature has one), pbi.md (this PBI's card and its
+acceptance criteria), brief.md (where to look and how), witnesses.json (the acceptance
+commands finalize will run). Read handoff.md at the repository root first if it exists.
+You hold no board credential and need none.
+
+Your branch is `{branch}`, cut from the feature branch `{feature_branch}`.
+Every commit message carries `{mention}`, and every commit is pushed at once:
+    git push origin HEAD:refs/heads/{branch}
+Never touch {plan_path}: finalize reads the witnesses from it.
+
+Finish with exactly one of:
+    python3 {run_py} report --code 0 --reason "<what you built>"     acceptance commands green
+    python3 {run_py} report --code 2 --reason "<why>"                Blocked - Needs Design
+    python3 {run_py} report --code 3 --reason "<why>"                this PBI is not yours to build
+    python3 {run_py} report --code 4 --reason "<where you stopped>"  context running out; handoff.md pushed
+{feedback}"""
+
+
+class ThreadPool:
+    """Workers in threads; `wait_any` returns whichever finishes first."""
+
+    def __init__(self):
+        self.finished = queue.Queue()
+
+    def submit(self, key, work):
+        def body():
+            try:
+                self.finished.put((key, work(), None))
+            except BaseException as exc:                       # noqa: BLE001 - handed back
+                self.finished.put((key, None, exc))
+        threading.Thread(target=body, daemon=True).start()
+
+    def wait_any(self):
+        return self.finished.get()
+
+
+class InlinePool:
+    """Runs each worker as it is submitted, and hands results back in that order.
+
+    For the simulation: the board's side effects then happen in one order on
+    every run, which is what lets a crash test compare two boards.
+    """
+
+    def __init__(self):
+        self.finished = []
+
+    def submit(self, key, work):
+        try:
+            self.finished.append((key, work(), None))
+        except BaseException as exc:                           # noqa: BLE001 - handed back
+            self.finished.append((key, None, exc))
+
+    def wait_any(self):
+        return self.finished.pop(0)
+
+
+class Development:
+
+    def __init__(self, runner, git=None, mover=None, merger=None, finalizer=None,
+                 pool=None, sleep=time.sleep, planning_home=None, environ=None):
+        self.runner = runner
+        self.board = runner.board
+        self.profile = runner.profile
+        self.executor = runner.executor
+        self.run_id = runner.run_id
+        self.git = git or Git(runner.repo)
+        self.mover = mover or states.select(self.board, self.profile, out=runner.out,
+                                            cwd=str(runner.repo))
+        self.merger = merger
+        settings = dict(self.profile.get("development") or {})
+        env_source = environ if environ is not None else os.environ
+        self.finalizer = finalizer or fin.Finalizer(
+            settings, env=runner_environment().witness_env(env_source))
+        self.pool = pool or ThreadPool()
+        self.sleep = sleep
+        self.planning = planning_module()
+        self.planning_home = Path(planning_home) if planning_home else self.planning.home()
+        self.home = Path(runner.design.HOME) / "worktrees" / Path(runner.repo).resolve().name
+        self.running = {}
+        self.busy = {}
+        self.skip = {}
+        self.pin = None
+        self.plan = None
+        self.feature = None
+        self.feature_branch = None
+        self.journal = None
+
+    def say(self, text):
+        self.runner.say(text)
+
+    # -- the phase ------------------------------------------------------------
+
+    def run(self, feature):
+        self.feature = feature
+        issue = self.board.get_issue(feature)
+        header = self.runner_state().parse_machine_header(issue.get("description"))
+        route = header.get("route") or "feature"
+        if route != "small-feature":
+            ok, message, fix = self.runner.check_adr(self.board, feature)
+            if not ok:
+                self.say(f"{feature}: {message}\nFIX: {fix}")
+                return EXIT.REFUSED
+        self.feature_branch = (issue.get("branch") or "").strip()
+        if not self.feature_branch:
+            self.say(f"{feature} has no branch name on the board.\nFIX: give the Feature a "
+                     "branch name; the feature branch is taken from the board verbatim")
+            return EXIT.REFUSED
+        if self.finished(feature):
+            self.say(f"{feature}: every PBI is built and merged into {self.feature_branch}. "
+                     "Integration (3.3) is IDE-147 build step 4; the card waits there.")
+            return EXIT.DONE
+
+        self.preflight()
+        self.git.fetch()
+        base = self.git.remote_sha(self.feature_branch) or self.default_sha()
+        claimed = lease.claim(self.board, feature, self.run_id, phase=tags.DEVELOPMENT,
+                              profile=self.runner.profile_hash, base=base)
+        if claimed["outcome"] in ("refused", "conflict"):
+            self.say(f"{feature}: {claimed['message']}\nFIX: {claimed['fix']}")
+            return EXIT.REFUSED
+        base = self.runner.claim_fact(feature, "base") or base
+        self.journal = Journal(self.board, feature,
+                               self.home / f"{feature}-journal" / "journal.md")
+        with self.runner.heartbeat(feature):
+            code = self.planning_phase(feature, issue, header, route, base)
+            if code != EXIT.DONE:
+                return code
+            return self.building_phase(feature)
+
+    def runner_state(self):
+        return self.runner.state
+
+    def default_sha(self):
+        name = self.git.default_branch() or "main"
+        sha = self.git.remote_sha(name)
+        if sha is None:
+            raise self.runner.error(EXIT.BLOCKED, f"the remote has neither {self.feature_branch} "
+                                                  f"nor a default branch to cut it from",
+                                    "push the product repository's main branch, then re-run")
+        return sha
+
+    def finished(self, feature):
+        if not lease.events(self.board.list_comments(feature), BUILT):
+            return False
+        items = [i for i in shape.work_items(self.board, feature) if not shape.is_qa(i)]
+        return all(self.mover.bucket(i["issue"]) == "done" for i in items)
+
+    def preflight(self):
+        """Resolve every role once. Review must be able to differ from the worker."""
+        executors = runner_executors()
+        try:
+            self.executor.resolve("design")
+            author = self.executor.resolve("worker")
+            self.executor.resolve("review", author=author)
+        except executors.ResolutionError as exc:
+            raise self.runner.error(
+                EXIT.BLOCKED, f"phase 3 refuses to start: {exc.message}", exc.fix)
+
+    # -- 3.1 planning ---------------------------------------------------------
+
+    def planning_phase(self, feature, issue, header, route, base):
+        pinned = plans.pinned(self.board, feature)
+        if pinned is None:
+            path = plans.plan_path(feature)
+            tip = self.git.remote_sha(self.feature_branch)
+            text = self.git.show(tip, path) if tip else None
+            if text is None:
+                code, text = self.plan_session(feature, route, base)
+                if code != EXIT.DONE:
+                    return code
+            commit = self.commit_plan(feature, text, base)
+            plans.pin(self.board, feature, text, commit, path, self.feature_branch,
+                      self.run_id)
+            pinned = plans.pinned(self.board, feature)
+        try:
+            self.plan = plans.read_pinned(self.git, pinned)
+        except plans.PlanError as exc:
+            return self.block_feature(f"the pinned plan cannot be used: {exc}")
+        self.pin = pinned
+        todo = self.mover.names().get("todo") if hasattr(self.mover, "names") else None
+        ids, _ = shape.ensure(self.board, issue, self.plan, self.profile, header,
+                              todo_status=todo)
+        self.journal.add(f"Planning cut {len(self.plan['pbis'])} PBIs: "
+                         + ", ".join(f"{k} → {ids[k]}" for k in
+                                     [p["key"] for p in self.plan["pbis"]])
+                         + f"; the plan is pinned at `{pinned['commit'][:12]}` "
+                           f"({pinned['sha256']}).")
+        if self.plan.get("notes"):
+            self.journal.add(f"Why this cut: {self.plan['notes']}")
+        self.journal.upload()
+        return EXIT.DONE
+
+    def adr_text(self, feature, route):
+        if route == "small-feature":
+            return self.board.get_issue(feature).get("description") or ""
+        title = memory.feature_file(feature, "adr")
+        for document in self.board.list_attachments(feature):
+            if document.get("title") == title:
+                content = document.get("content")
+                if content is None:
+                    content = self.board.get_document(document["slugId"]).get("content")
+                return content or ""
+        return ""
+
+    def plan_candidate(self, feature, adr_text):
+        """A finished plan in the planning cache, and what is wrong with it."""
+        directory = self.planning_home / feature
+        try:
+            session = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+            plan = json.loads((directory / "plan.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, []
+        problems = []
+        if (session.get("adr") or {}).get("hash") != self.planning.content_hash(adr_text):
+            problems.append("the plan was cut from a different ADR than the approved one")
+        try:
+            found, _, _ = self.planning.accept_plan(session, plan, adr_text)
+            problems += [p["message"] for p in found]
+            self.planning.require_coverage(session, plan, adr_text)
+        except self.planning.PlanError as exc:
+            problems.append(exc.message)
+        return plans.plan_text(plan), problems
+
+    def plan_session(self, feature, route, base):
+        """The planning session, with the runner's attempts around it. (code, plan text)."""
+        adr_text = self.adr_text(feature, route)
+        text, problems = self.plan_candidate(feature, adr_text)
+        if text is not None and not problems:
+            return EXIT.DONE, text
+        feedback = "; ".join(problems) if problems else None
+        for _ in range(MAX_ATTEMPTS * 2):
+            attempts = len(lease.events(self.board.list_comments(feature), ATTEMPT,
+                                        phase="planning"))
+            if attempts >= MAX_ATTEMPTS:
+                return self.block_feature(f"planning did not produce a valid plan in "
+                                          f"{MAX_ATTEMPTS} attempts; the last reason: "
+                                          f"{feedback or 'no plan came out'}"), None
+            worktree = Path(self.runner.worktree_for(feature, "planning", base))
+            context = self.runner.write_context(feature, worktree)
+            prompt = PLANNING_PROMPT.format(
+                feature=feature, skill=self.planning.SKILL_DIR / "SKILL.md", context=context,
+                planning_py=self.planning.SKILL_DIR / "planning.py",
+                run_py=self.runner.run_py,
+                feedback=(f"\nThe last attempt was refused by the runner's checks: "
+                          f"{feedback}\nFix exactly that.") if feedback else "")
+            code = self.session("design", feature, worktree, prompt,
+                                {"IDP_CONTEXT_DIR": str(context),
+                                 "PLANNING_HOME": str(self.planning_home)})
+            last = self.executor.last or {}
+            if code == EXIT.DONE:
+                text, problems = self.plan_candidate(feature, adr_text)
+                if text is not None and not problems:
+                    return EXIT.DONE, text
+                feedback = "; ".join(problems) or "the session reported done and no plan is " \
+                                                  "in the planning cache"
+                self.feature_attempt("planning", attempts + 1, "plan", feedback)
+                continue
+            if code == EXIT.BLOCKED:
+                return self.block_feature(last.get("reason") or "planning asked for a human"), \
+                    None
+            if code == EXIT.REFUSED:
+                tags.release(self.board, feature, self.run_id)
+                self.say(f"{feature}: the planning session refused: {last.get('reason')}")
+                return EXIT.REFUSED, None
+            if last.get("crashed") and last.get("limit"):
+                self.exhaust(last)
+                return self.pause_card(feature, f"the {last.get('agent')} planning session "
+                                                f"hit {last.get('limit')}"), None
+            cause = "crash" if last.get("crashed") else "handoff"
+            feedback = last.get("reason") or cause
+            self.feature_attempt("planning", attempts + 1, cause, feedback)
+        return self.block_feature("planning made no progress"), None
+
+    def commit_plan(self, feature, text, base):
+        """The plan on the feature branch, one commit; the commit that carries it."""
+        path = plans.plan_path(feature)
+        for _ in range(MAX_RETESTS):
+            self.git.fetch()
+            tip = self.git.remote_sha(self.feature_branch)
+            if tip is None:
+                self.git.ensure_remote_branch(self.feature_branch, base)
+                continue
+            if self.git.show(tip, path) == text:
+                return tip
+            wt = self.git.worktree(self.home / f"{feature}-plan", sha=tip)
+            target = wt.path / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            sha = wt.commit_all(f"{mention_of(feature)}: pin the plan for {feature}", [path])
+            if sha and self.git.push(sha, self.feature_branch, expect=tip):
+                return sha
+        raise self.runner.error(EXIT.BLOCKED, f"the plan could not be committed to "
+                                              f"{self.feature_branch}: it kept moving",
+                                "re-run once nobody else is pushing to the feature branch")
+
+    # -- 3.2 building ---------------------------------------------------------
+
+    def building_phase(self, feature):
+        for _ in range(MAX_LOOPS):
+            work = [i for i in shape.work_items(self.board, feature, self.plan)
+                    if not shape.is_qa(i)]
+            status = {i["id"]: self.mover.bucket(i["issue"]) for i in work}
+            pending = [i for i in work if status[i["id"]] != "done"]
+            if not pending and not self.running:
+                return self.built(feature, work)
+            by_key = {i["key"]: i for i in work}
+            ready = [i for i in pending if self.ready(i, by_key, status)]
+            if not self.running and not ready:
+                return self.terminate(feature, work, status, by_key)
+            for item in ready:
+                if self.free_worker() is None:
+                    break
+                self.advance(item)
+            if self.running:
+                self.route(*self.pool.wait_any())
+        raise self.runner.error(EXIT.BLOCKED, "the building loop did not settle",
+                                "look at the Feature's comments; this is a runner bug")
+
+    def ready(self, item, by_key, status):
+        if item["id"] in self.running or item["id"] in self.skip:
+            return False
+        labels = item["labels"]
+        if tags.is_blocked(labels):
+            return False
+        owner = tags.owner_of(labels)
+        if owner and tags.run_of(owner) != self.run_id:
+            return False
+        for need in item["depends_on"]:
+            other = by_key.get(need)
+            if other is None or status[other["id"]] != "done":
+                return False
+        return True
+
+    def free_worker(self):
+        """The worker choice that may start now, or None when every agent is at its cap.
+
+        No agent left at all — every one exhausted its usage — is not the card's
+        fault: the Feature is released, not blocked, and the PBIs stay paused.
+        """
+        executors = runner_executors()
+        try:
+            return self.executor.resolve("worker", busy=dict(self.busy))
+        except executors.ResolutionError as exc:
+            if self.running:
+                return None
+            tags.release(self.board, self.feature, self.run_id)
+            raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
+
+    def cap(self, agent):
+        resolver = getattr(self.executor, "resolver", None)
+        return resolver.cap(agent) if resolver is not None and hasattr(resolver, "cap") \
+            else 1 << 30
+
+    def slot(self):
+        taken = {job["worker"] for job in self.running.values()}
+        n = 1
+        while n in taken:
+            n += 1
+        return n
+
+    def comments(self, card):
+        return self.board.list_comments(card)
+
+    def claim_of(self, pbi):
+        found = lease.events(self.comments(pbi), lease.CLAIM)
+        return found[-1] if found else None
+
+    def claim(self, item):
+        """Claim the PBI, or carry on with our own claim. The claim record, or None."""
+        pbi = item["id"]
+        labels = item["labels"]
+        owner = tags.owner_of(labels)
+        paused = tags.paused_of(labels)
+        mine_now = owner and tags.run_of(owner) == self.run_id
+        worker = int(owner.rsplit("/w", 1)[1]) if mine_now and "/w" in owner else self.slot()
+        mine = tags.worker_owner(self.run_id, worker)
+        last = self.claim_of(pbi)
+        reuse = bool(last) and last.get("owner") == mine and owner == mine and not paused
+
+        if reuse:
+            choice = runner_executors().Choice(last.get("agent"), last.get("model") or None)
+            if self.busy.get(choice.agent, 0) >= self.cap(choice.agent):
+                return None
+        else:
+            choice = self.free_worker()
+            if choice is None:
+                return None
+        result = tags.claim_pbi(self.board, pbi, self.run_id, worker, self.feature)
+        if result["outcome"] in ("refused", "conflict"):
+            self.skip[pbi] = result["message"]
+            return None
+        if not reuse:
+            generation = int(last.get("generation") or 0) + 1 if last else 1
+            self.git.fetch()
+            base = self.git.remote_sha(self.feature_branch)
+            previous = self.git.remote_sha(last["branch"]) if last and last.get("branch") \
+                else None
+            start = previous or base
+            branch = f"pbi/{pbi}-{slug(item['title'].replace('[PBI]', ''))}/g{generation}"
+            self.git.ensure_remote_branch(branch, start)
+            lease.post_event(
+                self.board, pbi, lease.CLAIM, f"{lease.CLAIM}:{mine}:g{generation}",
+                text=(f"Claimed by `{mine}` (generation {generation}) on `{branch}`, cut "
+                      f"from `{start[:12]}`; the feature branch was at `{base[:12]}`."),
+                run=self.run_id, owner=mine, generation=generation, base=base, start=start,
+                branch=branch, agent=choice.agent, model=choice.model,
+                profile=self.runner.profile_hash)
+            last = self.claim_of(pbi)
+        self.mover.move(self.board, pbi, "doing",
+                        f"claimed by `{mine}` on `{last['branch']}`")
+        tasks = shape.tasks_of(self.board, pbi)
+        if tasks:
+            self.mover.move(self.board, tasks[0][0], "doing",
+                            f"the first step of {pbi}, on `{last['branch']}`")
+        return dict(last, worker=worker, choice=choice)
+
+    def worktree(self, claim, pbi):
+        self.git.fetch()
+        tip = self.git.remote_sha(claim["branch"]) or claim["start"]
+        wt = self.git.worktree(self.home / f"{pbi}-g{claim['generation']}", sha=tip,
+                               branch=claim["branch"])
+        local_excludes(wt.path)
+        return wt
+
+    def advance(self, item):
+        """Take the PBI as far as the board and git say it already got, then on."""
+        claim = self.claim(item)
+        if claim is None:
+            return
+        pbi = item["id"]
+        wt = self.worktree(claim, pbi)
+        pr = self.event(pbi, PULL_REQUEST, branch=claim["branch"])
+        head = self.merger_for().merged(pr, claim["branch"], self.feature_branch) \
+            if pr else None
+        if head or self.event(pbi, MERGED, branch=claim["branch"]):
+            return self.after_merge(item, claim, head)
+        tip = self.git.remote_sha(claim["branch"])
+        done = self.event(pbi, FINALIZED, branch=claim["branch"], merge=tip)
+        if done:
+            return self.review_and_merge(item, claim, wt, done)
+        self.start_worker(item, claim, wt, self.feedback(pbi))
+
+    def event(self, card, kind, **match):
+        found = lease.events(self.comments(card), kind, **match)
+        return found[-1] if found else None
+
+    def feedback(self, pbi):
+        """What the last counted failure or review said, for the next session."""
+        found = []
+        for comment in self.comments(pbi):
+            data = lease.read_event(comment.get("body"))
+            if data and (data.get("kind") == ATTEMPT or
+                         (data.get("kind") == REVIEWED and data.get("verdict") == "fix")):
+                found.append(comment.get("body"))
+            if data and data.get("kind") in (MERGED, FINALIZED):
+                found = []
+        return events_text(found[-1]) if found else None
+
+    # -- a worker session -------------------------------------------------------
+
+    def write_context(self, item, claim, wt, feedback):
+        pbi = item["id"]
+        context = wt.path / ".idp" / "context"
+        context.mkdir(parents=True, exist_ok=True)
+        feature = self.board.get_issue(self.feature)
+        issue = self.board.get_issue(pbi)
+        entry = plans.entry(self.plan, item["key"])
+        (context / "card.json").write_text(json.dumps(
+            {"pbi": issue, "feature": feature, "branch": claim["branch"],
+             "feature_branch": self.feature_branch,
+             "claim": {k: claim.get(k) for k in ("generation", "base", "start", "branch")}},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        (context / "feature.md").write_text(feature.get("description") or "", encoding="utf-8")
+        (context / "pbi.md").write_text(issue.get("description") or "", encoding="utf-8")
+        adr = self.adr_text(self.feature, "feature")
+        if adr:
+            (context / "adr.md").write_text(adr, encoding="utf-8")
+        brief = ""
+        title = self.planning.brief_title(pbi)
+        for document in self.board.list_attachments(pbi):
+            if document.get("title") == title:
+                brief = document.get("content")
+                if brief is None:
+                    brief = self.board.get_document(document["slugId"]).get("content") or ""
+        (context / "brief.md").write_text(brief, encoding="utf-8")
+        (context / "witnesses.json").write_text(json.dumps(
+            [{"ac": ac, "text": text, "witness": witness}
+             for ac, text, witness in plans.witnesses(entry)],
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        target = context / "feedback.md"
+        if feedback:
+            target.write_text(feedback, encoding="utf-8")
+        elif target.exists():
+            target.unlink()
+        return context
+
+    def start_worker(self, item, claim, wt, feedback):
+        pbi = item["id"]
+        context = self.write_context(item, claim, wt, feedback)
+        prompt = WORKER_PROMPT.format(
+            pbi=pbi, feature=self.feature, skill=self.runner.repo_root / "skills" /
+            "development" / "SKILL.md", context=context, branch=claim["branch"],
+            feature_branch=self.feature_branch, mention=mention_of(pbi),
+            plan_path=plans.plan_path(self.feature), run_py=self.runner.run_py,
+            feedback=(f"\nThe runner sent this PBI back. Read {context}/feedback.md "
+                      "first and fix exactly that.") if feedback else "")
+        choice = claim["choice"]
+        self.busy[choice.agent] = self.busy.get(choice.agent, 0) + 1
+        self.running[pbi] = {"item": item, "claim": claim, "wt": wt, "choice": choice,
+                             "worker": claim["worker"]}
+        env = {"IDP_CONTEXT_DIR": str(context)}
+
+        def work():
+            code = self.executor.run_role("worker", pbi, wt.path, prompt, context=env,
+                                          choice=choice)
+            return code, self.executor.last
+
+        self.pool.submit(pbi, work)
+
+    def session(self, role, card, worktree, prompt, context, **kwargs):
+        executors = runner_executors()
+        try:
+            return self.executor.run_role(role, card, worktree, prompt, context=context,
+                                          **kwargs)
+        except executors.ResolutionError as exc:
+            tags.release(self.board, self.feature, self.run_id)
+            raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
+
+    def route(self, pbi, answer, error):
+        job = self.running.pop(pbi)
+        agent = job["choice"].agent
+        self.busy[agent] = max(0, self.busy.get(agent, 0) - 1)
+        if error is not None:
+            executors = runner_executors()
+            if isinstance(error, executors.ResolutionError):
+                tags.release(self.board, self.feature, self.run_id)
+                raise self.runner.error(EXIT.BLOCKED, error.message, error.fix)
+            raise error
+        code, last = answer
+        last = last or {}
+        item, claim, wt = job["item"], job["claim"], job["wt"]
+        if last.get("crashed") and last.get("limit"):
+            return self.layer3(item, claim, wt, last)
+        if last.get("crashed"):
+            return self.count(item, "crash", last.get("reason") or "the session crashed")
+        if code == EXIT.HANDOFF:
+            return self.handed_off(item, claim, last)
+        if code == EXIT.BLOCKED:
+            return self.block_pbi(pbi, last.get("reason") or "the worker asked for a human "
+                                                             "(Blocked - Needs Design)")
+        if code == EXIT.REFUSED:
+            return self.refused(pbi, last.get("reason") or "the worker refused the PBI")
+        return self.after_session(item, claim, wt)
+
+    # -- outcomes ---------------------------------------------------------------
+
+    def attempts(self, pbi):
+        return len(lease.events(self.comments(pbi), ATTEMPT, pbi=pbi))
+
+    def count(self, item, cause, reason):
+        """One more attempt, on the board. The third blocks the PBI."""
+        pbi = item["id"]
+        n = self.attempts(pbi) + 1
+        lease.post_event(self.board, pbi, ATTEMPT, f"{ATTEMPT}:development:{pbi}:{n}",
+                         text=f"Attempt {n} of {MAX_ATTEMPTS} did not finish ({cause}): "
+                              f"{reason}",
+                         phase="development", pbi=pbi, n=n, cause=cause, run=self.run_id)
+        if n >= MAX_ATTEMPTS:
+            self.block_pbi(pbi, f"{MAX_ATTEMPTS} attempts did not finish it; the last "
+                                f"({cause}): {reason.splitlines()[0] if reason else cause}")
+
+    def handed_off(self, item, claim, last):
+        """Exit 4: a fresh session, unless nothing new was pushed since the previous 4."""
+        pbi = item["id"]
+        self.git.fetch()
+        tip = self.git.remote_sha(claim["branch"])
+        before = self.event(pbi, HANDOFF, branch=claim["branch"])
+        previous = before.get("sha") if before else claim.get("start")
+        if tip == previous:
+            return self.count(item, "handoff-without-progress",
+                              last.get("reason") or "context ran out with nothing pushed")
+        lease.post_event(self.board, pbi, HANDOFF, f"{HANDOFF}:{pbi}:{tip}",
+                         text=f"The worker ran out of context at `{tip[:12]}` and handed "
+                              f"off; a fresh session continues: {last.get('reason') or ''}",
+                         branch=claim["branch"], sha=tip, run=self.run_id)
+
+    def layer3(self, item, claim, wt, last):
+        """Handoff layer 3: the runner, with no model, leaves the branch continuable."""
+        pbi = item["id"]
+        reason = f"the {last.get('agent')} session hit {last.get('limit')}"
+        try:
+            done = handoff_module().handoff(wt.path, reason, pbi, mention=mention_of(pbi),
+                                            last_message=last.get("last_message"),
+                                            feature_branch=self.feature_branch)
+            left = ", ".join(e["path"] for e in done["left_out"]) or "nothing"
+            note = f"wip pushed at `{done['commit'][:12]}`; left uncommitted: {left}"
+        except Exception as exc:                                # noqa: BLE001 - still pause
+            note = f"the mechanical handoff failed: {exc}"
+        self.exhaust(last)
+        tags.pause(self.board, pbi, self.run_id)
+        lease.post_event(self.board, pbi, PAUSE, f"{PAUSE}:{pbi}:g{claim['generation']}",
+                         text=f"Paused: {reason}; {note}. Any run may take this PBI now.",
+                         run=self.run_id, reason=flat(reason))
+        self.journal.add(f"{pbi} paused: {reason}.")
+
+    def exhaust(self, last):
+        if last.get("agent"):
+            self.executor.exhaust(runner_executors().Choice(last.get("agent"),
+                                                            last.get("model")))
+
+    def refused(self, pbi, reason):
+        self.skip[pbi] = reason
+        tags.release(self.board, pbi, self.run_id)
+        lease.post_event(self.board, pbi, REFUSAL, f"{REFUSAL}:{pbi}:{_key(reason)}",
+                         text=f"The worker refused this PBI: {reason}", reason=flat(reason))
+
+    def block_pbi(self, pbi, reason):
+        lease.block(self.board, pbi, self.run_id, reason)
+        tags.release(self.board, pbi, self.run_id)
+        self.journal.add(f"{pbi} blocked: {reason.splitlines()[0]}")
+        self.say(f"{pbi}: blocked — {reason}")
+
+    # -- finalize, review, merge -------------------------------------------------
+
+    def declared(self, item):
+        return (item.get("planned") or {}).get("paths") or []
+
+    def finalize(self, item, claim, wt, retest_feature=None, pbi_sha=None):
+        """Finalize with infrastructure retried, never counted. The outcome."""
+        pbi = item["id"]
+        for wait in (0,) + INFRA_BACKOFF:
+            if wait:
+                self.sleep(wait)
+            if retest_feature is None:
+                outcome = self.finalizer.finalize(
+                    wt, claim["branch"], self.feature_branch, self.pin, item["key"],
+                    self.declared(item), mention_of(pbi))
+            else:
+                outcome = self.finalizer.test(
+                    wt, claim["branch"], self.feature_branch, self.pin, item["key"],
+                    self.declared(item), mention_of(pbi), pbi_sha,
+                    feature_sha=retest_feature)
+            if outcome.kind != fin.INFRA:
+                return outcome
+        return outcome
+
+    def after_session(self, item, claim, wt):
+        outcome = self.finalize(item, claim, wt)
+        if self.settle(item, claim, wt, outcome):
+            done = self.event(item["id"], FINALIZED, branch=claim["branch"],
+                              merge=outcome.tested["merge"])
+            self.review_and_merge(item, claim, wt, done)
+
+    def settle(self, item, claim, wt, outcome):
+        """Route a finalize outcome. True when it passed and was recorded."""
+        pbi = item["id"]
+        if outcome.records:
+            self.board.attach_document(witness_title(pbi), fin.render_record(pbi, outcome),
+                                       identifier=pbi)
+        if outcome.kind == fin.INFRA:
+            self.skip[pbi] = outcome.detail
+            tags.release(self.board, pbi, self.run_id)
+            lease.post_event(self.board, pbi, INFRA, f"{INFRA}:{pbi}:{_key(outcome.detail)}",
+                             text=f"Finalize could not run, and this is not counted as an "
+                                  f"attempt: {outcome.detail}. The PBI waits for the next run.",
+                             reason=flat(outcome.detail))
+            return False
+        if outcome.kind in (fin.DEFECT, fin.CONFLICT):
+            self.count(item, outcome.kind, outcome.detail)
+            return False
+        if outcome.kind in (fin.WITNESS_TIMEOUT, fin.BUDGET):
+            self.block_pbi(pbi, f"{outcome.detail}. Send it back to planning: the witness "
+                                "must change, not the code")
+            return False
+        if outcome.kind == fin.MALFORMED:
+            self.block_pbi(pbi, outcome.detail)
+            return False
+        tested = outcome.tested
+        lease.post_event(
+            self.board, pbi, FINALIZED, f"{FINALIZED}:{claim['branch']}:{tested['merge']}",
+            text=(f"Finalize passed on `{tested['merge'][:12]}`: feature `{tested['feature'][:12]}`"
+                  f" + PBI `{tested['pbi'][:12]}`. "
+                  + ", ".join(f"{r['ac']} exit {r['exit']}" for r in outcome.records
+                              if r.get("command"))),
+            branch=claim["branch"], feature=tested["feature"], pbi=tested["pbi"],
+            merge=tested["merge"], run=self.run_id)
+        if outcome.outside:
+            lease.post_event(self.board, pbi, PATHS, f"{PATHS}:{pbi}:{tested['merge']}",
+                             text="Changed outside the declared paths (reported, not a "
+                                  "failure — the planner over-declares by design): "
+                             + ", ".join(f"`{p}`" for p in outcome.outside))
+        return True
+
+    def review_and_merge(self, item, claim, wt, done):
+        pbi = item["id"]
+        verdict = self.event(pbi, REVIEWED, merge=done["merge"])
+        if verdict is None:
+            verdict = self.review(item, claim, done)
+            if verdict is None:
+                return
+        if verdict.get("verdict") == "fix":
+            return self.start_worker(item, claim, wt, self.feedback(pbi))
+        return self.merge(item, claim, wt, done)
+
+    def review(self, item, claim, done):
+        """The rubber duck on the tested merge. The verdict event, or None when blocked."""
+        pbi = item["id"]
+        executors = runner_executors()
+        author = executors.Choice(claim.get("agent"), claim.get("model") or None)
+        try:
+            reviewer = self.executor.resolve("review", author=author)
+        except executors.ResolutionError as exc:
+            self.block_pbi(pbi, f"no reviewer may review this work, so it is not merged "
+                                f"unreviewed: {exc.message}")
+            return None
+        rwt = self.git.worktree(self.home / f"{pbi}-review", sha=done["merge"])
+        local_excludes(rwt.path)
+        diff = self.git.diff(done["feature"], done["merge"])
+        context = rwt.path / ".idp" / "context"
+        context.mkdir(parents=True, exist_ok=True)
+        (context / "diff.patch").write_text(diff, encoding="utf-8")
+        (context / "pbi.md").write_text(self.board.get_issue(pbi).get("description") or "",
+                                        encoding="utf-8")
+        adr = self.adr_text(self.feature, "feature")
+        if adr:
+            (context / "adr.md").write_text(adr, encoding="utf-8")
+        (context / "siblings.md").write_text(self.siblings(pbi), encoding="utf-8")
+        findings_path = rwt.path / ".idp" / reviews.FINDINGS_FILE
+        prompt = reviews.PROMPT.format(pbi=pbi, feature=self.feature, context=context,
+                                       base=done["feature"], head=done["merge"],
+                                       findings=reviews.FINDINGS_FILE,
+                                       run_py=self.runner.run_py)
+        findings = None
+        for _ in range(REVIEW_RETRIES + 1):
+            if findings_path.exists():
+                findings_path.unlink()
+            code = self.executor.run_role("review", pbi, rwt.path, prompt,
+                                          context={"IDP_CONTEXT_DIR": str(context)},
+                                          author=author, choice=reviewer)
+            rwt.reset_to(done["merge"])
+            if code == EXIT.DONE:
+                try:
+                    findings = reviews.read_findings(findings_path)
+                    break
+                except reviews.ReviewError as exc:
+                    problem = str(exc)
+            else:
+                problem = (self.executor.last or {}).get("reason") or f"the review ended {code}"
+        if findings is None:
+            self.block_pbi(pbi, f"the review could not be run, so the PBI is not merged "
+                                f"unreviewed: {problem}")
+            return None
+
+        sorted_ = reviews.triage(findings, diff)
+        verdict = "fix" if sorted_["blocking"] else "pass"
+        rounds = len(lease.events(self.comments(pbi), REVIEWED, verdict="fix"))
+        n = rounds + (1 if verdict == "fix" else 0)
+        lease.post_event(
+            self.board, pbi, REVIEWED, f"{REVIEWED}:{pbi}:{done['merge']}",
+            text=(f"Review by {reviewer} of `{done['merge'][:12]}`: {verdict}.\n\n"
+                  + reviews.report(sorted_)),
+            verdict=verdict, merge=done["merge"], round=n, reviewer=str(reviewer),
+            blocking=len(sorted_["blocking"]), comments=len(sorted_["comments"]),
+            unverified=len(sorted_["unverified"]), dropped=len(sorted_["dropped"]))
+        if verdict == "fix" and n > reviews.MAX_ROUNDS:
+            self.block_pbi(pbi, f"critical or high findings remain after "
+                                f"{reviews.MAX_ROUNDS} review rounds")
+            return None
+        return self.event(pbi, REVIEWED, merge=done["merge"])
+
+    def siblings(self, pbi):
+        lines = [f"# Already merged into {self.feature_branch}", ""]
+        for item in shape.work_items(self.board, self.feature, self.plan):
+            if item["id"] == pbi:
+                continue
+            merged = self.event(item["id"], MERGED)
+            if merged:
+                lines.append(f"- {item['id']} {item['title']} — `{merged.get('head')}`")
+        return "\n".join(lines) + "\n"
+
+    def merger_for(self):
+        if self.merger is None:
+            try:
+                name = repository_name(self.git.url())
+            except GitError:
+                name = None
+            self.merger = merges.select(self.board, self.profile, self.git, name)
+        return self.merger
+
+    def merge(self, item, claim, wt, done):
+        """Open the PR, then complete it only for the tested combination."""
+        pbi = item["id"]
+        merger = self.merger_for()
+        title = item["title"].replace("[PBI] ", "").strip() or pbi
+        pr = self.event(pbi, PULL_REQUEST, branch=claim["branch"])
+        if pr is None:
+            opened = merger.open(claim["branch"], self.feature_branch, title,
+                                 f"{mention_of(pbi)} — tested at {done['merge']}", pbi)
+            lease.post_event(self.board, pbi, PULL_REQUEST,
+                             f"{PULL_REQUEST}:{claim['branch']}",
+                             text=f"Pull request `{claim['branch']}` → `{self.feature_branch}`"
+                                  f" opened, squash, no auto-complete: {opened.get('url') or opened['id']}.",
+                             branch=claim["branch"], id=str(opened["id"]),
+                             url=opened.get("url"))
+            pr = self.event(pbi, PULL_REQUEST, branch=claim["branch"])
+        pr = dict(pr, id=pr.get("id"))
+        feature_sha, merged = done["feature"], done["merge"]
+        for _ in range(MAX_RETESTS):
+            head = merger.complete(pr, claim["branch"], self.feature_branch, feature_sha,
+                                   merged, title, mention_of(pbi))
+            if head:
+                break
+            # The feature head moved — a sibling merged first. Re-run steps 2–3 on the
+            # new head; this is not charged as an attempt.
+            self.git.fetch()
+            moved = self.git.remote_sha(self.feature_branch)
+            outcome = self.finalize(item, claim, wt, retest_feature=moved,
+                                    pbi_sha=done["pbi"])
+            if not self.settle(item, claim, wt, outcome):
+                return
+            done = self.event(pbi, FINALIZED, branch=claim["branch"],
+                              merge=outcome.tested["merge"])
+            feature_sha, merged = done["feature"], done["merge"]
+        else:
+            self.skip[pbi] = "the feature branch kept moving"
+            return
+        lease.post_event(self.board, pbi, MERGED, f"{MERGED}:{claim['branch']}",
+                         text=f"Merged into `{self.feature_branch}` at `{head[:12]}`: exactly "
+                              f"the tested `{merged[:12]}` (feature `{feature_sha[:12]}`).",
+                         branch=claim["branch"], head=head, merge=merged,
+                         feature=feature_sha, pr=str(pr.get("id")))
+        verdict = self.event(pbi, REVIEWED, merge=merged) or \
+            self.event(pbi, REVIEWED, verdict="pass") or {}
+        if verdict.get("comments"):
+            review = self.review_text(pbi, verdict.get("merge"))
+            merger.comment(self.board, pr, pbi, review, f"review-comments:{pbi}:{merged}")
+        self.after_merge(item, claim, head)
+
+    def review_text(self, pbi, merged):
+        for comment in self.comments(pbi):
+            data = lease.read_event(comment.get("body"))
+            if data and data.get("kind") == REVIEWED and data.get("merge") == merged:
+                return events_text(comment.get("body"))
+        return ""
+
+    def after_merge(self, item, claim, head):
+        """PBI and its remaining Tasks → done, the owner tag off, a summary comment."""
+        pbi = item["id"]
+        merged = self.event(pbi, MERGED, branch=claim["branch"])
+        if merged is None and head:
+            lease.post_event(self.board, pbi, MERGED, f"{MERGED}:{claim['branch']}",
+                             text=f"Merged into `{self.feature_branch}` at `{head[:12]}`.",
+                             branch=claim["branch"], head=head)
+            merged = self.event(pbi, MERGED, branch=claim["branch"])
+        evidence = f"merged into `{self.feature_branch}` at `{(merged or {}).get('head', '')[:12]}`"
+        for task, _ in shape.tasks_of(self.board, pbi):
+            self.mover.move(self.board, task, "done", evidence)
+        self.mover.move(self.board, pbi, "done", evidence)
+        tags.release(self.board, pbi, self.run_id)
+        lease.post_event(
+            self.board, pbi, SUMMARY, f"{SUMMARY}:{pbi}",
+            text=(f"Done: {evidence}. Tested merge `{(merged or {}).get('merge', '')[:12]}`; "
+                  f"{self.attempts(pbi)} counted attempt(s); review "
+                  f"{(self.event(pbi, REVIEWED) or {}).get('verdict', 'n/a')}."),
+            head=(merged or {}).get("head"))
+        self.journal.add(f"{pbi} {item['title']} merged at `{(merged or {}).get('head', '')[:12]}`.")
+
+    # -- the end of the loop ---------------------------------------------------
+
+    def terminate(self, feature, work, status, by_key):
+        """Nothing runs and nothing can start: block the Feature, naming why."""
+        stuck = []
+        for item in work:
+            if status[item["id"]] == "done":
+                continue
+            labels = item["labels"]
+            owner = tags.owner_of(labels)
+            if tags.is_blocked(labels):
+                why = "blocked"
+            elif item["id"] in self.skip:
+                why = self.skip[item["id"]].splitlines()[0]
+            elif owner and tags.run_of(owner) != self.run_id:
+                why = f"held by `{owner}`"
+            else:
+                continue
+            stuck.append((item["id"], why))
+        names = {i for i, _ in stuck}
+        waiting = []
+        changed = True
+        while changed:
+            changed = False
+            for item in work:
+                if item["id"] in names or status[item["id"]] == "done":
+                    continue
+                if any(by_key.get(d, {}).get("id") in names or d not in by_key
+                       for d in item["depends_on"]):
+                    names.add(item["id"])
+                    waiting.append(item["id"])
+                    changed = True
+        reason = ("nothing can run: " + "; ".join(f"{i} ({why})" for i, why in stuck)
+                  + (". Waiting on them: " + ", ".join(waiting) if waiting else ""))
+        return self.block_feature(reason)
+
+    def built(self, feature, work):
+        done = sorted(i["id"] for i in work)
+        lease.post_event(self.board, feature, BUILT, f"{BUILT}:{feature}:{','.join(done)}",
+                         text=f"Building (3.2) is done: {len(done)} item(s) merged into "
+                              f"`{self.feature_branch}`. Integration (3.3) runs next.",
+                         items=len(done), run=self.run_id)
+        self.journal.add(f"Building done: {', '.join(done) or 'nothing'} merged.")
+        self.journal.upload()
+        tags.release(self.board, feature, self.run_id)
+        self.say(f"{feature}: every PBI is merged into {self.feature_branch}. Integration "
+                 "(3.3) is IDE-147 build step 4; the card waits at idp:development.")
+        return EXIT.DONE
+
+    # -- the Feature's counters and modifiers ---------------------------------
+
+    def feature_attempt(self, phase, n, cause, reason):
+        lease.post_event(self.board, self.feature, ATTEMPT,
+                         f"{ATTEMPT}:{phase}:{self.feature}:{n}",
+                         text=f"{phase.capitalize()} attempt {n} of {MAX_ATTEMPTS} did not "
+                              f"finish: {reason}",
+                         phase=phase, n=n, cause=cause, run=self.run_id)
+
+    def block_feature(self, reason):
+        lease.block(self.board, self.feature, self.run_id, reason)
+        if self.journal is not None:
+            self.journal.add(f"Blocked: {reason}")
+            self.journal.upload()
+        tags.release(self.board, self.feature, self.run_id)
+        self.say(f"{self.feature}: blocked — {reason}")
+        return EXIT.BLOCKED
+
+    def pause_card(self, card, reason):
+        tags.pause(self.board, card, self.run_id)
+        lease.post_event(self.board, card, PAUSE, f"{PAUSE}:{card}:{_key(reason)}",
+                         text=f"Paused: {reason}. Any run may take this card now.",
+                         run=self.run_id, reason=flat(reason))
+        self.say(f"{card}: paused — {reason}")
+        return EXIT.HANDOFF
+
+
+def witness_title(pbi):
+    return f"{pbi} · Witness record — what finalize ran"
+
+
+def events_text(body):
+    return event_text(body)
+
+
+def _key(text):
+    return re.sub(r"[^a-z0-9]+", "-", str(text).casefold())[:40].strip("-")
+
+
+def runner_executors():
+    return sys.modules["idp_executors"]
+
+
+def runner_environment():
+    return runner_executors().environment
