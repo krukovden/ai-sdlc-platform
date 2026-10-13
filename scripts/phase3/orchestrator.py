@@ -798,6 +798,9 @@ class Development:
                              reason=flat(outcome.detail))
             return False
         if outcome.kind == fin.DEFECT:
+            # Steps whose own witnesses passed are done even when another failed.
+            self.advance_tasks(item, passed_of(outcome.records),
+                               outcome.tested.get("merge") or "")
             self.count(item, outcome.kind, outcome.detail)
             return False
         if outcome.kind == fin.CONFLICT:
@@ -822,7 +825,8 @@ class Development:
                   + ", ".join(f"{r['ac']} exit {r['exit']}" for r in outcome.records
                               if r.get("command"))),
             branch=claim["branch"], feature=tested["feature"], pbi=tested["pbi"],
-            merge=tested["merge"], run=self.run_id)
+            merge=tested["merge"], passed=",".join(sorted(passed_of(outcome.records))),
+            run=self.run_id)
         if outcome.outside:
             lease.post_event(self.board, pbi, PATHS, f"{PATHS}:{pbi}:{tested['merge']}",
                              text="Changed outside the declared paths (reported, not a "
@@ -830,8 +834,27 @@ class Development:
                              + ", ".join(f"`{p}`" for p in outcome.outside))
         return True
 
+    def advance_tasks(self, item, passed, sha):
+        """Tasks advance one by one: done when their own witnesses passed, else doing."""
+        pbi = item["id"]
+        for task, full in shape.tasks_of(self.board, pbi):
+            owned = shape.read_meta(full.get("description")).get("witnesses") or []
+            if owned and set(owned) <= set(passed):
+                # Also when it is done already: a move that crashed between its
+                # two writes still gets the comment naming its witnesses.
+                self.mover.move(self.board, task, "done",
+                                f"its witnesses {', '.join(owned)} passed at `{sha[:12]}`")
+                continue
+            if self.mover.bucket(full) == "done":
+                continue
+            self.mover.move(self.board, task, "doing",
+                            f"the next step of {pbi}; its witnesses "
+                            f"{', '.join(owned) or '(none)'} have not passed yet")
+            return
+
     def review_and_merge(self, item, claim, wt, done):
         pbi = item["id"]
+        self.advance_tasks(item, split(done.get("passed")), done["merge"])
         verdict = self.event(pbi, REVIEWED, merge=done["merge"])
         if verdict is None:
             verdict = self.review(item, claim, done)
@@ -1002,8 +1025,20 @@ class Development:
                              branch=claim["branch"], head=head)
             merged = self.event(pbi, MERGED, branch=claim["branch"])
         evidence = f"merged into `{self.feature_branch}` at `{(merged or {}).get('head', '')[:12]}`"
-        for task, _ in shape.tasks_of(self.board, pbi):
-            self.mover.move(self.board, task, "done", evidence)
+        tested = self.event(pbi, FINALIZED, merge=(merged or {}).get("merge")) or \
+            self.event(pbi, FINALIZED) or {}
+        self.advance_tasks(item, split(tested.get("passed")), tested.get("merge") or "")
+        for task, full in shape.tasks_of(self.board, pbi):
+            if self.mover.bucket(full) == "done":
+                continue
+            # Never closed without its own witness: a {manual} or {evidence} step
+            # is the human's to close, at QA.
+            owned = shape.read_meta(full.get("description")).get("witnesses") or []
+            lease.post_event(self.board, task, "task-open", f"task-open:{task}",
+                             text=f"Left open when {pbi} merged: its witnesses "
+                                  f"{', '.join(owned) or '(none)'} are not ones finalize ran "
+                                  "and passed, so the runner does not close it.",
+                             witnesses=",".join(owned))
         self.mover.move(self.board, pbi, "done", evidence)
         owner = tags.owner_of(self.board.read_card(pbi).get("tags"))
         if owner and tags.run_of(owner) == self.run_id:
@@ -1100,6 +1135,16 @@ class Development:
                          run=self.run_id, reason=flat(reason))
         self.say(f"{card}: paused — {reason}")
         return EXIT.HANDOFF
+
+
+def passed_of(records):
+    """The AC ids whose command witness ran and exited 0."""
+    return {r["ac"] for r in records or ()
+            if r.get("command") and not r.get("timed_out") and r.get("exit") == EXIT.OK}
+
+
+def split(text):
+    return {part for part in str(text or "").split(",") if part}
 
 
 def witness_title(pbi):

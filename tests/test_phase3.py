@@ -551,6 +551,63 @@ class CounterTests(Phase3TestCase):
         self.assertIn(tags.BLOCKED, self.labels(world, "a"))
 
 
+def two_steps(second_witness):
+    plan = pbi("a")
+    plan["acceptance_criteria"].append({"id": "AC-2", "text": "the mark is there",
+                                        "witness": second_witness})
+    plan["tasks"].append({"key": "a.2", "title": "mark src/a.py",
+                          "not_done_if": "no mark", "existing": [],
+                          "deliverables": ["src/a.py"]})
+    return plan
+
+
+class TaskLifecycleTests(Phase3TestCase):
+
+    def tasks(self, world):
+        card = world.items()["a"]["id"]
+        return [(full["title"], world.board.cards[task]["status"],
+                 shape.read_meta(full["description"]).get("witnesses"))
+                for task, full in shape.tasks_of(world.board, card)]
+
+    def test_ownership_pairs_steps_and_witnesses_by_order(self):
+        def owners(tasks, criteria):
+            plan = dict(pbi("a"), tasks=[{"key": f"t{i}"} for i in range(1, tasks + 1)],
+                        acceptance_criteria=[{"id": f"AC-{i}", "text": "x", "witness": {}}
+                                             for i in range(1, criteria + 1)])
+            return shape.task_witnesses(plan)
+        self.assertEqual(owners(2, 2), {"t1": ["AC-1"], "t2": ["AC-2"]})
+        self.assertEqual(owners(2, 4), {"t1": ["AC-1"], "t2": ["AC-2", "AC-3", "AC-4"]})
+        self.assertEqual(owners(3, 1), {"t1": ["AC-1"], "t2": ["AC-1"], "t3": ["AC-1"]})
+
+    def test_tasks_advance_one_by_one_as_their_own_witnesses_pass(self):
+        world = self.world(plan={"pbis": [two_steps(
+            {"command": "grep -q MARK src/a.py", "timeout": 30})]})
+        seen = []
+
+        def first_step_only(w, worktree, key, branch, card):
+            return ok()(w, worktree, key, branch, card)
+
+        def both_steps(w, worktree, key, branch, card):
+            seen.append(self.tasks(w))                    # the board between sessions
+            return ok("VALUE = 1\n# MARK\n")(w, worktree, key, branch, card)
+
+        world.behaviors["a"] = [first_step_only, both_steps]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(seen[0], [("[Task] write src/a.py", "Resolved", ["AC-1"]),
+                                   ("[Task] mark src/a.py", "Active", ["AC-2"])])
+        self.assertEqual([t[1] for t in self.tasks(world)], ["Resolved", "Resolved"])
+        finalized = world.events(world.items()["a"]["id"], orchestrator.FINALIZED)[-1]
+        self.assertEqual(finalized["passed"], "AC-1,AC-2")
+
+    def test_a_step_whose_witness_is_manual_is_never_closed_by_the_runner(self):
+        world = self.world(plan={"pbis": [two_steps({"manual": "a human looks at it"})]})
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual([t[1] for t in self.tasks(world)], ["Resolved", "Active"])
+        self.assertEqual(self.status(world, "a"), "Resolved")
+        second = shape.tasks_of(world.board, world.items()["a"]["id"])[1][0]
+        self.assertEqual(world.events(second, "task-open")[0]["witnesses"], "AC-2")
+
+
 class MergeTests(Phase3TestCase):
 
     def test_a_sibling_moving_the_head_is_retested_not_charged(self):

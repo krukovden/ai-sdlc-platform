@@ -20,8 +20,12 @@ Two board differences are handled here and said once:
 
 The plan's witnesses belong to acceptance criteria, not to steps: `plan.schema`
 gives a Task `not_done_if` and deliverables, and a PBI's criteria their witness.
-So every Task names the witnesses of its PBI, and a PBI's Tasks close when the
-PBI's witnesses have passed and it merges.
+So each Task is given **its own witnesses** by one deterministic rule,
+`task_witnesses`, and the assignment is written into the Task's `idp-meta`
+block at planning, where every later run reads it back. A Task closes only when
+its own witnesses passed at finalize, one Task after another (IDE-147, *Who
+moves what*); a Task whose witness is `{manual}` or `{evidence}` is never
+closed by the runner.
 """
 
 import inspect
@@ -94,7 +98,28 @@ def children_by_key(board, parent):
     return found
 
 
-def task_body(session, pbi_key, task, criteria, order):
+def task_witnesses(pbi):
+    """{task key: [AC ids]} — which of the PBI's witnesses prove which brief step.
+
+    The plan pairs steps and criteria by order: step j owns criterion j, the last
+    step also owns every criterion past the last step, and a step past the last
+    criterion owns the last one. Every step owns at least one witness and every
+    witness has an owner, so no Task can close without a witness of its own.
+    """
+    tasks = [t["key"] for t in pbi.get("tasks") or []]
+    criteria = [c[0] for c in witnesses(pbi)]
+    owned = {key: [] for key in tasks}
+    if not tasks or not criteria:
+        return owned
+    for index, key in enumerate(tasks):
+        owned[key].append(criteria[min(index, len(criteria) - 1)])
+    owned[tasks[-1]] += criteria[len(tasks):]
+    return owned
+
+
+def task_body(session, pbi_key, task, criteria, order, owned=None):
+    owned = list(owned if owned is not None else [c[0] for c in criteria])
+    criteria = [c for c in criteria if c[0] in owned]
     lines = ["---", "type: task", 'standard: "1.0"', f"parent: {session['feature']}", "---",
              "", task["title"], "", f"NOT DONE if: {task['not_done_if']}",
              "Existing: " + (", ".join(task.get("existing") or []) or "none"),
@@ -102,12 +127,14 @@ def task_body(session, pbi_key, task, criteria, order):
     for path in task.get("delete") or []:
         lines.append(f"Delete: {path}")
     if criteria:
-        lines += ["", "Witnesses, from the plan committed at planning:"]
+        lines += ["", "This step is done when these witnesses pass at finalize; they are "
+                      "read from the plan committed at planning:"]
         for identifier, _, witness in criteria:
             lines.append(f"- {identifier}: " + json.dumps(witness, ensure_ascii=False,
                                                          sort_keys=True))
     lines += ["", meta_block({"type": "task", "feature": session["feature"],
-                              "pbi": pbi_key, "key": task["key"], "order": order}), ""]
+                              "pbi": pbi_key, "key": task["key"], "order": order,
+                              "witnesses": owned}), ""]
     return "\n".join(lines)
 
 
@@ -164,10 +191,11 @@ def ensure(board, feature_issue, plan, profile, header, todo_status=None):
                               planning.render_brief(session, pbi), identifier=ids[key])
         tasks = children_by_key(board, ids[key])
         criteria = witnesses(pbi)
+        owners = task_witnesses(pbi)
         for index, task in enumerate(pbi.get("tasks") or [], 1):
             _upsert(board, tasks, task["key"], f"[Task] {task['title']}",
-                    task_body(session, key, task, criteria, index), ids[key], todo_status,
-                    project, "task", made)
+                    task_body(session, key, task, criteria, index, owners[task["key"]]),
+                    ids[key], todo_status, project, "task", made)
 
     ids[QA_KEY] = _upsert(board, existing, QA_KEY, f"[PBI] {QA_TITLE}",
                           qa_body(session, order), feature, todo_status, project, "pbi", made)
