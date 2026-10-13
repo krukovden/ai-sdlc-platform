@@ -1574,7 +1574,7 @@ class StateResolverIntegrationTests(ScriptTestCase):
             answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
 
         self.assertEqual((answer["phase"], answer["position"]), ("pbi", "ready"))
-        self.assertEqual(answer["next"], "/idp-development 42")
+        self.assertEqual(answer["next"], "/idp-develop 42")
 
     def test_the_board_says_what_the_card_is_rather_than_its_parent(self):
         """Every Azure DevOps Feature has a parent — the Epic (IDE-134).

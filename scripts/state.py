@@ -67,10 +67,10 @@ NEXT_ACTION = {
     ("design", "active"):      ("agent",  None),
     ("design", "next"):        ("human",  "approve the ADR by setting idp:development "
                                           "on {id}, or send it back with idp:design"),
-    ("planning", "ready"):     ("agent",  "/idp-planning {id}"),
+    ("planning", "ready"):     ("agent",  "/idp-develop {id}"),
     ("planning", "active"):    ("agent",  None),
     ("planning", "next"):      ("agent",  None),
-    ("development", "ready"):  ("agent",  "/idp-planning {id}"),
+    ("development", "ready"):  ("agent",  "/idp-develop {id}"),
     ("development", "active"): ("agent",  None),
     ("development", "next"):   ("human",  "test the feature through its QA Testing PBI: "
                                           "close it and merge the PR into main, or file "
@@ -79,7 +79,7 @@ NEXT_ACTION = {
                                           "close it and merge the PR into main, or file "
                                           "Bugs and set idp:development on {id}"),
     ("qa", "next"):            ("human",  "merge the pull request into main"),
-    ("pbi", "ready"):          ("agent",  "/idp-development {id}"),
+    ("pbi", "ready"):          ("agent",  "/idp-develop {id}"),
     ("pbi", "active"):         ("agent",  None),
     ("pbi", "next"):           ("agent",  "the runner merges the PBI pull request"),
 }

@@ -71,7 +71,7 @@ class PositionTests(ScriptTestCase):
         # 3.1 of the same phase, so it is what starts.
         result = answer(labels=["idp:development"])
         self.assertEqual((result["phase"], result["position"]), ("planning", "ready"))
-        self.assertEqual(result["next"], "/idp-planning IDE-42")
+        self.assertEqual(result["next"], "/idp-develop IDE-42")
 
     def test_names_the_command_that_starts_a_phase(self):
         self.assertEqual(answer(labels=["idp:design"])["next"], "/idp-design IDE-42")
