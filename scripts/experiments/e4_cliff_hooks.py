@@ -148,7 +148,11 @@ def record_hook(directory, host, event, payload):
             "commit", "-q", "--no-verify", "-m", f"e4 probe at {entry['event']}")
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
         pushed = git(repo, "push", "-q", "origin", f"HEAD:refs/heads/{BRANCH}", check=False)
-        remote = git(directory / "remote.git", "rev-parse", BRANCH, check=False).stdout.strip()
+        # --git-dir, not -C: git hardened with safe.bareRepository=explicit refuses
+        # to discover a bare repository, and a false "did not land" would fail H2.
+        remote = subprocess.run(["git", f"--git-dir={directory / 'remote.git'}", "rev-parse",
+                                 BRANCH], capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL).stdout.strip()
         entry["push"] = {"returncode": pushed.returncode, "stderr": pushed.stderr.strip()[-400:],
                          "landed": remote == head}
     except Exception as exc:                            # noqa: BLE001 - record, never raise
