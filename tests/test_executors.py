@@ -270,6 +270,18 @@ class EnvironmentTests(ScriptTestCase):
             self.assertEqual(argv[8], "copilot")
         self.assertEqual(len(seen), 2)
 
+    def test_select_hands_run_as_to_the_probes(self):
+        captured = {}
+        real = executors.default_resolver
+
+        def spy(executors_config=None, **kwargs):
+            captured.update(kwargs)
+            return real(executors_config, **kwargs)
+
+        with mock.patch.object(executors, "default_resolver", side_effect=spy):
+            executors.select({"backend": "subprocess"}, run_as="agent")
+        self.assertEqual(captured.get("run_as"), "agent")
+
     def test_command_argv_skips_the_wrapper_when_already_that_user(self):
         argv = executors.environment.command_argv(
             ["python3", "-m", "calc"], run_as="agent", current="agent")
