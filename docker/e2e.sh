@@ -19,10 +19,24 @@ git config --global init.defaultBranch main
 git config --global advice.detachedHead false
 
 step "python suite"
-(cd "$SRC" && python3 -m unittest discover -s tests 2>&1 | tail -3)
+(
+  cd "$SRC"
+  OUT=$(python3 -m unittest discover -s tests 2>&1) || {
+    printf '%s\n' "$OUT" >&2
+    fail "python suite failed"
+  }
+  printf '%s\n' "$OUT" | tail -3
+)
 
 step "node suite"
-(cd "$SRC" && node --test --test-reporter=spec test/ 2>&1 | grep -E '(tests|pass|fail) [0-9]+$')
+(
+  cd "$SRC"
+  OUT=$(node --test --test-reporter=spec test/ 2>&1) || {
+    printf '%s\n' "$OUT" >&2
+    fail "node suite failed"
+  }
+  printf '%s\n' "$OUT" | grep -E '(tests|pass|fail) [0-9]+$'
+)
 
 step "publish the checkout as a local release remote"
 rm -rf /tmp/release && cp -r "$SRC" /tmp/release && cd /tmp/release
