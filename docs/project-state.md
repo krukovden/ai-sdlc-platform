@@ -4,10 +4,10 @@
 
 # AI SDLC Platform — project state
 
-**Generated:** 2026-08-19T21:41:03Z
+**Generated:** 2026-10-13T07:53:07Z
 **Source:** [https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010](https://linear.app/krukov-idea-hub/project/ai-sdlc-platform-ba96723ef010)
 **Project status:** Planned
-**Issues:** 75 live (23 in progress, 38 done) · 15 archived
+**Issues:** 78 live (23 in progress, 40 done) · 0 archived
 
 ## Project documents
 
@@ -49,9 +49,6 @@
 | [IDE-85](https://linear.app/krukov-idea-hub/issue/IDE-85/work-item-ide-80-reviewer-integration-and-practice-research) | [Work Item · IDE-80] Reviewer integration and practice research | Done | — | `krukovden/ide-85-work-item-ide-80-reviewer-integration-and-practice-research` | child of IDE-80 |
 | [IDE-86](https://linear.app/krukov-idea-hub/issue/IDE-86/work-item-ide-80-linear-publishing-adapter) | [Work Item · IDE-80] Linear publishing adapter | Done | — | `krukovden/ide-86-work-item-ide-80-linear-publishing-adapter` | child of IDE-80, related IDE-93 |
 | [IDE-87](https://linear.app/krukov-idea-hub/issue/IDE-87/work-item-ide-80-azure-devops-publishing-adapter) | [Work Item · IDE-80] Azure DevOps publishing adapter | Done | — | `krukovden/ide-87-work-item-ide-80-azure-devops-publishing-adapter` | child of IDE-80, related IDE-76, related IDE-93 |
-| [IDE-10](https://linear.app/krukov-idea-hub/issue/IDE-10/add-grilling-research-and-independent-llm-review) | Add grilling, research, and independent LLM review | Canceled · archived | — | `krukovden/ide-10-add-grilling-research-and-independent-llm-review` | — |
-| [IDE-11](https://linear.app/krukov-idea-hub/issue/IDE-11/generate-and-publish-the-approved-feature-package) | Generate and publish the approved Feature package | Canceled · archived | — | `krukovden/ide-11-generate-and-publish-the-approved-feature-package` | — |
-| [IDE-9](https://linear.app/krukov-idea-hub/issue/IDE-9/build-the-local-feature-discovery-skill-entry-point) | Build the local Feature Discovery skill entry point | Canceled · archived | — | `krukovden/ide-9-build-the-local-feature-discovery-skill-entry-point` | — |
 
 ### 1. Фундамент и контракты
 
@@ -82,9 +79,6 @@
 | [IDE-94](https://linear.app/krukov-idea-hub/issue/IDE-94/work-item-ide-92-state-resolver-and-idp-status) | [Work Item · IDE-92] State resolver and /idp-status | Done | — | `krukovden/ide-94-work-item-ide-92-state-resolver-and-idp-status` | child of IDE-92, related IDE-90 |
 | [IDE-95](https://linear.app/krukov-idea-hub/issue/IDE-95/work-item-ide-92-project-memory-implementation) | [Work Item · IDE-92] Project memory implementation | Done | — | `krukovden/ide-95-work-item-ide-92-project-memory-implementation` | child of IDE-92, related IDE-76 |
 | [IDE-99](https://linear.app/krukov-idea-hub/issue/IDE-99/work-item-ide-92-platform-installation-and-per-project-onboarding) | [Work Item · IDE-92] Platform installation and per-project onboarding | Done | — | `krukovden/ide-99-work-item-ide-92-platform-installation-and-per-project` | child of IDE-92, related IDE-100, related IDE-90, related IDE-77, related IDE-71 |
-| [IDE-6](https://linear.app/krukov-idea-hub/issue/IDE-6/define-the-platform-domain-model-and-terminology) | Define the platform domain model and terminology | Canceled · archived | — | `krukovden/ide-6-define-the-platform-domain-model-and-terminology` | — |
-| [IDE-7](https://linear.app/krukov-idea-hub/issue/IDE-7/define-versioned-artifact-contracts-and-validation) | Define versioned artifact contracts and validation | Canceled · archived | — | `krukovden/ide-7-define-versioned-artifact-contracts-and-validation` | — |
-| [IDE-8](https://linear.app/krukov-idea-hub/issue/IDE-8/define-the-project-profile-configuration-contract) | Define the Project Profile configuration contract | Canceled · archived | — | `krukovden/ide-8-define-the-project-profile-configuration-contract` | — |
 | [IDE-91](https://linear.app/krukov-idea-hub/issue/IDE-91/feature-way-of-working) | [Feature] Way of working | Canceled | Feature | `krukovden/ide-91-feature-way-of-working` | related IDE-78, related IDE-77, related IDE-79 |
 
 ### 5. Пилот
@@ -99,9 +93,6 @@
 |---|---|---|---|---|---|
 | [IDE-114](https://linear.app/krukov-idea-hub/issue/IDE-114/work-item-pilot-live-verification-of-the-chain-on-azure-devops) | [Work Item · Pilot] Live verification of the chain on Azure DevOps | Backlog | — | `krukovden/ide-114-work-item-pilot-live-verification-of-the-chain-on-azure` | blocks IDE-88, related IDE-103, related IDE-87, related IDE-108, related IDE-107 |
 | [IDE-98](https://linear.app/krukov-idea-hub/issue/IDE-98/work-item-pilot-run-the-full-process-on-private-ai-knowledge-platform) | [Work Item · Pilot] Run the full process on Private AI Knowledge Platform MVP | Backlog | — | `krukovden/ide-98-work-item-pilot-run-the-full-process-on-private-ai-knowledge` | — |
-| [IDE-18](https://linear.app/krukov-idea-hub/issue/IDE-18/build-documentation-impact-analysis-and-update-workflow) | Build documentation impact analysis and update workflow | Canceled · archived | — | `krukovden/ide-18-build-documentation-impact-analysis-and-update-workflow` | — |
-| [IDE-19](https://linear.app/krukov-idea-hub/issue/IDE-19/run-the-end-to-end-pilot-on-private-ai-knowledge-platform-mvp) | Run the end-to-end pilot on Private AI Knowledge Platform MVP | Canceled · archived | — | `krukovden/ide-19-run-the-end-to-end-pilot-on-private-ai-knowledge-platform` | — |
-| [IDE-20](https://linear.app/krukov-idea-hub/issue/IDE-20/evaluate-the-pilot-and-complete-ai-sdlc-platform-v1) | Evaluate the pilot and complete AI SDLC Platform v1 | Canceled · archived | — | `krukovden/ide-20-evaluate-the-pilot-and-complete-ai-sdlc-platform-v1` | — |
 
 ### 4. Development
 
@@ -122,9 +113,6 @@
 |---|---|---|---|---|---|
 | [IDE-96](https://linear.app/krukov-idea-hub/issue/IDE-96/feature-komanda-idp-development-cepochka-realizacii) | [Feature] Команда /idp-development — цепочка реализации | Backlog | Feature | `krukovden/ide-96-feature-komanda-idp-development-cepochka-realizacii` | related IDE-82 |
 | [IDE-97](https://linear.app/krukov-idea-hub/issue/IDE-97/spike-ide-96-design-the-pbi-chain-contract) | [Spike · IDE-96] Design the PBI chain contract | Backlog | Spike | `krukovden/ide-97-spike-ide-96-design-the-pbi-chain-contract` | child of IDE-96, related IDE-71, related IDE-90, related IDE-72 |
-| [IDE-15](https://linear.app/krukov-idea-hub/issue/IDE-15/build-the-manual-implementation-handoff) | Build the manual implementation handoff | Canceled · archived | — | `krukovden/ide-15-build-the-manual-implementation-handoff` | — |
-| [IDE-16](https://linear.app/krukov-idea-hub/issue/IDE-16/integrate-github-branches-commits-and-pull-requests) | Integrate GitHub branches, commits, and pull requests | Canceled · archived | — | `krukovden/ide-16-integrate-github-branches-commits-and-pull-requests` | — |
-| [IDE-17](https://linear.app/krukov-idea-hub/issue/IDE-17/capture-implementation-verification-and-pr-summaries) | Capture implementation verification and PR summaries | Canceled · archived | — | `krukovden/ide-17-capture-implementation-verification-and-pr-summaries` | — |
 
 ### 3. Технический дизайн и планирование
 
@@ -146,9 +134,6 @@
 | [IDE-108](https://linear.app/krukov-idea-hub/issue/IDE-108/work-item-ide-82-idp-planning-core-atomicity-path-overlap-graph) | [Work Item · IDE-82] /idp-planning core: atomicity, path overlap graph, feature branch | Done | — | `krukovden/ide-108-work-item-ide-82-idp-planning-core-atomicity-path-overlap` | child of IDE-82, related IDE-72 |
 | [IDE-69](https://linear.app/krukov-idea-hub/issue/IDE-69/spike-ide-81-design-the-idp-design-command) | [Spike · IDE-81] Design the /idp-design command | Done | Spike | `krukovden/ide-69-spike-ide-81-design-the-idp-design-command` | child of IDE-81, related IDE-90, related IDE-78, blocks IDE-72 |
 | [IDE-72](https://linear.app/krukov-idea-hub/issue/IDE-72/spike-ide-82-design-the-idp-planning-command) | [Spike · IDE-82] Design the /idp-planning command | Done | Spike | `krukovden/ide-72-spike-ide-82-design-the-idp-planning-command` | child of IDE-82, related IDE-78, related IDE-90 |
-| [IDE-12](https://linear.app/krukov-idea-hub/issue/IDE-12/implement-the-tech-lead-design-approval-gate) | Implement the Tech Lead design approval gate | Canceled · archived | — | `krukovden/ide-12-implement-the-tech-lead-design-approval-gate` | — |
-| [IDE-13](https://linear.app/krukov-idea-hub/issue/IDE-13/generate-implementation-tasks-from-the-approved-spike) | Generate implementation tasks from the approved Spike | Canceled · archived | — | `krukovden/ide-13-generate-implementation-tasks-from-the-approved-spike` | — |
-| [IDE-14](https://linear.app/krukov-idea-hub/issue/IDE-14/generate-the-spike-technical-design-from-an-approved-feature) | Generate the Spike technical design from an approved Feature | Canceled · archived | — | `krukovden/ide-14-generate-the-spike-technical-design-from-an-approved-feature` | — |
 
 ### 6. Establish project
 
@@ -186,6 +171,7 @@ The milestone is not the fix queue for the platform's known debt — only for wh
 | Issue | Title | Status | Labels | Branch | Links |
 |---|---|---|---|---|---|
 | [IDE-127](https://linear.app/krukov-idea-hub/issue/IDE-127/fit-bugs) | FIT: bugs | Backlog | — | `krukovden/ide-127-fit-bugs` | — |
+| [IDE-146](https://linear.app/krukov-idea-hub/issue/IDE-146/the-same-model-check-cannot-fire-on-the-fallback-path-which-is-the) | The same-model check cannot fire on the fallback path, which is the path most likely to collide | Backlog | — | `krukovden/ide-146-the-same-model-check-cannot-fire-on-the-fallback-path-which` | child of IDE-127 |
 | [IDE-126](https://linear.app/krukov-idea-hub/issue/IDE-126/work-item-ide-92-azure-devops-phase-positions-carried-by-tags) | [Work Item · IDE-92] Azure DevOps: phase positions carried by tags | In Development | — | `krukovden/ide-126-work-item-ide-92-azure-devops-phase-positions-carried-by` | child of IDE-92, related IDE-127 |
 | [IDE-128](https://linear.app/krukov-idea-hub/issue/IDE-128/ide-125-is-done-and-its-code-is-not-on-main) | IDE-125 is Done and its code is not on main | In Development | — | `krukovden/ide-128-ide-125-is-done-and-its-code-is-not-on-main` | child of IDE-127, related IDE-71, related IDE-126, related IDE-125 |
 | [IDE-129](https://linear.app/krukov-idea-hub/issue/IDE-129/azure-devops-phase-defaults-are-linear-status-names) | Azure DevOps phase defaults are Linear status names | In Development | — | `krukovden/ide-129-azure-devops-phase-defaults-are-linear-status-names` | child of IDE-127, related IDE-125, related IDE-126 |
@@ -205,6 +191,11 @@ The milestone is not the fix queue for the platform's known debt — only for wh
 | [IDE-143](https://linear.app/krukov-idea-hub/issue/IDE-143/a-published-card-is-tagged-sdlccidnull-which-breaks-idempotent) | A published card is tagged sdlc:cid=null, which breaks idempotent publication | In Development | — | `krukovden/ide-143-a-published-card-is-tagged-sdlccidnull-which-breaks` | child of IDE-127 |
 | [IDE-144](https://linear.app/krukov-idea-hub/issue/IDE-144/a-pbi-is-tagged-ready-for-design-on-a-route-that-has-no-design-phase) | A PBI is tagged ready-for-design on a route that has no design phase | In Development | — | `krukovden/ide-144-a-pbi-is-tagged-ready-for-design-on-a-route-that-has-no` | child of IDE-127, related IDE-135, related IDE-134 |
 | [IDE-145](https://linear.app/krukov-idea-hub/issue/IDE-145/the-practice-research-pass-can-never-run-its-schema-is-invalid-for-the) | The practice research pass can never run: its schema is invalid for the configured provider | In Development | — | `krukovden/ide-145-the-practice-research-pass-can-never-run-its-schema-is` | child of IDE-127, related IDE-69 |
+
+## Issues not listed under a milestone above
+
+- [IDE-147](https://linear.app/krukov-idea-hub/issue/IDE-147/feature-platform-revision-a-runner-fenced-claims-one-owner-per-phase) — [Feature] Platform revision — a runner, fenced claims, one owner per phase (Done)
+- [IDE-148](https://linear.app/krukov-idea-hub/issue/IDE-148/spike-ide-147-design-the-platform-revision) — [Spike · IDE-147] Design the platform revision (Done)
 
 ## How to use this file
 
