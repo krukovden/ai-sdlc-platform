@@ -101,6 +101,8 @@ DEFAULT_OUT = REPO_ROOT / "docs" / "project-state.md"
 API_VERSION = "7.1"
 COMMENTS_API_VERSION = "7.1-preview.4"
 DEFAULT_TIMEOUT = 60
+GUARD_FILE_ENV = "IDP_ADO_ALLOWED_IDS_FILE"
+TITLE_PREFIX_ENV = "IDP_ADO_TITLE_PREFIX"
 
 # `workitemsbatch` takes at most 200 ids per request. Listing attachments over
 # a larger project is truncated and says so rather than looking complete.
@@ -168,6 +170,7 @@ DEFAULT_WORK_ITEM_TYPES = {
     "feature": "Feature",
     "pbi": "User Story",
     "task": "Task",
+    "bug": "Bug",
 }
 
 # ---------------------------------------------------------------------------
@@ -228,6 +231,103 @@ CID_PATTERN = re.compile(r'"?\bcid"?\s*:\s*"?([A-Za-z0-9_.:@+-]+)"?')
 
 TAG_FEATURE_PACKAGE = "sdlc:feature-package"
 TAG_CID_PREFIX = "sdlc:cid="
+
+
+class ItemGuard:
+    """A live-run fence: only this run's cards, and all with one title prefix."""
+
+    def __init__(self, path=None, title_prefix=None):
+        self.path = Path(path).expanduser() if path else None
+        self.title_prefix = str(title_prefix or "").strip()
+
+    @classmethod
+    def from_environ(cls, environ=None):
+        environ = os.environ if environ is None else environ
+        return cls(environ.get(GUARD_FILE_ENV), environ.get(TITLE_PREFIX_ENV))
+
+    def active(self):
+        return self.path is not None or bool(self.title_prefix)
+
+    def prefixed(self, title):
+        text = str(title or "").strip()
+        if self.title_prefix and not text.startswith(self.title_prefix):
+            return f"{self.title_prefix} {text}".strip()
+        return text
+
+    def check_title(self, title, identifier, action):
+        if not self.title_prefix:
+            return
+        text = str(title or "")
+        if text.startswith(self.title_prefix):
+            return
+        fail(EXIT.INVALID,
+             f"guard refused to {action} work item {identifier}: its title is {text!r}, "
+             f"not prefixed with {self.title_prefix!r}.",
+             fix=f"leave that card alone; this run may touch only cards titled "
+                 f"{self.title_prefix} ...")
+
+    def _load(self):
+        if self.path is None or not self.path.exists():
+            return {"ids": []}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            fail(EXIT.CONFIG,
+                 f"{self.path} is not valid JSON, and the live ADO guard cannot prove "
+                 "which cards belong to this run.",
+                 fix="delete the broken guard file and start the guarded run again")
+        if not isinstance(data, dict):
+            fail(EXIT.CONFIG,
+                 f"{self.path} is not a JSON object, and the live ADO guard cannot prove "
+                 "which cards belong to this run.",
+                 fix="rewrite it as {\"ids\": [...]} or start the guarded run again")
+        ids = data.get("ids")
+        if ids is None:
+            data["ids"] = []
+            return data
+        if not isinstance(ids, list) or any(not str(value).strip().isdigit() for value in ids):
+            fail(EXIT.CONFIG,
+                 f"{self.path} carries an invalid allow-list of Azure DevOps ids.",
+                 fix="rewrite it as {\"ids\": [123, ...]} or start the guarded run again")
+        data["ids"] = [str(value).strip() for value in ids]
+        return data
+
+    def allowed_ids(self):
+        return self._load()["ids"]
+
+    def remember(self, identifier):
+        if self.path is None:
+            return
+        data = self._load()
+        ids = set(data.get("ids") or [])
+        ids.add(str(identifier).strip())
+        data["ids"] = sorted(ids, key=int)
+        if self.title_prefix:
+            data["title_prefix"] = self.title_prefix
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        target = self.path.with_suffix(self.path.suffix + ".tmp")
+        target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        os.replace(target, self.path)
+
+    def ensure_known(self, identifier, action):
+        if self.path is None:
+            return
+        text = str(identifier).strip()
+        if text in set(self.allowed_ids()):
+            return
+        fail(EXIT.INVALID,
+             f"guard refused to {action} work item {text}: this run did not create it.",
+             fix=("use only the ids this run created, kept in the guard file; never point "
+                  "the live harness at an existing board item"))
+
+    def filter_clause(self):
+        if self.path is None:
+            return None
+        ids = self.allowed_ids()
+        if not ids:
+            return "0 = 1"
+        return "[System.Id] IN (" + ", ".join(sorted(ids, key=int)) + ")"
 
 
 def _sibling(name, alias):
@@ -765,6 +865,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
     def __init__(self, token, profile):
         self.token = token or None
         self.profile = profile or {}
+        self.guard = ItemGuard.from_environ()
         # Which credential a rejection is about is settled here, once, while it
         # is still known. Telling somebody holding an expired PAT to run
         # `az login` costs them the afternoon it was meant to save.
@@ -833,6 +934,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
     def work_item_type(self, kind):
         configured = dict(DEFAULT_WORK_ITEM_TYPES)
+        configured.update({"bug": DEFAULT_WORK_ITEM_TYPES["bug"]})
         configured.update(self.profile.get("work_item_types") or {})
         return configured.get(kind, DEFAULT_WORK_ITEM_TYPES.get(kind, "Task"))
 
@@ -850,6 +952,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         if not name:
             return None
         configured = dict(DEFAULT_WORK_ITEM_TYPES)
+        configured.update({"bug": DEFAULT_WORK_ITEM_TYPES["bug"]})
         configured.update(self.profile.get("work_item_types") or {})
         configured.update(self.profile.get("kinds") or {})
         for kind, type_name in configured.items():
@@ -941,12 +1044,15 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         return sorted(states, key=lambda s: (STATE_ORDER.get(s["type"], 9), s["name"]))
 
     def _show(self, identifier, expand="all"):
+        self.guard.ensure_known(identifier, "read")
         work_item_id = _as_id(identifier)
         data = self._az(["boards", "work-item", "show", "--id", str(work_item_id),
                          "--expand", expand, "--org", self.organization, "-o", "json"])
         if not data:
             fail(EXIT.INVALID, f"no work item {identifier}",
                  fix="check the work item id; `board.py list` shows what exists")
+        title = ((data.get("fields") or {}).get("System.Title") or "")
+        self.guard.check_title(title, work_item_id, "read")
         return data
 
     def get_issue(self, identifier):
@@ -977,6 +1083,11 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
     def query(self, where, columns=None, project=None):
         """One WIQL query. Children and project listings are one call, not N."""
+        clause = self.guard.filter_clause()
+        if clause == "0 = 1":
+            return []
+        if clause:
+            where = f"({where}) AND ({clause})"
         selected = columns or ["System.Id", "System.Title", "System.State",
                                "System.WorkItemType", "System.Tags",
                                "System.Parent", "System.IterationPath"]
@@ -1053,10 +1164,14 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             tags.append(TAG_CID_PREFIX + cid)
         return tags
 
-    def create_issue(self, title, body=None, parent=None, status=None, project_id=None):
+    def create_issue(self, title, body=None, parent=None, status=None, project_id=None,
+                     kind=None):
         project = self._project(project_id)
-        kind = "pbi" if (parent or _header_type(body) == "pbi") else "feature"
+        title = self.guard.prefixed(title)
+        kind = kind or ("pbi" if (parent or _header_type(body) == "pbi") else "feature")
         fields = {}
+        if parent:
+            self.guard.ensure_known(parent, "link to as a parent")
 
         if body:
             criteria = acceptance_criteria(body)
@@ -1090,6 +1205,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             fail(EXIT.INVALID, "Azure DevOps refused to create the work item",
                  fix="check the work item type and fields the profile names (`work_item_types`, `area_path`), then retry")
         work_item_id = str(created["id"])
+        self.guard.remember(work_item_id)
 
         if parent:
             self._link_parent(work_item_id, parent)
@@ -1121,12 +1237,14 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                   "--org", self.organization, "-o", "json"])
 
     def update_issue(self, identifier, title=None, body=None, status=None, parent=None):
+        self.guard.ensure_known(identifier, "update")
         work_item_id = str(_as_id(identifier))
         args = ["boards", "work-item", "update", "--id", work_item_id,
                 "--org", self.organization, "-o", "json"]
         fields = {}
 
         if title:
+            title = self.guard.prefixed(title)
             args += ["--title", title]
         if status:
             args += ["--state", status]
@@ -1153,12 +1271,14 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         if title or status or fields:
             updated = self._az(args)
         if parent:
+            self.guard.ensure_known(parent, "link to as a parent")
             self._link_parent(work_item_id, parent)
 
         state = ((updated or {}).get("fields") or {}).get("System.State")
         return {"identifier": work_item_id, "status": state or status}
 
     def add_comment(self, identifier, body):
+        self.guard.ensure_known(identifier, "comment on")
         work_item_id = str(_as_id(identifier))
         self._az(["boards", "work-item", "update", "--id", work_item_id,
                   "--discussion", body,
@@ -1242,6 +1362,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                      fix=f"add '{DOCUMENTS_ITEM}' — the id of the work item that carries the "
                          "project's documents, usually its epic — to .idp/profile.json, then re-run")
 
+        self.guard.ensure_known(host, "attach a document to")
         work_item_id = str(_as_id(host))
         project = self._project(project_id)
         name = attachment_name(title)
@@ -1336,6 +1457,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
     def list_attachments(self, identifier):
         """The documents attached to one work item: slugId, title, url."""
+        self.guard.ensure_known(identifier, "list attachments of")
         return self._attachments_of(identifier)
 
     def _attachments_of(self, identifier):
@@ -1368,7 +1490,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         project = self._project(project_id)
         documents = []
         epic = self.profile.get(DOCUMENTS_ITEM)
-        if epic:
+        if epic and (self.guard.path is None or str(epic) in set(self.guard.allowed_ids())):
             documents.extend(self._attachments_of(epic))
 
         ids = [str((row.get("fields") or {}).get("System.Id") or row.get("id"))

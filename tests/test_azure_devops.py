@@ -18,8 +18,11 @@ import base64
 import contextlib
 import io
 import json
+import os
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from support import REPO_ROOT, ScriptTestCase, board, load_script
@@ -746,12 +749,18 @@ class MachineHeaderTests(ScriptTestCase):
 
 class CreateTests(ScriptTestCase):
 
-    def create(self, body=None, parent=None, status="New", profile=None):
+    def create(self, body=None, parent=None, status="New", profile=None, kind=None,
+               env=None):
         fake = FakeAz()
-        with stub(fake):
+        patches = [stub(fake)]
+        if env is not None:
+            patches.append(mock.patch.dict(os.environ, env, clear=False))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
             result = azure.Board(None, profile or PROFILE).create_issue(
                 title="[Feature] offline search", body=body, parent=parent,
-                status=status, project_id="Contoso Platform")
+                status=status, project_id="Contoso Platform", kind=kind)
         return fake, result
 
     def test_a_feature_is_created_as_a_feature_work_item(self):
@@ -866,6 +875,48 @@ class CreateTests(ScriptTestCase):
         fake, _ = self.create(profile=profile)
         self.assertEqual(fake.flag(fake.matching("boards", "work-item", "create")[0],
                                    "--type"), "Epic")
+
+    def test_a_task_kind_is_created_as_a_task_work_item(self):
+        fake, _ = self.create(parent="10", status=None, kind="task")
+        create = fake.matching("boards", "work-item", "create")[0]
+        self.assertEqual(fake.flag(create, "--type"), "Task")
+
+    def test_the_live_guard_prefixes_titles_on_create(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, _ = self.create(
+                kind="feature",
+                env={azure.GUARD_FILE_ENV: str(Path(tmp) / "ids.json"),
+                     azure.TITLE_PREFIX_ENV: "[IDP TEST]"},
+            )
+        create = fake.matching("boards", "work-item", "create")[0]
+        self.assertEqual(fake.flag(create, "--title"), "[IDP TEST] [Feature] offline search")
+
+
+class GuardTests(ScriptTestCase):
+
+    def test_the_live_guard_refuses_to_touch_an_unknown_item(self):
+        fake = FakeAz(work_item(identifier="42", title="[IDP TEST] Feature"))
+        with tempfile.TemporaryDirectory() as tmp, \
+                stub(fake), \
+                mock.patch.dict(os.environ, {
+                    azure.GUARD_FILE_ENV: str(Path(tmp) / "ids.json"),
+                    azure.TITLE_PREFIX_ENV: "[IDP TEST]",
+                }, clear=False):
+            message = self.assert_exits(azure.EXIT.INVALID,
+                                        azure.Board("pat", PROFILE).get_issue, "42")
+        self.assertIn("did not create it", message)
+
+    def test_the_live_guard_refuses_to_touch_a_non_prefixed_item(self):
+        fake = FakeAz(work_item(identifier="42", title="Feature without prefix"))
+        with tempfile.TemporaryDirectory() as tmp, stub(fake):
+            Path(tmp, "ids.json").write_text('{"ids": ["42"]}\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {
+                azure.GUARD_FILE_ENV: str(Path(tmp) / "ids.json"),
+                azure.TITLE_PREFIX_ENV: "[IDP TEST]",
+            }, clear=False):
+                message = self.assert_exits(azure.EXIT.INVALID,
+                                            azure.Board("pat", PROFILE).get_issue, "42")
+        self.assertIn("not prefixed", message)
 
 
 class CorrelationTests(ScriptTestCase):
