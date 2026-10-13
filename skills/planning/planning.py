@@ -13,7 +13,15 @@ only way an answer like "these two PBIs cannot run in parallel" can be defended
 later.
 
 A session lives in ~/.feature-discovery/planning/<IDE-nn>/ and resumes from
-state.json alone.
+state.json alone. That directory is a **cache** (IDE-147, *Local state is a
+cache*): after a takeover on another machine it does not exist, and that is never
+an error — a command that finds no state.json, or a corrupt one, opens the
+session again from the card and the ADR, and the model proposes again.
+
+Under the runner (`run.py`, phase 3.1) the card is never read from the board.
+The runner claims it, writes `$IDP_CONTEXT_DIR/card.json` and `adr.md`, and starts
+this session with no board credential; the runner commits the plan, pins it and
+creates the cards, so `publish_planning.py` is not run there.
 
     planning.py init      IDE-nn [--adr-file F | --adr-doc SLUG] [--resume]
     planning.py context   [--json]
@@ -52,6 +60,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 SKILL_DIR = Path(__file__).resolve().parent
 PLAN_SCHEMA = SKILL_DIR / "plan.schema.json"
+
+# What the runner pre-fetched for a session that holds no board credential.
+CONTEXT_ENV = "IDP_CONTEXT_DIR"
 
 # The threshold is not configurable in the first revision, on purpose: a
 # configurable threshold is a threshold somebody raises instead of cutting the
@@ -833,13 +844,31 @@ def save_session(session):
 
 
 def load_session(feature):
+    """The session; reopened from the card when the cache is gone or broken.
+
+    Never exit 3 or 4 for a missing cache: the runner reads those as "refused"
+    and "start a fresh session", and a takeover on a machine without this
+    directory would loop between them. A corrupt file is kept beside it.
+    """
     path = session_dir(feature) / "state.json"
-    if not path.exists():
-        fail(EXIT.CONFLICT, f"no planning session for {feature}. Run: planning.py init {feature}")
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        fail(EXIT.INVALID, f"{path} is corrupt: {exc}")
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            os.replace(path, path.with_suffix(".json.corrupt"))
+            return rebuild(feature, f"state.json was corrupt ({exc})")
+    return rebuild(feature, "no state.json on this machine")
+
+
+def rebuild(feature, why):
+    """Open the session again from the card and its ADR; the plan is proposed anew."""
+    board_module, profile, board = open_everything()
+    session = start_session(board, profile, feature, board_module.state, resume=True,
+                            card=context_card(feature))
+    journal(session, {"event": "rebuilt", "why": why})
+    print(f"{feature}: the local planning session was rebuilt from the card ({why})",
+          file=sys.stderr)
+    return session
 
 
 def save_adr(session, text):
@@ -849,7 +878,9 @@ def save_adr(session, text):
 def load_adr(session):
     path = session_dir(session["feature"]) / "adr.md"
     if not path.exists():
-        fail(EXIT.CONFLICT, f"the session for {session['feature']} has no ADR text; re-run init")
+        # The cache lost the copy; the source it came from still has it.
+        _, profile, board = open_everything()
+        save_adr(session, reread_adr(board, profile, session))
     return path.read_text(encoding="utf-8")
 
 
@@ -915,6 +946,15 @@ def resolve_adr(board, profile, issue, route, adr_file=None, adr_doc=None):
             fail(EXIT.INVALID, f"no ADR file at {path}")
         return path.read_text(encoding="utf-8"), f"file:{path}"
 
+    context = os.environ.get(CONTEXT_ENV, "").strip()
+    if context and route != "small-feature":
+        path = Path(context) / "adr.md"
+        if not path.exists():
+            fail(EXIT.CONFLICT, f"the runner's context {context} carries no adr.md, and "
+                    f"{issue['identifier']} is on the '{route}' route. FIX: re-run the phase "
+                    "through run.py, which writes the approved ADR there")
+        return path.read_text(encoding="utf-8"), "context:adr.md"
+
     if adr_doc:
         document = board.get_document(adr_doc)
         if not document:
@@ -957,6 +997,12 @@ def reread_adr(board, profile, session):
             fail(EXIT.INVALIDATED, f"the ADR file {path} is gone; the approval this plan was "
                     "built against can no longer be shown")
         return path.read_text(encoding="utf-8")
+    if kind == "context":
+        path = Path(os.environ.get(CONTEXT_ENV, "")) / value
+        if not path.exists():
+            fail(EXIT.INVALIDATED, f"the runner's {path} is gone; the approval this plan was "
+                    "built against can no longer be shown. FIX: re-run the phase through run.py")
+        return path.read_text(encoding="utf-8")
     if kind in ("document", "convention"):
         return board.get_document(value)["content"]
     return board.get_issue(session["feature"]).get("description") or ""
@@ -987,10 +1033,18 @@ def planner_model(override=None):
 
 
 def start_session(board, profile, identifier, state_module, adr_file=None,
-                  adr_doc=None, resume=False, planner=None):
-    """Everything init does, with the board handed in so a test can supply one."""
-    issue = board.get_issue(identifier)
-    answer = state_module.resolve(board, profile, identifier)
+                  adr_doc=None, resume=False, planner=None, card=None):
+    """Everything init does, with the board handed in so a test can supply one.
+
+    `card` is (issue, answer) as the runner pre-fetched them; then the board is
+    never asked, and the session is the runner's claim resumed.
+    """
+    if card is not None:
+        issue, answer = card
+        resume = True
+    else:
+        issue = board.get_issue(identifier)
+        answer = state_module.resolve(board, profile, identifier)
     check_phase(answer, resume=resume)
 
     header = state_module.parse_machine_header(issue.get("description"))
@@ -1043,7 +1097,40 @@ def start_session(board, profile, identifier, state_module, adr_file=None,
 # Commands
 # ---------------------------------------------------------------------------
 
+class _ContextModule:
+    """What start_session asks of the board facade, when there is no board."""
+
+    def __init__(self):
+        self.state = _load(SCRIPTS / "state.py", "idp_state")
+
+
+def context_card(identifier):
+    """(issue, answer) from the runner's card.json, or None outside the runner."""
+    context = os.environ.get(CONTEXT_ENV, "").strip()
+    if not context:
+        return None
+    path = Path(context) / "card.json"
+    try:
+        card = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(EXIT.UNAVAILABLE, f"the runner's context {path} cannot be read: {exc}. "
+                "FIX: re-run the phase through run.py, which writes it")
+    issue = card.get("issue") or {}
+    if identifier and issue.get("identifier") != identifier:
+        fail(EXIT.INVALID, f"the runner's context is for {issue.get('identifier')}, not "
+                f"{identifier}. FIX: plan the card this session was started for")
+    return issue, card.get("answer") or {}
+
+
 def open_everything():
+    """The board facade, the profile and the board; under the runner, no board."""
+    context = os.environ.get(CONTEXT_ENV, "").strip()
+    if context:
+        try:
+            card = json.loads((Path(context) / "card.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            card = {}
+        return _ContextModule(), card.get("profile") or {}, None
     board_module = load_board()
     profile, _, board = board_module.open_board()
     return board_module, profile, board
@@ -1051,10 +1138,12 @@ def open_everything():
 
 def cmd_init(args):
     board_module, profile, board = open_everything()
+    card = context_card(args.id)
     session = start_session(board, profile, args.id, board_module.state,
                             adr_file=args.adr_file, adr_doc=args.adr_doc,
-                            resume=args.resume, planner=args.planner)
-    board.start_phase(session["feature"], "planning")
+                            resume=args.resume, planner=args.planner, card=card)
+    if card is None:
+        board.start_phase(session["feature"], "planning")
     print(f"{session['feature']}  planning session open")
     print(f"  route:  {session['route']}")
     print(f"  branch: {session['branch']}")
