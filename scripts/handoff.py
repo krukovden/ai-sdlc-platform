@@ -98,13 +98,17 @@ def fail(code, message, fix=None):
 
 
 def git(worktree, *args, check=True):
-    answer = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True,
-                            text=True, stdin=subprocess.DEVNULL)
+    answer = _run(worktree, *args)
     if check and answer.returncode != EXIT.OK:
         raise HandoffError(EXIT.UNAVAILABLE, f"git {' '.join(args)} failed in {worktree}: "
                                              f"{answer.stderr.strip()}",
                            "check the worktree and its remote, then run the handoff again")
     return answer.stdout
+
+
+def _run(worktree, *args):
+    return subprocess.run(["git", "-C", str(worktree), *args], capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL)
 
 
 def current_branch(worktree):
@@ -128,16 +132,18 @@ def changed_paths(worktree):
         if len(entry) < 4:
             continue
         status, path = entry[:2], entry[3:]
+        source = None
         if "R" in status or "C" in status:
-            index += 1                       # the source path of a rename follows
-        entries.append((status, path))
+            source = parts[index]           # the source path of a rename follows
+            index += 1
+        entries.append((status, path, source))
     return entries
 
 
 def select(worktree, entries):
     """(paths to stage, [(path, why it was left out)])."""
     staged, left_out = [], []
-    for status, path in entries:
+    for status, path, source in entries:
         if path == HANDOFF_FILE or path.startswith(SCRATCH):
             # `.idp/` is the runner's scratch space; what in it must survive — the
             # session's unposted decisions — travels inside handoff.md instead.
@@ -148,8 +154,51 @@ def select(worktree, entries):
         elif full.is_file() and full.stat().st_size > MAX_BYTES:
             left_out.append((path, "larger than 5 MB"))
         else:
+            # A rename's source is not a second change: without it `commit --only`
+            # records an add and leaves the deletion staged, so the old path
+            # survives on the branch.
+            if source and not is_secret(source) and not str(source).startswith(SCRATCH):
+                staged.append(source)
             staged.append(path)
     return staged, left_out
+
+
+def _nothing_to_commit(answer):
+    text = f"{answer.stdout}\n{answer.stderr}".casefold()
+    return ("nothing to commit" in text or "nothing added to commit" in text
+            or "no changes added to commit" in text)
+
+
+def commit_paths(worktree, paths, message):
+    """Commit the worktree state of `paths` and nothing else already staged.
+
+    A plain `git commit` publishes the whole index. A worker that staged
+    `.env`, a file over 5 MB or `.idp/` scratch before the limit would have
+    that file in the wip commit and again in the handoff.md commit, then
+    pushed, while `select` reported it left out. `--only` commits the named
+    paths and leaves every other index entry staged and unpushed. The worktree
+    is not touched.
+    """
+    if not paths:
+        return False
+    for path in paths:
+        added = _run(worktree, "add", "-A", "--", path)
+        if added.returncode != EXIT.OK:
+            err = added.stderr.strip()
+            # A rename source already absent from the index and the worktree is
+            # not a pathspec `git add` can name; the commit still needs it.
+            if "did not match any file" in err:
+                continue
+            raise HandoffError(EXIT.UNAVAILABLE, f"git add {path} failed in {worktree}: {err}",
+                               "check the worktree and its remote, then run the handoff again")
+    answer = _run(worktree, "commit", "--no-verify", "-o", "-m", message, "--", *paths)
+    if answer.returncode == EXIT.OK:
+        return True
+    if answer.returncode == 1 and _nothing_to_commit(answer):
+        return False
+    detail = (answer.stderr or answer.stdout).strip()
+    raise HandoffError(EXIT.UNAVAILABLE, f"git commit failed in {worktree}: {detail}",
+                       "check the worktree and its remote, then run the handoff again")
 
 
 def pending_decisions(worktree):
@@ -258,12 +307,7 @@ def handoff(worktree, reason, card, mention=None, last_message=None, remote="ori
     mention = mention or f"#{card}"
 
     staged, left_out = select(worktree, changed_paths(worktree))
-    wip = False
-    if staged:
-        git(worktree, "add", "-A", "--", *staged)
-        if git(worktree, "diff", "--cached", "--name-only").strip():
-            git(worktree, "commit", "--no-verify", "-m", f"wip(handoff): {reason} {mention}")
-            wip = True
+    wip = commit_paths(worktree, staged, f"wip(handoff): {reason} {mention}")
 
     sha = git(worktree, "rev-parse", "HEAD").strip()
     subject = git(worktree, "log", "-1", "--format=%s").strip()
@@ -274,10 +318,8 @@ def handoff(worktree, reason, card, mention=None, last_message=None, remote="ori
     text = compose(target.read_text(encoding="utf-8") if target.exists() else None, text)
     if not target.exists() or target.read_text(encoding="utf-8") != text:
         target.write_text(text, encoding="utf-8")
-    git(worktree, "add", "--", HANDOFF_FILE)
-    if git(worktree, "diff", "--cached", "--name-only").strip():
-        git(worktree, "commit", "--no-verify", "-m",
-            f"docs(handoff): where this session stopped {mention}")
+    commit_paths(worktree, [HANDOFF_FILE],
+                 f"docs(handoff): where this session stopped {mention}")
     git(worktree, "push", remote, f"HEAD:refs/heads/{branch}")
     return {"branch": branch, "commit": git(worktree, "rev-parse", "HEAD").strip(),
             "wip": wip, "left_out": [{"path": p, "why": w} for p, w in left_out]}
