@@ -1,6 +1,6 @@
 """The tech lead is the runner: it merges only what was tested, one PR at a time.
 
-Behind one interface, `Merger`, two implementations:
+Behind one interface, `Merger`, three implementations:
 
 * **`AzureReposMerger`** opens the PR `pbi/…/g<N> → feature/…` with the work
   item linked and squash set, **without auto-complete**, so the merge happens
@@ -8,11 +8,15 @@ Behind one interface, `Merger`, two implementations:
   pinning `lastMergeSourceCommit` to the tested merge `M`. Azure DevOps is
   reached through the board adapter only — the adapter is the one module that
   talks to Azure DevOps (`tests/test_meta_lints.py`).
-* **`GitMerger`** is the same contract at git level, for Linear (a GitHub PR is
-  optional and not opened here) and for any board whose adapter has no PR
-  calls: the squash is a commit whose tree is exactly `M`'s with the feature
-  head `F` as its parent, pushed with `--force-with-lease=<feature>:F`. If the
-  head moved, the push loses and nothing merges.
+* **`GitHubMerger`** keeps those PBI merges at git level exactly as they are,
+  and only changes the phase-3 hand-off: on a github.com remote the feature PR
+  into the human's target branch is opened with the GitHub CLI and reused when
+  it already exists.
+* **`GitMerger`** is the same contract at git level for any remote with no PR
+  integration here: the squash is a commit whose tree is exactly `M`'s with the
+  feature head `F` as its parent, pushed with
+  `--force-with-lease=<feature>:F`. If the head moved, the push loses and
+  nothing merges.
 
 Both answer `complete` with the new feature head, or `None` when the feature
 head is no longer `F` — the caller re-tests on the new head and tries again.
@@ -31,6 +35,10 @@ refuses that, `AzureReposMerger.complete` leaves the pull request open and says
 so; a profile opts in with `"development": {"azure_complete_unproven": true}`,
 and then the runner's post-merge parent check is what contains the race.
 """
+
+import json
+import subprocess
+import urllib.parse
 
 from .common import lease
 from .gitops import GitError
@@ -174,7 +182,14 @@ class GitMerger(Merger):
         self.protected = tuple(protected or ())
 
     def open(self, branch, target, title, description, work_item):
-        return {"id": f"git:{branch}", "url": None}
+        return {
+            "id": f"git:{branch}",
+            "url": None,
+            "fix": "this remote has no pull-request integration here. Either use a "
+                   "github.com remote, or set \"feature_pr\": \"branch-only\" under "
+                   "\"development\" in .idp/profile.json when humans will merge the "
+                   "feature branch by hand after QA",
+        }
 
     def complete(self, pr, branch, target, feature_sha, merged, title, mention):
         # No look before the leap: the push is a compare-and-swap on F, so a head
@@ -200,6 +215,92 @@ class GitMerger(Merger):
 
     def comment(self, board, pr, work_item, text, key):
         lease.post_event(board, work_item, "review-comment", key, text=text)
+
+
+def github_remote(url):
+    text = str(url or "").strip()
+    if not text:
+        return False
+    if "://" not in text and "@" in text:
+        host = text.split("@", 1)[1].split(":", 1)[0].split("/", 1)[0]
+        return host.casefold() == "github.com"
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return False
+    return (parts.hostname or "").casefold() == "github.com"
+
+
+class GitHubMerger(GitMerger):
+    """Git-level merges plus feature pull requests opened with `gh`."""
+
+    name = "github"
+
+    def __init__(self, git, protected=(), run=None):
+        super().__init__(git, protected=protected)
+        self.run = run or self._run_gh
+
+    def _run_gh(self, argv):
+        return subprocess.run(argv, capture_output=True, text=True, cwd=str(self.git.path),
+                              stdin=subprocess.DEVNULL, timeout=60)
+
+    @staticmethod
+    def _read_list(answer):
+        if answer.returncode != 0:
+            return None
+        try:
+            parsed = json.loads(answer.stdout or "[]")
+        except ValueError:
+            return None
+        if not isinstance(parsed, list):
+            return None
+        for found in parsed:
+            if isinstance(found, dict) and found.get("number") and found.get("url"):
+                return {"id": found["number"], "url": found["url"]}
+        return {}
+
+    def _failed(self, branch):
+        return {
+            "id": f"github:{branch}",
+            "url": None,
+            "fix": "make the GitHub CLI work in this clone: install `gh`, authenticate it, "
+                   "and make `gh pr list --head <branch> --base <target> --state open "
+                   "--json number,url` succeed on this github.com remote; or set "
+                   "\"feature_pr\": \"branch-only\" under \"development\" in "
+                   ".idp/profile.json when this repository has no PR workflow",
+        }
+
+    def open(self, branch, target, title, description, work_item):
+        try:
+            listed = self.run([
+                "gh", "pr", "list", "--head", branch, "--base", target, "--state", "open",
+                "--json", "number,url",
+            ])
+        except OSError:
+            return self._failed(branch)
+        found = self._read_list(listed)
+        if found is None:
+            return self._failed(branch)
+        if found:
+            return found
+        try:
+            created = self.run([
+                "gh", "pr", "create", "--head", branch, "--base", target,
+                "--title", title, "--body", description,
+            ])
+        except OSError:
+            return self._failed(branch)
+        if created.returncode != 0:
+            return self._failed(branch)
+        try:
+            listed = self.run([
+                "gh", "pr", "list", "--head", branch, "--base", target, "--state", "open",
+                "--json", "number,url",
+            ])
+        except OSError:
+            return self._failed(branch)
+        found = self._read_list(listed)
+        return found if found else self._failed(branch)
 
 
 class AzureReposMerger(Merger):
@@ -269,11 +370,17 @@ class AzureReposMerger(Merger):
 
 
 def select(board, profile, git, repository):
-    """Azure Repos when the board is Azure DevOps and its adapter has the PR calls."""
+    """Azure Repos first, GitHub on github.com remotes, git-level merges otherwise."""
     profile = profile or {}
     protected = profile.get("protected_branches") or ()
     if profile.get("board") == "azure-devops" and hasattr(board, "create_pull_request"):
         unproven = (profile.get("development") or {}).get("azure_complete_unproven")
         return AzureReposMerger(board, git, repository, protected=protected,
                                 unproven=unproven is True)
+    try:
+        url = git.url()
+    except (AttributeError, GitError):
+        url = None
+    if github_remote(url):
+        return GitHubMerger(git, protected=protected)
     return GitMerger(git, protected=protected)

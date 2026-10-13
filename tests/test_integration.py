@@ -187,6 +187,20 @@ class FeaturePullRequestTests(IntegrationTestCase):
         self.assertEqual(prs[-1]["url"], f"https://fake/pr/{FEATURE_BRANCH}")
         self.assertEqual(self.feature_tags(world), [tags.QA])
 
+    def test_branch_only_hands_off_to_qa_without_blocking(self):
+        profile = dict(PROFILE, development=dict(PROFILE["development"], feature_pr="branch-only"))
+        world = self.world(plan={"pbis": [pbi("a")]}, profile=profile)
+        merger = phase3.merge.GitMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        pr = world.events(FEATURE, integration.FEATURE_PR)
+        self.assertEqual(len(pr), 1)
+        self.assertIsNone(pr[0]["url"])
+        self.assertEqual(pr[0]["mode"], "branch-only")
+        self.assertEqual(pr[0]["branch"], FEATURE_BRANCH)
+        self.assertEqual(self.qa(world)["status"], "Active")
+        self.assertEqual(self.feature_tags(world), [tags.QA])
+        self.assertTrue(world.events(FEATURE, integration.HANDED))
+
 
 # ---------------------------------------------------------------------------
 # Rounds: findings become PBIs, at most two rounds of fixes

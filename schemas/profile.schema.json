@@ -326,6 +326,13 @@
           "description": "Let the runner complete a PBI's Azure Repos pull request although nothing pins the target branch in that call. Off by default: until experiment 8 shows the service refuses a completion onto a moved target, the runner leaves the pull request open with a comment and a FIX line. When on, the runner's post-merge parent check is what contains the race.",
           "type": "boolean"
         },
+        "feature_pr": {
+          "description": "How phase 3 hands a Feature to QA. `auto` opens a real feature pull request when the remote supports one here and blocks otherwise; `branch-only` records that there is no pull request and tells the human to merge the feature branch by hand after QA.",
+          "enum": [
+            "auto",
+            "branch-only"
+          ]
+        },
         "witness_budget_seconds": {
           "description": "The phase budget for one PBI's witnesses. A plan whose witnesses' worst case does not fit is refused up front. Default 1800.",
           "type": "integer",

@@ -1870,8 +1870,9 @@ class LaunchFailureTests(Phase3TestCase):
 class StubGit:
     """What the mergers ask of git when no merge is going to happen."""
 
-    def __init__(self, head="F", default="main"):
+    def __init__(self, head="F", default="main", url="https://example.invalid/repo.git"):
         self.head, self.default = head, default
+        self._url = url
 
     def fetch(self):
         pass
@@ -1887,6 +1888,79 @@ class StubGit:
 
     def ok(self, *args):
         return True
+
+    def url(self):
+        return self._url
+
+
+class GitHubMergerTests(unittest.TestCase):
+
+    def test_open_reuses_an_existing_pull_request(self):
+        calls = []
+
+        def gh(argv):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 0, '[{"number": 12, "url": "https://github.com/o/r/pull/12"}]', "")
+
+        merger = phase3.merge.GitHubMerger(StubGit(url="git@github.com:o/r.git"), run=gh)
+        opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+        self.assertEqual(opened, {"id": 12, "url": "https://github.com/o/r/pull/12"})
+        self.assertEqual(calls, [[
+            "gh", "pr", "list", "--head", "feature/IDE-88", "--base", "main", "--state",
+            "open", "--json", "number,url",
+        ]])
+
+    def test_open_creates_a_pull_request_when_none_exists(self):
+        calls = []
+        answers = iter((
+            subprocess.CompletedProcess(["gh"], 0, "[]", ""),
+            subprocess.CompletedProcess(["gh"], 0, "https://github.com/o/r/pull/13\n", ""),
+            subprocess.CompletedProcess(["gh"], 0,
+                                        '[{"number": 13, "url": "https://github.com/o/r/pull/13"}]',
+                                        ""),
+        ))
+
+        def gh(argv):
+            calls.append(argv)
+            return next(answers)
+
+        merger = phase3.merge.GitHubMerger(StubGit(url="https://github.com/o/r.git"), run=gh)
+        opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+        self.assertEqual(opened, {"id": 13, "url": "https://github.com/o/r/pull/13"})
+        self.assertEqual(calls[1], [
+            "gh", "pr", "create", "--head", "feature/IDE-88", "--base", "main",
+            "--title", "T", "--body", "B",
+        ])
+
+    def test_open_fails_safe_when_gh_cannot_open_or_list_a_pull_request(self):
+        for failure in (
+                lambda _argv: subprocess.CompletedProcess(["gh"], 1, "", "auth failed"),
+                lambda _argv: (_ for _ in ()).throw(OSError("no gh"))):
+            with self.subTest(failure=getattr(failure, "__name__", "oserror")):
+                merger = phase3.merge.GitHubMerger(
+                    StubGit(url="git@github.com:o/r.git"), run=failure)
+                opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+                self.assertIsNone(opened["url"])
+                self.assertIn("feature_pr", opened["fix"])
+
+    def test_selection_uses_azure_repos_before_github_and_github_before_plain_git(self):
+        class AzureBoard:
+            def create_pull_request(self, *args):
+                return None
+
+        merger = phase3.merge.select(AzureBoard(), {"board": "azure-devops"},
+                                     StubGit(url="git@github.com:o/r.git"), "repo")
+        self.assertIsInstance(merger, phase3.merge.AzureReposMerger)
+        for url in ("https://github.com/o/r.git", "git@github.com:o/r.git",
+                    "ssh://git@github.com/o/r.git"):
+            with self.subTest(url=url):
+                merger = phase3.merge.select(object(), {"board": "linear"},
+                                             StubGit(url=url), "repo")
+                self.assertIsInstance(merger, phase3.merge.GitHubMerger)
+        merger = phase3.merge.select(object(), {"board": "linear"},
+                                     StubGit(url="https://example.invalid/repo.git"), "repo")
+        self.assertIsInstance(merger, phase3.merge.GitMerger)
 
 
 class AzureReposMergerTests(unittest.TestCase):

@@ -160,6 +160,7 @@ silent default.
 | `development.witness_budget_seconds` | Budget for one PBI's runnable witnesses. |
 | `development.security_scanner` | Optional finalize command; a non-zero exit is a defect. |
 | `development.bug_witness` | Fallback witness for Bugs when the card states none. |
+| `development.feature_pr` | Feature hand-off mode: `auto` (default) opens a real PR where supported and otherwise blocks; `branch-only` records the feature branch for a human to merge by hand after QA. |
 | `development.integration.build` | Optional full-build command for 3.3. |
 | `development.integration.test` | Required full test-suite command for 3.3. |
 | `development.integration.timeout_seconds` | Timeout per 3.3 build or suite command. |
@@ -225,6 +226,7 @@ This exact example is validated by the test suite against the live schema.
     }
   },
   "development": {
+    "feature_pr": "auto",
     "witness_budget_seconds": 1800,
     "security_scanner": "bandit -q -r src",
     "bug_witness": {
