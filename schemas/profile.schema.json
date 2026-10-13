@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/krukovden/ai-sdlc-platform/schemas/profile.schema.json",
+  "title": "Project profile",
+  "description": "What .idp/profile.json may say (IDE-147, Determinism rules: profile discipline). Every object is closed and every choice is an enum, so a typo such as 'paralel' is an error and never a silent default. Keys that were removed are refused by name in scripts/board.py, with the fix, before this schema is consulted. The hash of the validated profile goes into every claim comment, so a run can be reproduced from the board.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "board",
+    "team_key"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Which shape of this file the profile was written against. A profile without one is version 0 and is migrated in memory when it is loaded; scripts/board.py carries the migrations.",
+      "enum": [
+        1
+      ]
+    },
+    "board": {
+      "description": "Which tracker carries the work. The name resolves to scripts/sync_<board>_state.py.",
+      "enum": [
+        "linear",
+        "azure-devops"
+      ]
+    },
+    "team_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "token_path": {
+      "description": "Where the board's token lives. A path, never the secret.",
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace": {
+      "type": "string",
+      "minLength": 1
+    },
+    "memory_doc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wiki": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "language": {
+      "description": "The older flat spelling of artifacts.language, still honoured.",
+      "type": "string",
+      "minLength": 1
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "type": "string",
+          "minLength": 1
+        },
+        "register": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audience": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "kinds": {
+      "description": "What this board calls each of the platform's kinds of work item.",
+      "$comment": "Mirrors board.KINDS.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "epic": {
+          "type": "string",
+          "minLength": 1
+        },
+        "feature": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pbi": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "work_item_types": {
+      "description": "Azure DevOps: the older name for kinds.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "epic": {
+          "type": "string",
+          "minLength": 1
+        },
+        "feature": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pbi": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "phases": {
+      "description": "Only a backlog item's states may be renamed. A Feature's phases are the fixed idp: tags.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pbi": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ready": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "active": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "state_types": {
+      "description": "Azure DevOps: status name to the kind of state it is.",
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "backlog",
+          "unstarted",
+          "started",
+          "completed",
+          "canceled"
+        ]
+      }
+    },
+    "state_map": {
+      "description": "Written only by `states discover` (engineering-catalog): each work item type's todo, doing and done states.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "todo",
+          "doing",
+          "done"
+        ],
+        "properties": {
+          "todo": {
+            "type": "string",
+            "minLength": 1
+          },
+          "doing": {
+            "type": "string",
+            "minLength": 1
+          },
+          "done": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "area_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "iteration_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch_prefix": {
+      "type": "string",
+      "minLength": 1
+    },
+    "process_label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "executors": {
+      "description": "Who fills each role, and how the process is launched (IDE-147, Executors). Each role is an ordered list of agent[:model]; the first available entry wins.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "enum": [
+            "auto",
+            "orca",
+            "subprocess"
+          ]
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "design": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^(claude|codex|copilot|cursor|opencode|gemini)(:[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+              }
+            },
+            "worker": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^(claude|codex|copilot|cursor|opencode|gemini)(:[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+              }
+            },
+            "review": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^(claude|codex|copilot|cursor|opencode|gemini)(:[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+              }
+            },
+            "integration": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^(claude|codex|copilot|cursor|opencode|gemini)(:[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+              }
+            }
+          }
+        },
+        "parallel": {
+          "description": "Concurrent workers per agent.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claude": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "codex": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "copilot": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cursor": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "opencode": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "gemini": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

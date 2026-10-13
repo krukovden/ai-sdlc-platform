@@ -51,6 +51,8 @@ Every refusal ends with a FIX line: what to do to get past it.
 """
 
 import argparse
+import difflib
+import hashlib
 import importlib.util
 import json
 import os
@@ -166,13 +168,138 @@ def load_profile():
         fail(EXIT.CONFIG, f"{path} is not valid JSON: {exc}",
              fix="correct the JSON in that file, then re-run")
 
-    for field in ("board", "team_key"):
-        if not profile.get(field):
-            fail(EXIT.CONFIG, f"{path} is missing required field '{field}'",
-                 fix="add the field to the profile, then re-run")
+    try:
+        profile = check_profile(profile)
+    except ProfileError as exc:
+        fail(EXIT.CONFIG, f"{path}: {exc.message}", fix=exc.fix)
 
     profile["_path"] = str(path)
     return profile
+
+
+# ---------------------------------------------------------------------------
+# Profile discipline: one schema, closed enums, versions, a hash (IDE-147)
+# ---------------------------------------------------------------------------
+
+PROFILE_SCHEMA = REPO_ROOT / "schemas" / "profile.schema.json"
+PROFILE_VERSION = 1
+
+# Keys a profile may no longer carry. A hard error, never a silent ignore: the
+# person who wrote one believes it still does something, and the error is the
+# only place they will learn otherwise.
+REMOVED_KEYS = {
+    "agents": ("the per-agent token map is gone. It existed only so a claim could be "
+               "attributed from the board's history, and a claim is now a fenced write "
+               "that needs no identity read back (IDE-147).",
+               "delete 'agents' from the profile and keep the one 'token_path'"),
+    "epic_id": ("'epic_id' is gone with the registry on the epic. The repository's "
+                "memory/index.md is the registry now, and the feature's files hang "
+                "from the Feature (IDE-147).",
+                "delete 'epic_id' from the profile; attach documents to a work item"),
+}
+
+
+class ProfileError(ValueError):
+    """A profile the platform will not run on, with the fix."""
+
+    def __init__(self, message, fix):
+        super().__init__(message)
+        self.message, self.fix = message, fix
+
+
+def _migrate_0(profile):
+    """Version 0 is every profile written before the schema: no field changed shape,
+    so the migration is the version stamp itself."""
+    return profile
+
+
+# MIGRATIONS[n] takes a version-n profile to version n+1. Append, never edit.
+MIGRATIONS = {0: _migrate_0}
+
+
+def migrate_profile(profile):
+    """The profile at PROFILE_VERSION, migrated in memory. The file is never rewritten."""
+    profile = dict(profile)
+    version = profile.get("schema_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise ProfileError(f"'schema_version' is {version!r}; it is a whole number",
+                           f"set \"schema_version\": {PROFILE_VERSION}")
+    if version > PROFILE_VERSION:
+        raise ProfileError(f"the profile is schema version {version} and this platform "
+                           f"reads up to {PROFILE_VERSION}",
+                           "update the platform (`git pull` where it is installed), "
+                           "then re-run")
+    while version < PROFILE_VERSION:
+        profile = MIGRATIONS[version](profile)
+        version += 1
+    profile["schema_version"] = version
+    return profile
+
+
+def _profile_schema():
+    return json.loads(PROFILE_SCHEMA.read_text(encoding="utf-8"))
+
+
+def _schema_at(schema, dotted):
+    """The subschema a dotted profile path points into, for naming the keys it has."""
+    node = schema
+    for part in [p for p in dotted.split(".") if p]:
+        properties = node.get("properties") or {}
+        if part in properties:
+            node = properties[part]
+        elif isinstance(node.get("additionalProperties"), dict):
+            node = node["additionalProperties"]
+        else:
+            return {}
+    return node
+
+
+def check_profile(profile):
+    """Refuse a profile that names a removed key, a key that does not exist or a
+    value outside its enum. Returns the profile, migrated. Raises ProfileError."""
+    if not isinstance(profile, dict):
+        raise ProfileError("the profile is not a JSON object",
+                           "write it as {\"schema_version\": 1, \"board\": ..., "
+                           "\"team_key\": ...}")
+    for key, (why, fix) in REMOVED_KEYS.items():
+        if key in profile:
+            raise ProfileError(why, fix)
+
+    profile = migrate_profile({k: v for k, v in profile.items() if not k.startswith("_")})
+    schema = _profile_schema()
+    validator = load_sibling("validate", "idp_validate") \
+        if "idp_validate" not in sys.modules else sys.modules["idp_validate"]
+    problems = validator.check_schema(profile, schema, "profile")
+    if not problems:
+        return profile
+
+    path, message = problems[0]
+    dotted = path[len("profile"):].lstrip(".")
+    where, _, field = dotted.rpartition(".")
+    if "is not a field of the standard" in message:
+        known = sorted((_schema_at(schema, where).get("properties") or {}))
+        close = difflib.get_close_matches(field, known, n=1)
+        hint = (f"did you mean '{close[0]}'? Rename it" if close
+                else f"remove it; {'the keys here are ' + ', '.join(known) if known else 'see schemas/profile.schema.json'}")
+        raise ProfileError(f"'{dotted}' is not a profile key, and an unknown key is "
+                           "an error rather than a silent default", hint)
+    reason = message.split(": ", 1)[1] if ": " in message else message
+    if "required field" in reason:
+        missing = reason.split("'")[1] if "'" in reason else reason
+        target = f"{where + '.' if where else ''}{missing}"
+        raise ProfileError(f"'{target}' is missing, and the profile requires it",
+                           f"add '{target}' to the profile, then re-run")
+    raise ProfileError(f"'{dotted or 'profile'}': {reason}",
+                       "correct the value; schemas/profile.schema.json lists what each "
+                       "key accepts")
+
+
+def profile_hash(profile):
+    """sha256 of the profile as canonical JSON: what a claim comment records, so a
+    run can be reproduced from the board. Keys the loader added are not hashed."""
+    clean = {k: v for k, v in (profile or {}).items() if not str(k).startswith("_")}
+    canonical = json.dumps(clean, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def token_path_for(profile):
@@ -311,6 +438,7 @@ def cmd_init(args):
              fix="pass --force to overwrite it, or edit it by hand")
 
     profile = {
+        "schema_version": PROFILE_VERSION,
         "board": args.board,
         "team_key": args.team,
     }
@@ -365,6 +493,11 @@ def cmd_init(args):
             fail(EXIT.CONFIG, f"the profile maps a kind the platform does not know: '{kind}'; "
                               f"known kinds are {', '.join(KINDS)}",
                  fix="map only epic, feature, pbi or task under 'kinds'")
+
+    try:
+        check_profile(profile)
+    except ProfileError as exc:
+        fail(EXIT.CONFIG, exc.message, fix=exc.fix)
 
     # Verify before writing. A profile that was never checked is a file that
     # lies, and it will lie at the least convenient moment.
