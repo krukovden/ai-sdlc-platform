@@ -10,6 +10,8 @@
     "./skills/feature-discovery",
     "./skills/design",
     "./skills/planning",
+    "./skills/development",
+    "./skills/documenter",
     "./skills/establish-project",
     "./skills/platform-freshness"
   ],
