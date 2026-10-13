@@ -33,11 +33,10 @@ Usage:
     board.py start IDE-90 --phase design        claim the card for a phase
     board.py finish IDE-90 --phase design       hand it on
     board.py version                            what is installed, and to which standard
-    board.py memory core                        what exists, one line each
-    board.py memory why IDE-42                  why this feature is the way it is
+    board.py memory why IDE-42                  the feature's own files, and where memory is
     board.py memory record IDE-42 --entry T     append to the feature's history
-    board.py memory check                       drift between the registry and git
-    board.py memory init                        seed memory for an existing project
+    board.py memory check                       closed cards with no commits; stale summaries
+    board.py memory core | init                 removed: the registry is memory/index.md
     board.py sync                               regenerate docs/project-state.md
 
 Exit codes, shared by every adapter and named in scripts/exit_codes.py:
@@ -663,16 +662,6 @@ def cmd_status(args):
         sys.exit(EXIT.OK if answer["next"] else EXIT.NO)
 
 
-def memory_document(profile, board):
-    """The epic document that carries the registry, named by the profile."""
-    slug = profile.get("memory_doc")
-    if not slug:
-        fail(EXIT.CONFIG, "the profile has no 'memory_doc': the slug of the epic document "
-                          "that carries the registry. Add it, then re-run.",
-             fix="add 'memory_doc' — the slug of the epic document with the registry — to the profile")
-    return slug, board.get_document(slug)
-
-
 def cmd_version(args):
     """What is installed and which standard it implements.
 
@@ -689,28 +678,24 @@ def cmd_version(args):
 
 
 def cmd_memory(args):
+    """The feature's files on the board, and the drift detector.
+
+    The epic's registry is removed (IDE-147, *Memory*): `core` and `init` read and
+    wrote it, and now refuse with the fix — `memory/index.md` in the product
+    repository is the registry. A feature's journal and Tried & Rejected stay
+    attachments on the Feature while it is in flight.
+    """
+    if args.action in ("core", "init"):
+        message, fix = memory.registry_removed()
+        fail(EXIT.INVALID, f"`memory {args.action}` read the feature registry on the epic, "
+                           f"and {message}", fix=fix)
     profile, _, board = open_board()
     try:
-        if args.action == "init":
-            issues = board.list_project(project_id_from(profile, None))
-            registry = memory.seed(issues, now())
-            print(memory.render_registry(registry))
-            print("\nReview every line, then paste the block into the epic document.",
-                  file=sys.stderr)
-            print("Each entry is marked legacy: it came from the board, not from a "
-                  "decision anyone recorded.", file=sys.stderr)
-            return
-
-        _, document = memory_document(profile, board)
-        registry = memory.parse_registry(document["content"])
-
-        if args.action == "core":
-            print(memory.core(registry))
-        elif args.action == "why":
+        if args.action == "why":
             if not args.id:
                 fail(EXIT.INVALID, "memory why needs an issue: board.py memory why IDE-42",
                      fix="name the issue: board.py memory why IDE-42")
-            print(explain(board, registry, args.id))
+            print(explain(board, args.id))
         elif args.action == "record":
             if not args.id or not args.entry:
                 fail(EXIT.INVALID, "memory record needs an issue and --entry",
@@ -729,8 +714,7 @@ def cmd_memory(args):
             print(board.attach_document(title, body, identifier=args.id)["url"])
         elif args.action == "check":
             issues = board.list_project(project_id_from(profile, None))
-            findings = memory.check_drift(registry, issues, profile,
-                                          do_fetch=not args.no_fetch)
+            findings = memory.check_drift(issues, profile, do_fetch=not args.no_fetch)
             print(memory.describe_drift(findings))
             # The same question asked of the documentation: does what is written
             # down still hold? A warning, never an exit code — most commits under
@@ -741,42 +725,27 @@ def cmd_memory(args):
                 if warning:
                     print("", file=sys.stderr)
                     print(warning, file=sys.stderr)
-            if any(findings[k] for k in ("unbacked", "unregistered",
-                                          "unrecorded_removals",
-                                          "closed_without_commits")):
+            if findings["closed_without_commits"]:
                 sys.exit(EXIT.NO)
     except memory.MemoryError_ as exc:
         fail(EXIT.INVALID, str(exc),
-             fix="correct the registry document as the message says, then re-run")
+             fix="correct what the message names, then re-run")
 
 
-def explain(board, registry, identifier):
-    """Why this feature is the way it is: the registry line, then its own files."""
-    entry = next((f for f in registry["features"] if f["issue"] == identifier), None)
-    removed = next((r for r in registry["removed"]
-                    if identifier in r.get("issues", [])), None)
-
-    lines = []
-    if entry:
-        lines.append(f"{entry['issue']}  {entry['name']}")
-        lines.append(f"  {entry['one_liner']}")
-        if entry.get("legacy"):
-            lines.append("  (legacy: recorded from the board at init, never reviewed)")
-    elif removed:
-        lines.append(f"{identifier}  {removed['name']} — REMOVED")
-        lines.append(f"  why: {removed['why_removed']}")
-        lines.append(f"  replaced by: {removed.get('replaced_by') or 'nothing recorded'}")
-        return "\n".join(lines)
-    else:
-        lines.append(f"{identifier} is not in the registry.")
-        lines.append("  Either it is not a feature, or it was never registered — "
-                     "which is the drift `memory check` reports.")
-
+def explain(board, identifier):
+    """Why this feature is the way it is: its own files, then where memory lives."""
     issue = board.get_issue(identifier)
-    lines.append("")
-    lines.append(f"status: {issue['status']}")
-    lines.append("The feature's own files — its ADR, its history, its Tried & Rejected —")
-    lines.append(f"are attachments on the card: {issue['url']}")
+    lines = [f"{identifier}  {issue['title']}", f"status: {issue['status']}", "",
+             "While it is in flight, the feature's own files — its ADR, its history, its "
+             "Tried & Rejected — are attachments on the card:",
+             f"  {issue['url']}"]
+    titles = {memory.feature_file(identifier, role) for role in memory.FEATURE_FILES}
+    for document in board.list_attachments(identifier) if hasattr(board, "list_attachments") \
+            else []:
+        if document.get("title") in titles:
+            lines.append(f"  - {document['title']}")
+    lines += ["", f"Once it merged into main, its lasting decisions and rejections are in "
+                  f"{memory.MEMORY_INDEX} in the product repository."]
     return "\n".join(lines)
 
 
@@ -897,7 +866,7 @@ def main():
     p = sub.add_parser("version", help="what is installed, and to which standard")
     p.set_defaults(func=cmd_version)
 
-    p = sub.add_parser("memory", help="project memory: registry, why, drift")
+    p = sub.add_parser("memory", help="a feature's files, drift; the registry is memory/index.md")
     p.add_argument("action", choices=["core", "why", "check", "init", "record"])
     p.add_argument("id", nargs="?", help="the issue, for `why`")
     p.add_argument("--entry", help="what the merge changed, for `record`")

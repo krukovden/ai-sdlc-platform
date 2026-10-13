@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-"""Project memory: what exists, why, and what was tried and rejected.
+"""Project memory on the board: a feature's own files, and the drift detector.
 
-The contract is IDE-76. Four files on two levels: the epic carries the feature
-registry and the project's Tried & Rejected; each feature card carries its own
-history and its own Tried & Rejected. Written only at merge — a PBI merged into
-the feature branch updates the feature's memory, a feature merged into `main`
-updates the project registry. Nothing merged means nothing recorded.
+The contract was IDE-76: four files on two levels, the epic carrying the
+feature registry and the project's Tried & Rejected, each feature card its own
+history and its own Tried & Rejected. IDE-147 (*Memory*) removed the epic's
+registry. Two registries need a rule for which one wins, and that rule is where
+drift starts, so there is one: **the product repository's `memory/index.md`**.
+
+What stays here:
+
+* **While a Feature is in flight**, its journal (`01 · History`) and its Tried
+  & Rejected are attachments on the Feature, so every agent sees them without
+  the repository. Their names are below, in `FEATURE_FILES`.
+* **When the feature merges into `main`**, engineering-catalog's
+  `memory-writer` moves the decisions that will outlive it, and the
+  rejections, into the repository's `memory/` — this platform hands them over
+  and writes nothing there itself.
+* The drift detector, for what it can still check without a registry: a card
+  the board calls finished with no commit behind it, and a hand-written summary
+  older than the code it describes.
 
 Two rules shape everything here.
 
@@ -20,120 +33,30 @@ actually happened once.
 """
 
 import importlib.util
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-REGISTRY_BLOCK = "idp-registry"
-SCHEMA_VERSION = "1.0"
-REQUIRED_FIELDS = ("name", "one_liner", "issue")
-
-# The registry answers "what can the platform do", so a feature that produced
-# rules rather than a capability does not belong in it — and must not be
-# reported as missing from it either. The board says which is which, by label,
-# because that is where a human can see and change the answer.
+# The registry answered "what can the platform do", so a feature that produced
+# rules rather than a capability was never asked about. The label still says
+# which cards are process work, and the detector still skips them out loud.
 DEFAULT_PROCESS_LABEL = "Process"
 
 ISSUE_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 
+# Where the registry lives now, and the one fix every refusal of the old one names.
+MEMORY_INDEX = "memory/index.md"
+REGISTRY_REMOVED = ("the feature registry on the epic is removed (IDE-147, Memory): the "
+                    f"product repository's {MEMORY_INDEX} is the registry, and two "
+                    "registries would need a rule for which one wins")
+REGISTRY_FIX = (f"read {MEMORY_INDEX} in the product repository (engineering-catalog's "
+                "`memory` skill); decisions reach it when a feature merges into main, "
+                "through engineering-catalog's memory-writer")
+
 
 class MemoryError_(Exception):
     """Raised with a message the caller turns into an exit code."""
-
-
-# ---------------------------------------------------------------------------
-# The registry block
-# ---------------------------------------------------------------------------
-
-def parse_registry(document_text):
-    """Pull the machine-readable registry out of the epic document.
-
-    The rendered table above it is for humans and is derived from this block;
-    when the two disagree the block wins, because it is the one a script can
-    check.
-    """
-    match = re.search(r"```" + REGISTRY_BLOCK + r"\s*\n(.*?)\n```",
-                      document_text or "", re.DOTALL)
-    if not match:
-        raise MemoryError_(
-            f"no ```{REGISTRY_BLOCK} block in the epic document. "
-            "Run `board.py memory init` to create one.")
-    try:
-        data = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        raise MemoryError_(f"the {REGISTRY_BLOCK} block is not valid JSON: {exc}")
-
-    data.setdefault("schema_version", SCHEMA_VERSION)
-    for key in ("features", "removed", "parked"):
-        data.setdefault(key, [])
-    return data
-
-
-def render_registry(registry):
-    body = json.dumps(registry, indent=2, ensure_ascii=False)
-    return f"```{REGISTRY_BLOCK}\n{body}\n```"
-
-
-def replace_registry(document_text, registry):
-    pattern = re.compile(r"```" + REGISTRY_BLOCK + r"\s*\n.*?\n```", re.DOTALL)
-    if not pattern.search(document_text or ""):
-        raise MemoryError_(f"no ```{REGISTRY_BLOCK} block to replace")
-    return pattern.sub(lambda _: render_registry(registry), document_text, count=1)
-
-
-def validate_entry(entry):
-    """Three mandatory fields, and never a default for a missing one.
-
-    A registry entry with an invented explanation is worse than no entry: it
-    reads as knowledge and is not. Missing means the merge stops.
-    """
-    missing = [f for f in REQUIRED_FIELDS if not str(entry.get(f, "")).strip()]
-    if missing:
-        raise MemoryError_(
-            f"registry entry {entry.get('name') or entry.get('issue') or '<unnamed>'} "
-            f"is missing: {', '.join(missing)}. No default is substituted.")
-    return entry
-
-
-def add_feature(registry, name, one_liner, issue, legacy=False):
-    entry = {"name": name, "one_liner": one_liner, "issue": issue}
-    if legacy:
-        entry["legacy"] = True
-    validate_entry(entry)
-
-    for existing in registry["features"]:
-        if existing["issue"] == issue:
-            existing.update(entry)
-            return registry
-    registry["features"].append(entry)
-    return registry
-
-
-def remove_feature(registry, issue, why_removed, replaced_by, recorded_at):
-    """A removed feature leaves the registry entirely and moves to Tried & Rejected.
-
-    Not flagged in place: the registry answers "what exists now", and a
-    graveyard mixed into it makes every read a filtering exercise.
-    """
-    match = next((f for f in registry["features"] if f["issue"] == issue), None)
-    if match is None:
-        raise MemoryError_(f"{issue} is not in the registry, so it cannot be removed from it")
-    if not str(why_removed).strip():
-        raise MemoryError_("a removal without a reason is an invitation to reintroduce it")
-
-    registry["features"] = [f for f in registry["features"] if f["issue"] != issue]
-    registry["removed"].append({
-        "id": issue.lower(),
-        "name": match["name"],
-        "issues": [issue],
-        "why_removed": why_removed,
-        "replaced_by": replaced_by,
-        "reuse_content": False,
-        "recorded_at": recorded_at,
-    })
-    return registry
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +93,6 @@ def commits_mentioning(repository, identifier, ref="origin/main"):
     if code != 0:
         raise MemoryError_(f"git log failed in {repository}: {err or 'unknown reason'}")
     return [line for line in out.splitlines() if line]
-
-
-def identifiers_on(repository, ref="origin/main"):
-    code, out, err = run_git(["log", ref, "--format=%s%n%b"], repository)
-    if code != 0:
-        raise MemoryError_(f"git log failed in {repository}: {err or 'unknown reason'}")
-    return set(ISSUE_PATTERN.findall(out))
 
 
 def repositories(profile):
@@ -279,47 +195,35 @@ def describe_stale(findings):
     return "\n".join(lines)
 
 
-def check_drift(registry, issues, profile, do_fetch=True):
-    """Three questions, all answered against the remote.
+def check_drift(issues, profile, do_fetch=True):
+    """What can be checked without a registry, answered against the remote.
 
-    1. Does every registry entry have code behind it — commits carrying its own
-       identifier, or one of its PBIs'?
-    2. Is every feature merged into `main` in the registry?
-    3. Does every card the board calls finished have commits behind it?
+    Does every card the board calls finished have commits behind it? That was
+    the third rule of IDE-128, the case that got past the registry's two: a
+    work item closed as Done whose code was on nobody's `main`. The registry's
+    own rules — an entry with no code behind it, a merged feature missing from
+    it — left with the registry; `memory/index.md` is engineering-catalog's to
+    check.
 
-    The third was added by IDE-128, which is the case that got past the first
-    two: a work item closed as Done whose code was on nobody's `main`. Rule 1
-    only looks at cards the registry names, and the registry names features;
-    rule 2 starts from the identifiers that appear in commit messages, so a card
-    with no commits at all is invisible to it by construction. Between them sat
-    every closed work item — which is most of what this project closes.
-
-    Reports all three. Fixes none: a detector that edits the thing it checks can
-    only ever agree with itself.
+    Reports. Fixes nothing: a detector that edits the thing it checks can only
+    ever agree with itself.
     """
-    parents = {i["identifier"]: i.get("parent") for i in issues}
     children = {}
-    for identifier, parent in parents.items():
-        if parent:
-            children.setdefault(parent, []).append(identifier)
+    for issue in issues:
+        if issue.get("parent"):
+            children.setdefault(issue["parent"], []).append(issue["identifier"])
 
     repos = repositories(profile)
     if do_fetch:
         for repo in repos:
             fetch(repo)
 
-    findings = {"unbacked": [], "unregistered": [], "unrecorded_removals": [],
-                "closed_without_commits": [], "process": [], "covered_by_children": {},
+    findings = {"closed_without_commits": [], "process": [],
                 "repositories": [str(r) for r in repos]}
-
     asked = {}
 
     def backed(identifiers):
-        """Do commits exist for any of these, in any repository this project spans?
-
-        Memoised: rules 1 and 3 ask about overlapping sets, and a `git log` per
-        card per repository per rule is paid for nothing.
-        """
+        """Do commits exist for any of these, in any repository this project spans?"""
         for repo in repos:
             for identifier in identifiers:
                 key = (str(repo), identifier)
@@ -329,91 +233,29 @@ def check_drift(registry, issues, profile, do_fetch=True):
                     return True
         return False
 
-    for entry in registry["features"]:
-        issue = entry["issue"]
-        if not backed([issue, *children.get(issue, [])]):
-            findings["unbacked"].append(entry)
-
-    registered = {f["issue"] for f in registry["features"]}
-    recorded_removed = {i for r in registry["removed"] for i in r.get("issues", [])}
     process_label = profile.get("process_label", DEFAULT_PROCESS_LABEL).casefold()
-
-    # 3. Closed work with nothing behind it. A card the board calls Done whose
+    # Closed work with nothing behind it. A card the board calls Done whose
     # identifier appears in no commit message is either work that never landed
     # or work that landed without saying so — and the two are indistinguishable
     # from here, which is why this reports rather than judges. A parent is
-    # satisfied by its children, as in rule 1: the identifier that carries the
-    # commits is the one that did the work. A process feature is skipped and the
-    # skip is stated: rules and documentation are closed on the board and land
-    # nowhere in git, and a detector that cried wolf on every one of them would
-    # be ignored by the time it was right.
+    # satisfied by its children: the identifier that carries the commits is the
+    # one that did the work. A process feature is skipped and the skip stated.
     for issue in issues:
         if issue.get("status_type") != "completed":
             continue
         identifier = issue["identifier"]
         if process_label in [l.casefold() for l in issue.get("labels") or []]:
-            findings["process"].append(identifier)   # deduplicated below
+            findings["process"].append(identifier)
             continue
         if not backed([identifier, *children.get(identifier, [])]):
             findings["closed_without_commits"].append(identifier)
 
-    mentioned = set()
-    for repo in repos:
-        mentioned |= identifiers_on(repo)
-
-    # A commit mentioning a card is not the same as the feature landing. The
-    # contract says memory is written at merge, so the question is about closed
-    # features: one whose work reached main and whose card is finished.
-    by_id = {i["identifier"]: i for i in issues}
-    for identifier in sorted(mentioned):
-        issue = by_id.get(identifier)
-        if issue is None:
-            continue                                  # not a card of this project
-        feature_id = issue.get("parent") or identifier
-        feature = by_id.get(feature_id)
-        if feature is None or feature.get("parent"):
-            continue                                  # not a top-level feature
-        labels = [l.casefold() for l in feature.get("labels") or []]
-        if process_label in labels:
-            findings["process"].append(feature_id)
-            continue                                  # rules, not a capability
-        # A feature is one unit of work, not necessarily one capability. The
-        # registry keys on the card a capability belongs to, and a feature that
-        # carried six of them has its six lines under six child cards. Rule 1
-        # above already descends to children; this one did not, and the first
-        # container feature to close was reported as a hole that was not there.
-        covered = sorted({feature_id, *children.get(feature_id, [])} & registered)
-        if feature["status_type"] == "completed" and not covered:
-            findings["unregistered"].append(feature_id)
-        elif covered and feature_id not in registered:
-            findings["covered_by_children"][feature_id] = covered
-        elif feature["status_type"] == "canceled" and feature_id not in recorded_removed:
-            findings["unrecorded_removals"].append(feature_id)
-
-    findings["unregistered"] = sorted(set(findings["unregistered"]))
-    findings["unrecorded_removals"] = sorted(set(findings["unrecorded_removals"]))
     findings["process"] = sorted(set(findings["process"]))
-
     return findings
 
 
 def describe_drift(findings):
     lines = []
-    if findings["unbacked"]:
-        lines.append("Registry entries with no commits behind them:")
-        for entry in findings["unbacked"]:
-            lines.append(f"  {entry['issue']:8} {entry['name']}")
-        lines.append("  Either the work never landed, or its commits omit the identifier.")
-    if findings["unregistered"]:
-        lines.append("Closed features whose work is on main, missing from the registry:")
-        for issue in findings["unregistered"]:
-            lines.append(f"  {issue}")
-        lines.append("  The next session cannot see these and will rebuild them.")
-    if findings["unrecorded_removals"]:
-        lines.append("Cancelled features with no entry under removed:")
-        for issue in findings["unrecorded_removals"]:
-            lines.append(f"  {issue}")
-        lines.append("  A removal without a recorded reason invites its own reintroduction.")
     if findings["closed_without_commits"]:
         lines.append("Closed cards whose identifier is in no commit message:")
         for issue in findings["closed_without_commits"]:
@@ -421,69 +263,20 @@ def describe_drift(findings):
         lines.append("  Either the work never landed, or it landed without the "
                      "identifier. Both leave the next session reading a card that "
                      "promises code it cannot find.")
-    # Stated, not silent. A detector that quietly drops things from its own
-    # scope, or quietly accepts them by a route other than the obvious one, is
-    # indistinguishable from one that missed them.
     notes = []
-    for issue, covered in sorted(findings["covered_by_children"].items()):
-        notes.append(f"Covered by its children, not by a line of its own: "
-                     f"{issue} — {', '.join(covered)}")
     if findings["process"]:
-        skipped = ", ".join(findings["process"])
-        notes.append(f"Skipped as process features, not capabilities: {skipped}")
+        notes.append("Skipped as process features, not capabilities: "
+                     + ", ".join(findings["process"]))
+    notes.append(f"The registry is {MEMORY_INDEX} in the product repository; "
+                 "engineering-catalog checks it.")
 
     if not lines:
         repos = ", ".join(findings["repositories"])
-        clean = f"No drift. Checked against the remote in: {repos}"
-        return "\n".join([clean, *notes]) if notes else clean
+        return "\n".join([f"No drift. Checked against the remote in: {repos}", *notes])
     lines.extend(notes)
     lines.append("")
-    lines.append("Nothing was changed. Fix the registry or the commits, then re-run.")
+    lines.append("Nothing was changed. Fix the commits or the cards, then re-run.")
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# The compact core, and the answer to "why"
-# ---------------------------------------------------------------------------
-
-def core(registry):
-    """What a session needs at startup: one line per capability, nothing more."""
-    lines = [f"Project memory · schema {registry.get('schema_version', SCHEMA_VERSION)}", ""]
-    if registry["features"]:
-        lines.append("Lives now:")
-        for entry in sorted(registry["features"], key=lambda e: e["name"]):
-            flag = " (legacy)" if entry.get("legacy") else ""
-            lines.append(f"  {entry['issue']:8} {entry['name']}{flag} — {entry['one_liner']}")
-    else:
-        lines.append("Lives now: nothing registered yet.")
-
-    if registry["removed"]:
-        lines.append("")
-        lines.append("Tried and rejected — read before proposing again:")
-        for entry in registry["removed"]:
-            lines.append(f"  {entry['name']} — {entry['why_removed']}")
-    return "\n".join(lines)
-
-
-def seed(issues, recorded_at):
-    """Build a first registry for a project that already has features.
-
-    Every entry is marked `legacy`: it was written from what the board says
-    today, not from a decision anyone made at the time. The flag is the honest
-    label for that, and it tells the next reader how much to trust the line.
-    """
-    registry = {"schema_version": SCHEMA_VERSION, "features": [], "removed": [],
-                "parked": [], "seeded_at": recorded_at}
-    for issue in issues:
-        if issue.get("parent"):
-            continue                       # one line per capability, not per task
-        title = issue["title"]
-        add_feature(registry,
-                    name=re.sub(r"^\[[^\]]+\]\s*", "", title).strip() or title,
-                    one_liner="recorded from the board at init; not yet reviewed",
-                    issue=issue["identifier"],
-                    legacy=True)
-    return registry
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +300,12 @@ def seed(issues, recorded_at):
 
 EPIC_FILES = {
     "hub":            ("00", "HUB", "read this before any work"),
-    "registry":       ("01", "Feature Registry", "what exists now"),
     "tried_rejected": ("02", "Tried & Rejected", "do not re-litigate"),
 }
+
+# Roles that were removed, each with why and where its content lives now. `01`
+# at epic level stays unassigned, so an old link never lands on a new meaning.
+REMOVED_ROLES = {"registry": (REGISTRY_REMOVED, REGISTRY_FIX)}
 
 FEATURE_FILES = {
     "adr":            ("00", "ADR", "how we build it and what it costs"),
@@ -530,7 +326,15 @@ def _compose(table, role, prefix=None):
 
 def epic_file(role):
     """The name of one of the project's own memory files."""
+    if role in REMOVED_ROLES:
+        message, fix = REMOVED_ROLES[role]
+        raise MemoryError_(f"{message}.\nFIX: {fix}")
     return _compose(EPIC_FILES, role)
+
+
+def registry_removed():
+    """The refusal every former registry command answers with: (message, fix)."""
+    return REGISTRY_REMOVED, REGISTRY_FIX
 
 
 def feature_file(identifier, role):
