@@ -828,6 +828,25 @@ lock.release()
         self.assertEqual(caught.exception.code, EXIT.REFUSED)
         self.assertEqual(opened, [])
 
+    def test_cmd_stop_without_a_run_id_targets_dead_local_runner_ids_too(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        run_id = run.lease_run_id(None, home)
+        run.agent_mode.Presence(home, run_id).announce(pid=999999999)
+        board = new_board(tags.DESIGN, tags.owner_tag(run_id))
+        args = mock.Mock(run_id=None)
+        design_home = mock.Mock()
+        design_home.HOME = home
+        profile = dict(PROFILE, project_id="project-1")
+        with mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board",
+                                  return_value=(profile, None, board)), \
+                mock.patch.object(run.sys, "exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_stop(args)
+        self.assertIsNone(caught.exception.code)
+        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, f"idp:paused:{run_id}"])
 
 
 if __name__ == "__main__":

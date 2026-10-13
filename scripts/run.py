@@ -977,7 +977,7 @@ def cmd_stop(args):
     profile, _, board = board_cli.open_board()
     home = load_design().HOME
     runs = [args.run_id] if args.run_id else (
-        agent_mode.Presence.live_runs(home) or [tags.current_run_id()])
+        agent_mode.Presence.known_runs(home) or [tags.current_run_id()])
     sys.exit(agent_mode.stop(board, home, runs, project_cards(board, profile),
                              worktrees_home(os.getcwd()).parent,
                              handoff=phase3.common.handoff_module(),

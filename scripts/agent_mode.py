@@ -360,6 +360,13 @@ class Presence:
                 runs.append(path.stem)
         return runs
 
+    @staticmethod
+    def known_runs(home):
+        directory = Path(home) / "agent"
+        if not directory.exists():
+            return []
+        runs = {path.stem for glob in ("*.pid", "*.lock") for path in directory.glob(glob)}
+        return sorted(runs, key=natural)
 
 
 class RunLock:
