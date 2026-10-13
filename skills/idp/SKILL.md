@@ -4,10 +4,11 @@ description: Only when invoked through /idp to continue one Feature from its cur
 disable-model-invocation: true
 ---
 
-Run the whole pipeline for the Feature id in the user's message after `/idp`.
+Run the whole pipeline for the Feature id in the user's message.
 
-1. Resolve the repository root with `git rev-parse --show-toplevel`.
-2. Use `<root>/.local/bin/idp` when it exists, otherwise `~/.local/bin/idp`.
-3. Run `python3 <launcher> pipeline <feature-id>`.
+1. Interpret the remaining text after the explicit skill invocation as the
+   Feature id.
+2. Run `python3 "<SKILL_DIR>/../../scripts/invoke_idp.py" --skill-dir "<SKILL_DIR>" pipeline <feature-id>`,
+   replacing `<SKILL_DIR>` with this skill's directory.
 
 Do not call the board directly and do not substitute another flow.

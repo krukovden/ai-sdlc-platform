@@ -26,9 +26,11 @@ listed in [docs/install.md](docs/install.md).
 
 ## Commands
 
-The user-facing entry points are explicit:
+The user-facing entry points are explicit. Claude Code exposes them as slash
+commands; Copilot and Codex receive wrapper skills that map to the same six
+flows through each host's own skill picker or `$skill` syntax.
 
-| Slash command | What it runs |
+| Entry point | What it runs |
 | --- | --- |
 | `/idp <IDE-nn>` | Continue the Feature from its current phase to the next human gate. |
 | `/idp-design <IDE-nn>` | Run phase 2 only and stop at `idp:design-review`. |

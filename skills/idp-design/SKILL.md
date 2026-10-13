@@ -4,10 +4,11 @@ description: Only when invoked through /idp-design to run phase 2 for one Featur
 disable-model-invocation: true
 ---
 
-Run only phase 2 for the Feature id in the user's message after `/idp-design`.
+Run only phase 2 for the Feature id in the user's message.
 
-1. Resolve the repository root with `git rev-parse --show-toplevel`.
-2. Use `<root>/.local/bin/idp` when it exists, otherwise `~/.local/bin/idp`.
-3. Run `python3 <launcher> design <feature-id>`.
+1. Interpret the remaining text after the explicit skill invocation as the
+   Feature id.
+2. Run `python3 "<SKILL_DIR>/../../scripts/invoke_idp.py" --skill-dir "<SKILL_DIR>" design <feature-id>`,
+   replacing `<SKILL_DIR>` with this skill's directory.
 
 Do not substitute another route.

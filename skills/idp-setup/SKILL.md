@@ -6,9 +6,8 @@ disable-model-invocation: true
 
 Create or refresh the repository's `.idp/profile.json`.
 
-1. Resolve the repository root with `git rev-parse --show-toplevel`.
-2. Use `<root>/.local/bin/idp` when it exists, otherwise `~/.local/bin/idp`.
-3. Run `python3 <launcher> setup`.
+1. Run `python3 "<SKILL_DIR>/../../scripts/invoke_idp.py" --skill-dir "<SKILL_DIR>" setup`,
+   replacing `<SKILL_DIR>` with this skill's directory.
 
 If the repository still needs a Linear team key, ask once and then rerun the
 setup command with that answer.

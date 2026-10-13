@@ -22,9 +22,10 @@ The Copilot layout follows engineering-catalog's verified CLI adapter. Orca uses
 
 ## Commands
 
-Every install ships the same six explicit entry points:
+Every install ships the same six explicit entry points, but each host exposes
+them through its own native surface:
 
-| Command | Meaning |
+| Entry point | Meaning |
 | --- | --- |
 | `/idp <IDE-nn>` | Continue the Feature from its current phase to the next human gate. |
 | `/idp-design <IDE-nn>` | Run phase 2 only and stop at design review. |
@@ -37,9 +38,9 @@ How each host gets them was checked on this machine before shipping:
 
 | Host | Verified with | What is installed |
 | --- | --- | --- |
-| Claude Code | `claude --help`, `claude plugin --help`, `claude plugin validate --help`, `ls ~/.claude/commands` | Real command files in `~/.claude/commands/` or `.claude/commands/`, plus plugin `commands/*.md` for marketplace validation and plugin installs. |
-| GitHub Copilot CLI | `copilot help`, `copilot help commands`, `copilot plugin --help`, `ls ~/.copilot ~/.copilot/skills ~/.copilot/agents` | No separate custom-command directory was exposed; explicit `/idp…` entry points ship as skills in `~/.copilot/skills/` or `.github/skills/`. |
-| Orca / Codex / shared agents | `ls ~/.agents` | No command directory exists there either; explicit `/idp…` entry points ship as skills in `~/.agents/skills/` or `.agents/skills/`. |
+| Claude Code | `claude --help`, `claude plugin --help`, `claude plugin validate --help`, `ls ~/.claude/commands` | Real slash commands in `~/.claude/commands/` or `.claude/commands/`, plus plugin `commands/*.md`. Marketplace-only installs run the bundled payload through `${CLAUDE_PLUGIN_ROOT}/scripts/invoke_idp.py`; CLI installs keep using the `idp` launcher. |
+| GitHub Copilot CLI | `copilot help`, `copilot help commands`, `copilot plugin --help`, `ls ~/.copilot ~/.copilot/skills ~/.copilot/agents` | No separate custom-command directory was exposed; the six entry points ship as explicit wrapper skills in `~/.copilot/skills/` or `.github/skills/`, selected through Copilot's skill UI. |
+| Orca / Codex / shared agents | `ls ~/.agents`, Codex skill docs | No command directory exists there either; the six entry points ship as wrapper skills in `~/.agents/skills/` or `.agents/skills/`. Codex uses its native explicit skill syntax (`$idp`, `$idp-design`, …) or `/skills`, and each explicit-only skill carries `agents/openai.yaml` with `allow_implicit_invocation: false`. |
 
 The CLI copies registered skills, shared scripts, schemas, templates, registry and lint data into `~/.idp/platform/<version>/`. Skill links point into that tree so Python's resolved `__file__` still finds the shared modules. `~/.local/bin/idp` links to its `scripts/board.py`; add `~/.local/bin` to PATH. Local installs use the same paths under the current project; their launcher is `<project>/.local/bin/idp`. Run commands from your product repository: profile resolution still walks up from the working directory for `.idp/profile.json`.
 

@@ -4,10 +4,11 @@ description: Only when invoked through /idp-develop to run phase 3 for one Featu
 disable-model-invocation: true
 ---
 
-Run only phase 3 for the Feature id in the user's message after `/idp-develop`.
+Run only phase 3 for the Feature id in the user's message.
 
-1. Resolve the repository root with `git rev-parse --show-toplevel`.
-2. Use `<root>/.local/bin/idp` when it exists, otherwise `~/.local/bin/idp`.
-3. Run `python3 <launcher> develop <feature-id>`.
+1. Interpret the remaining text after the explicit skill invocation as the
+   Feature id.
+2. Run `python3 "<SKILL_DIR>/../../scripts/invoke_idp.py" --skill-dir "<SKILL_DIR>" develop <feature-id>`,
+   replacing `<SKILL_DIR>` with this skill's directory.
 
 Do not substitute another route.
