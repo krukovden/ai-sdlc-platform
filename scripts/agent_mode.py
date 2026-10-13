@@ -42,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -82,7 +83,7 @@ You run in agent mode: nobody is at the terminal (IDE-147, run.py --agent).
 * Where the skill would ask a human to approve something in this session, decide
   conservatively — the reversible, smaller, already-documented option — and record
   every such call before you continue:
-    python3 {run_py} decide --context "<what forced the call>" --decision "<what you chose>" \\
+    python3 "{run_py}" decide --context "<what forced the call>" --decision "<what you chose>" \\
         --rationale "<why>" --alternative "<what you did not choose>" --load-bearing yes|no
   Load-bearing means two readings would touch different files or components.
 * Never approve a human gate. The design review and the merge into main are a human's.
@@ -150,16 +151,10 @@ def write_decision(worktree, entry):
     return path
 
 
-def read_decisions(worktree):
-    path = decisions_path(worktree)
-    if not path.exists():
-        return []
+def as_entries(records):
+    """Valid decision entries from parsed records; anything malformed is dropped."""
     found = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for data in records:
         if isinstance(data, dict):
             try:
                 found.append(decision_entry(
@@ -172,6 +167,21 @@ def read_decisions(worktree):
     return found
 
 
+def parse_lines(path):
+    records = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
+def read_decisions(worktree):
+    path = decisions_path(worktree)
+    return as_entries(parse_lines(path)) if path.exists() else []
+
+
 def feature_of(board, card):
     """The Feature a card belongs to: itself, or a PBI's parent."""
     issue = board.get_issue(card)
@@ -182,17 +192,30 @@ class AgentExecutor:
     """The machine's executor, with agent mode added around every session.
 
     The prompt gains the agent-mode rules, the session gets `IDP_AGENT_MODE=1`,
-    and whatever it recorded with `run.py decide` is posted on the Feature after
-    it ends. Posted, then the file is removed: a crash in between posts again,
-    and the dedupe key makes that the same comment. Everything else is the
-    wrapped executor's, attribute for attribute.
+    and whatever it records with `run.py decide` reaches the board while it is
+    still running: the runner — the only board writer — collects the session's
+    file every `interval` seconds and posts each decision on the Feature, and
+    once more when the session ends. No decision lives only on one disk for
+    longer than that:
+
+    * a file being posted is first renamed, so a decision appended meanwhile
+      starts a new file instead of being lost; a post that fails leaves its
+      file for the next collection;
+    * a session that ends at the cliff carries what is still unposted inside
+      the handoff.md it commits (`scripts/handoff.py`), and the next session
+      on that branch, on any machine, posts it before it starts.
+
+    Every post is keyed on the decision's content, so posting twice is once.
+    Everything else is the wrapped executor's, attribute for attribute.
     """
 
-    def __init__(self, inner, board, run_id, run_py):
+    def __init__(self, inner, board, run_id, run_py, interval=10):
         self.inner = inner
         self.board = board
         self.run_id = run_id
         self.run_py = run_py
+        self.interval = interval
+        self._lock = threading.Lock()
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -200,20 +223,59 @@ class AgentExecutor:
     def run_role(self, role, card, worktree, prompt, context=None, **kwargs):
         context = dict(context or {}, IDP_AGENT_MODE="1")
         prompt = prompt + AGENT_PROMPT.format(run_py=self.run_py)
+        self.replay(card, worktree)
+        self.collect(card, worktree)
+        done = threading.Event()
+
+        def watch():
+            while not done.wait(self.interval):
+                self.collect(card, worktree)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
         try:
             return self.inner.run_role(role, card, worktree, prompt, context=context,
                                        **kwargs)
         finally:
-            self.flush(card, worktree)
+            done.set()
+            watcher.join(timeout=5)
+            self.collect(card, worktree)
 
-    def flush(self, card, worktree):
-        entries = read_decisions(worktree)
-        if not entries:
-            return
+    def post(self, card, entries):
         feature = feature_of(self.board, card)
         for entry in entries:
             post_decision(self.board, feature, entry, self.run_id)
-        decisions_path(worktree).unlink()
+
+    def collect(self, card, worktree):
+        """Post what the session recorded so far. Returns how many were posted."""
+        with self._lock:
+            path = decisions_path(worktree)
+            posted = 0
+            try:
+                if path.exists():
+                    os.replace(path, path.with_name(f"{path.name}.posting-{time.time_ns()}"))
+                for pending in sorted(path.parent.glob(f"{path.name}.posting-*")):
+                    entries = as_entries(parse_lines(pending))
+                    self.post(card, entries)
+                    pending.unlink()
+                    posted += len(entries)
+            except Exception as exc:                    # noqa: BLE001 - kept for next time
+                print(f"{card}: decisions not posted yet ({exc}); kept for the next "
+                      "collection", file=sys.stderr)
+            return posted
+
+    def replay(self, card, worktree):
+        """Post the decisions a handoff.md on this branch still carries."""
+        target = Path(worktree) / handoff_script.HANDOFF_FILE
+        if not target.exists():
+            return 0
+        entries = as_entries(handoff_script.read_decisions(target.read_text(encoding="utf-8")))
+        try:
+            self.post(card, entries)
+        except Exception as exc:                        # noqa: BLE001 - the file stays
+            print(f"{card}: decisions in handoff.md not posted yet ({exc})", file=sys.stderr)
+            return 0
+        return len(entries)
 
 
 # ---------------------------------------------------------------------------

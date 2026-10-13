@@ -250,6 +250,22 @@ class AgentLoopTests(AgentTestCase):
         loop.run(passes=1)
         self.assertIsNone(loop.executor)
 
+    def test_every_pass_honours_a_pause_request_on_a_pbi_branch(self):
+        board = new_board(tags.DEVELOPMENT, "idp:owner:run-9")
+        lease.heartbeat(board, FEATURE, "run-9", 1)
+        board.add_card("7", tags_=["idp:owner:run-9/w1"], kind="pbi", parent=FEATURE)
+        lease.post_event(board, "7", lease.CLAIM, "claim:7", branch="pbi/7-a/g1")
+        handoff = run.phase3.common.handoff_module()
+        text = handoff.render("pbi/7-a/g1", "#7", "rate_limit", {"sha": "f" * 40,
+                                                                 "subject": "wip"}, [], None,
+                              pause_request={"card": "7", "branch": "pbi/7-a/g1",
+                                             "run": None, "reason": "rate_limit"})
+        loop = self.loop(board, development=Refusing)
+        loop.read_branch = lambda branch: (text, True)
+        loop.run(passes=1)
+        self.assertEqual(board.cards["7"]["tags"], ["idp:paused:run-9"])
+        self.assertIn("idp:owner:run-9", board.cards[FEATURE]["tags"])   # a live Feature owner
+
     def test_serve_narrows_the_phases(self):
         board = new_board(tags.DEVELOPMENT)
         self.loop(board, development=Refusing, serve=["design"]).run(passes=2)
@@ -473,6 +489,69 @@ class TakeoverTests(AgentTestCase):
 
 
 class DecisionJournalTests(AgentTestCase):
+
+    def entry(self, text="one JSON file per feature"):
+        return agent_mode.decision_entry("which store", text, "smaller", "a database", True)
+
+    def wrapped(self, board, step, interval=10):
+        inner = ScriptedExecutor(step)
+        return agent_mode.AgentExecutor(inner, board, "run-1", "/a path/with spaces/run.py",
+                                        interval=interval)
+
+    def test_a_decision_reaches_the_board_while_the_session_still_runs(self):
+        board = new_board()
+        seen = {}
+
+        def step(role, card, worktree, prompt, context):
+            seen["prompt"] = prompt
+            agent_mode.write_decision(worktree, self.entry())
+            for _ in range(500):
+                if decisions(board):
+                    seen["during"] = True
+                    break
+                __import__("time").sleep(0.01)
+            return EXIT.DONE
+
+        wt = self.worktree_for(FEATURE, "design", "x")
+        self.wrapped(board, step, interval=0.01).run_role("design", FEATURE, wt, "p")
+        self.assertTrue(seen.get("during"))
+        self.assertEqual(len(decisions(board)), 1)
+        self.assertIn('python3 "/a path/with spaces/run.py" decide', seen["prompt"])
+
+    def test_a_post_that_fails_keeps_the_decision_for_the_next_collection(self):
+        board = new_board()
+        wt = self.worktree_for(FEATURE, "design", "x")
+        executor = self.wrapped(board, lambda *a: EXIT.DONE)
+        agent_mode.write_decision(wt, self.entry())
+        with mock.patch.object(board, "add_comment", side_effect=OSError("board down")), \
+                mock.patch("sys.stderr", io.StringIO()):
+            self.assertEqual(executor.collect(FEATURE, wt), 0)
+        self.assertEqual(decisions(board), [])
+        self.assertTrue(list((wt / ".idp").glob("decisions.jsonl.posting-*")))
+        agent_mode.write_decision(wt, self.entry("a second call"))
+        self.assertEqual(executor.collect(FEATURE, wt), 2)
+        self.assertEqual(len(decisions(board)), 2)
+        self.assertEqual(list((wt / ".idp").glob("decisions.jsonl*")), [])
+
+    def test_decisions_a_handoff_carried_are_posted_before_the_next_session(self):
+        board = new_board()
+        handoff = run.phase3.common.handoff_module()
+        wt = self.worktree_for(FEATURE, "design", "x")
+        line = __import__("json").dumps(self.entry(), sort_keys=True)
+        (wt / "handoff.md").write_text(handoff.render(
+            "pbi/7-a/g1", "#7", "rate_limit", {"sha": "f" * 40, "subject": "wip"}, [], None,
+            decisions=[line]), encoding="utf-8")
+        before = {}
+
+        def step(*_):
+            before["posted"] = len(decisions(board))
+            return EXIT.DONE
+
+        self.wrapped(board, step).run_role("design", FEATURE, wt, "p")
+        self.assertEqual(before["posted"], 1)
+        # The same decision posted from a file as well is still one comment.
+        agent_mode.post_decision(board, FEATURE, self.entry(), "run-1")
+        self.assertEqual(len(decisions(board)), 1)
 
     def test_decide_writes_where_the_session_reports(self):
         worktree = Path(self.tmp.name) / "wt"

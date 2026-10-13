@@ -253,6 +253,15 @@ class LayerTwoTests(GitTestCase):
                          owner=f"{run}/w1", generation=1, branch=self.pbi_branch)
         return board, identifier
 
+    def test_unposted_decisions_travel_in_the_committed_handoff(self):
+        self.branch("pbi/7-store/g1")
+        entry = agent_mode.decision_entry("which store", "one file", "smaller", "a db", True)
+        agent_mode.write_decision(self.repo, entry)
+        cliff.run("claude", None, self.stop_failure(), self.env)
+        text = self.remote_file("pbi/7-store/g1", "handoff.md")
+        self.assertEqual(agent_mode.as_entries(handoff_script.read_decisions(text)), [entry])
+        self.assertIsNone(self.remote_file("pbi/7-store/g1", ".idp/decisions.jsonl"))
+
     def test_a_handoff_the_model_wrote_is_kept_with_the_facts_under_it(self):
         self.branch("pbi/7-store/g1")
         (self.repo / "handoff.md").write_text("# Where I stopped\n\nHalf of the index.\n",
