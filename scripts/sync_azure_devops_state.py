@@ -335,8 +335,19 @@ def merge_acceptance_criteria(description, rendered):
     body = html_to_text(description or "").strip()
     if not criteria:
         return body
-    lines = [line.strip() for line in criteria.splitlines() if line.strip()]
-    section = "\n".join(["## Acceptance Criteria", "", *lines])
+    items = [line.strip() for line in criteria.splitlines() if line.strip()]
+    body_lines = body.splitlines()
+    headings = set(_ac_headings())
+    for index, line in enumerate(body_lines):
+        stripped = line.strip()
+        if stripped.startswith("#") and stripped.lstrip("#").strip().casefold() in headings:
+            prefix = body_lines[:index + 1]
+            suffix = body_lines[index + 1:]
+            merged = prefix + [""] + [f"- {item}" for item in items]
+            if suffix:
+                merged += [""] + suffix
+            return "\n".join(merged).strip()
+    section = "\n".join(["## Acceptance Criteria", "", *[f"- {item}" for item in items]])
     return "\n\n".join(part for part in (body, section) if part).strip()
 
 
@@ -767,18 +778,20 @@ def without_acceptance_criteria(text):
     The section runs to the next heading of the same or a higher level, so a
     `###` subsection under it goes with it.
     """
-    kept, skipping, level = [], False, 0
+    kept, collecting, level = [], False, 0
     for line in (text or "").split("\n"):
         stripped = line.strip()
         if stripped.startswith("#"):
             here = len(stripped) - len(stripped.lstrip("#"))
-            if skipping and here <= level:
-                skipping = False
-            if not skipping and stripped.lstrip("#").strip().casefold() in _ac_headings():
-                skipping, level = True, here
+            if collecting and here <= level:
+                collecting = False
+            if stripped.lstrip("#").strip().casefold() in _ac_headings():
+                collecting, level = True, here
+                kept.append(line)
                 continue
-        if not skipping:
-            kept.append(line)
+        if collecting and stripped[:2] in ("* ", "- "):
+            continue
+        kept.append(line)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n") + "\n"
 
 
@@ -1250,28 +1263,32 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         }
 
     def _link_parent(self, child, parent):
-        self.guard.ensure_known(child, "reparent")
-        self.guard.ensure_known(parent, "link to as a parent")
-        self._az(["boards", "work-item", "relation", "add",
-                  "--id", str(_as_id(child)),
-                  "--relation-type", "parent",
-                  "--target-id", str(_as_id(parent)),
-                  "--org", self.organization, "-o", "json"])
+        work_item_id, item = self._guard_item(child, "reparent", expand="relations")
+        self._guard_item(parent, "link to as a parent")
+        patch = [{"op": "test", "path": "/rev", "value": item.get("rev")},
+                 {"op": "add", "path": "/relations/-",
+                  "value": {"rel": "System.LinkTypes.Hierarchy-Reverse",
+                            "url": f"{self.organization}/_apis/wit/workItems/{_as_id(parent)}"}}]
+        answer = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
+                            body=json.dumps(patch).encode("utf-8"),
+                            content_type="application/json-patch+json", conflict=True)
+        if answer is CONFLICT:
+            fail(EXIT.INVALID,
+                 f"work item {work_item_id} changed while its parent link was being written",
+                 fix="read the work item again and retry the parent link")
 
     def update_issue(self, identifier, title=None, body=None, status=None, parent=None):
         if not (title or status or body or parent):
             fail(EXIT.INVALID, "nothing to update",
                  fix="pass at least one of --title, --status, --body or --parent")
-        work_item_id, _ = self._guard_item(identifier, "update")
-        args = ["boards", "work-item", "update", "--id", work_item_id,
-                "--org", self.organization, "-o", "json"]
+        work_item_id, item = self._guard_item(identifier, "update")
         fields = {}
 
         if title:
             title = self.guard.prefixed(title)
-            args += ["--title", title]
+            fields["System.Title"] = title
         if status:
-            args += ["--state", status]
+            fields["System.State"] = status
         if body:
             criteria = acceptance_criteria(body)
             # The criteria go in the field this board has for them, and are cut
@@ -1284,12 +1301,19 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                 fields["Microsoft.VSTS.Common.AcceptanceCriteria"] = \
                     render_acceptance_criteria(criteria)
         if fields:
-            args.append("--fields")
-            args.extend(f"{key}={value}" for key, value in fields.items())
-
-        updated = None
-        if title or status or fields:
-            updated = self._az(args)
+            patch = [{"op": "test", "path": "/rev", "value": item.get("rev")}]
+            patch.extend({"op": "replace", "path": f"/fields/{key}", "value": value}
+                         for key, value in fields.items())
+            updated = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
+                                 body=json.dumps(patch).encode("utf-8"),
+                                 content_type="application/json-patch+json",
+                                 conflict=True)
+            if updated is CONFLICT:
+                fail(EXIT.INVALID,
+                     f"work item {work_item_id} changed while it was being updated",
+                     fix="read the work item again and retry the update")
+        else:
+            updated = None
         if parent:
             self.guard.ensure_known(parent, "link to as a parent")
             self._link_parent(work_item_id, parent)
@@ -1515,6 +1539,10 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                for row in self.query(f"[System.TeamProject] = {_literal(project)}",
                                      columns=["System.Id"], project=project)]
         ids = [i for i in ids if i and i != str(epic)]
+        if self.guard.active():
+            for identifier in ids:
+                documents.extend(self._attachments_of(identifier))
+            return documents
         if len(ids) > BATCH_LIMIT:
             # Say so rather than returning a short list that looks complete.
             # A caller deciding "this document does not exist yet" from a

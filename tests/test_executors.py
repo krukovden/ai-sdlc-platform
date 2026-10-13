@@ -243,6 +243,20 @@ class EnvironmentTests(ScriptTestCase):
         self.assertNotIn("copilot", text)
         self.assertEqual(text.count("******"), 2)
 
+    def test_command_argv_switches_user_only_when_configured(self):
+        wrapped = executors.environment.command_argv(
+            ["copilot", "-p", "hi"], run_as="agent", current="idp")
+        self.assertEqual(wrapped[:6],
+                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent", "--"])
+        plain = executors.environment.command_argv(
+            ["copilot", "-p", "hi"], run_as=None, current="idp")
+        self.assertEqual(plain, ["copilot", "-p", "hi"])
+
+    def test_command_argv_skips_the_wrapper_when_already_that_user(self):
+        argv = executors.environment.command_argv(
+            ["python3", "-m", "calc"], run_as="agent", current="agent")
+        self.assertEqual(argv, ["python3", "-m", "calc"])
+
     def test_path_is_not_mistaken_for_a_pat(self):
         self.assertFalse(executors.environment.denied("PATH"))
 

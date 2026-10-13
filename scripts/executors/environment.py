@@ -20,6 +20,9 @@ anything that says where a token file is. A variable that is both allowed and
 denied is denied.
 """
 
+import base64
+import os
+import pwd
 import re
 
 BASE = frozenset({
@@ -94,6 +97,8 @@ def secret_values(source):
             text = str(value or "")
             if text:
                 values.add(text)
+                if name == "AZURE_DEVOPS_EXT_PAT":
+                    values.add(base64.b64encode(f":{text}".encode("utf-8")).decode("ascii"))
     return sorted(values, key=len, reverse=True)
 
 
@@ -159,3 +164,28 @@ def witness_env(source, extra=None):
         if not denied_for_witness(name):
             env[name] = str(value)
     return env
+
+
+def current_user():
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return None
+
+
+def command_argv(argv, run_as=None, current=None, runuser="/usr/sbin/runuser", sudo="sudo"):
+    """`argv`, or a user-switch wrapper around it when `run_as` is configured.
+
+    The platform only switches uid when the profile asks for it. When the current
+    user already is `run_as`, nothing is wrapped.
+    """
+    user = str(run_as or "").strip()
+    command = [str(part) for part in argv]
+    if not user:
+        return command
+    holder = current if current is not None else current_user()
+    if holder == user:
+        return command
+    prefix = [runuser, "-u", user, "--"] if holder == "root" else \
+        [sudo, "-n", runuser, "-u", user, "--"]
+    return prefix + command

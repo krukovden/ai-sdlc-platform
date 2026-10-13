@@ -15,6 +15,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -1550,6 +1551,7 @@ class LocalAdoWorld:
         self.repo = self.root / "calculator"
         self.verify = self.root / "verify"
         self.git_env = dict(GIT_ENV, PATH=os.environ.get("PATH", ""))
+        self.run_as = None
         self._make_remote()
 
     def _make_remote(self):
@@ -1583,14 +1585,15 @@ class LocalAdoWorld:
         return self.verify
 
     def run_command(self, branch, *args, expect=0):
+        env = run.executors.environment.witness_env(os.environ)
         answer = subprocess.run(
-            list(args),
+            run.executors.environment.command_argv(list(args), run_as=self.run_as),
             cwd=self.verify_checkout(branch),
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
             timeout=VERIFY_TIMEOUT_SECONDS,
-            env=run.executors.environment.witness_env(os.environ),
+            env=env,
         )
         if answer.returncode != expect:
             raise AdoScenarioFailure(
@@ -1620,7 +1623,8 @@ class LocalAdoWorld:
                 )
         for expression in ("4/0", "", "   ", "2+*"):
             answer = subprocess.run(
-                ["python3", "-m", "calc", expression],
+                run.executors.environment.command_argv(
+                    ["python3", "-m", "calc", expression], run_as=self.run_as),
                 cwd=self.verify_checkout(branch),
                 capture_output=True,
                 text=True,
@@ -1635,13 +1639,18 @@ class LocalAdoWorld:
 
     def verify_all(self, branch, *, modulo=False):
         failures = []
-        for check in (
-                lambda: self.verify_feature_tests(branch),
-                lambda: self.verify_calculator(branch, modulo=modulo)):
+        commands = [
+            ("python3 -m unittest discover -s tests",
+             lambda: self.verify_feature_tests(branch)),
+            ("python3 -m calc checks",
+             lambda: self.verify_calculator(branch, modulo=modulo)),
+        ]
+        for command, check in commands:
             try:
                 check()
             except AdoScenarioFailure as exc:
-                failures.append(str(exc))
+                failures.append({"command": command, "detail": str(exc),
+                                 "timeout": VERIFY_TIMEOUT_SECONDS})
         return failures
 
 
@@ -1750,6 +1759,7 @@ class AdoScenarioRunner:
             "executors": {
                 "backend": "subprocess",
                 "timeout_seconds": ADO_SESSION_SECONDS,
+                "run_as": "agent",
                 "roles": {
                     "design": ["copilot:gemini-3.8-flash"],
                     "worker": ["copilot:gemini-3.8-flash"],
@@ -1760,6 +1770,7 @@ class AdoScenarioRunner:
             },
             "development": {
                 "reconcile": False,
+                "run_as": "agent",
                 "feature_pr": "branch-only",
                 "integration": {
                     "test": "python3 -m unittest discover -s tests",
@@ -1789,18 +1800,28 @@ class AdoScenarioRunner:
         started = time.monotonic()
         merged = dict(os.environ)
         merged.update(env or {})
-        answer = None
         try:
-            answer = subprocess.run(
+            process = subprocess.Popen(
                 argv,
                 cwd=str(cwd),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 stdin=subprocess.DEVNULL,
                 env=merged,
-                timeout=timeout,
+                start_new_session=True,
             )
+            stdout, stderr = process.communicate(timeout=timeout)
+            answer = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
         except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, UnboundLocalError):
+                pass
+            if 'process' in locals():
+                stdout, stderr = process.communicate()
+                exc.stdout = stdout
+                exc.stderr = stderr
             duration = time.monotonic() - started
             self.log.write(f"timeout after {duration:.1f}s")
             self.problem(title, [f"Timed out after {duration:.1f}s.",
@@ -1969,6 +1990,7 @@ class AdoScenarioRunner:
             "blocks": events["blocks"],
         }
         self.results.append(item)
+        self.log.write(f"step {name}: {detail}")
         for row in state:
             for tag in row["tags"]:
                 if tag.startswith(tags.OWNER_PREFIX):
@@ -2019,11 +2041,13 @@ class AdoScenarioRunner:
 
     def gap_bug(self, failures):
         if failures:
-            title = failures[0].splitlines()[0]
-            body = title + "\n\nWitness: " + json.dumps({
-                "command": "python3 -m unittest discover -s tests",
-                "timeout": VERIFY_TIMEOUT_SECONDS,
-            })
+            failure = failures[0]
+            title = failure["detail"].splitlines()[0]
+            body = title + "\n\nObserved failure:\n\n```\n" + failure["detail"].strip() + \
+                "\n```\n\nWitness: " + json.dumps({
+                    "command": failure["command"],
+                    "timeout": int(failure["timeout"]),
+                })
             return title, body, False
         return "modulo operator % missing", BUG_WITH_WITNESS, True
 
@@ -2092,7 +2116,8 @@ class AdoScenarioRunner:
                     f"{', '.join(row['tags']) or '—'} | {row['parent']} |"
                 )
         lines += ["", f"See `[{self.problems.name}]({self.problems.name})` for anomalies and `ado-run.log` for the timestamped log."]
-        (self.out / "ado-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        rendered = redact_text("\n".join(lines) + "\n", self.secrets)
+        (self.out / "ado-report.md").write_text(rendered, encoding="utf-8")
 
     def run(self):
         try:
@@ -2101,6 +2126,7 @@ class AdoScenarioRunner:
             self.world = LocalAdoWorld(self.work)
             self.configure_az_defaults()
             profile_path = self.write_profile()
+            self.world.run_as = self.profile.get("development", {}).get("run_as")
             self.log.write(f"profile: {profile_path}")
             self.board = self.guarded_board(self.profile)
 
@@ -2130,7 +2156,8 @@ class AdoScenarioRunner:
             detail = "Independent verification passed on the local feature branch."
             if failures:
                 detail = "Independent verification found a real QA gap on the local feature branch."
-                self.problem("Independent verification failed", failures)
+                self.problem("Independent verification failed",
+                             [json.dumps(item, ensure_ascii=False) for item in failures])
             self.record_step("E", detail)
 
             gap_title, gap_body, expect_modulo = self.gap_bug(failures)
@@ -2145,8 +2172,9 @@ class AdoScenarioRunner:
                 raise AdoScenarioFailure("feature did not return to idp:qa after the bug-fix run")
             final_failures = self.world.verify_all(self.feature_branch, modulo=expect_modulo)
             if final_failures:
-                self.problem("Post-fix verification failed", final_failures)
-                raise AdoScenarioFailure(final_failures[0])
+                self.problem("Post-fix verification failed",
+                             [json.dumps(item, ensure_ascii=False) for item in final_failures])
+                raise AdoScenarioFailure(final_failures[0]["detail"])
             self.record_step("F", "Human filed a bug, returned the feature to development, and the runner brought it back to QA.", third)
 
             self.close_qa()
@@ -2156,9 +2184,16 @@ class AdoScenarioRunner:
             self.record_step("G", "Human accepted QA and closed the QA Testing PBI.")
             self.write_report()
             return 0
-        except Exception as exc:
-            self.problem("Run failed", [str(exc), "", redact_text(traceback.format_exc(), self.secrets)])
+        except BaseException as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            detail = str(exc)
+            if isinstance(exc, SystemExit):
+                detail = f"runner exited with code {exc.code}"
+            self.problem("Run failed", [detail, "", redact_text(traceback.format_exc(), self.secrets)])
             self.write_report()
+            if isinstance(exc, SystemExit):
+                raise AdoScenarioFailure(detail)
             raise
 
 

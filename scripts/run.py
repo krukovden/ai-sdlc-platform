@@ -929,7 +929,8 @@ def acquire_lease(explicit):
 def select_executor(profile):
     config = dict((profile or {}).get("executors") or {})
     timeout = config.pop("timeout_seconds", None)
-    return executors.select(config, timeout=timeout)
+    run_as = config.pop("run_as", None)
+    return executors.select(config, timeout=timeout, run_as=run_as)
 
 
 def cmd_run(args):

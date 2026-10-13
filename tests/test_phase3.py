@@ -1335,6 +1335,22 @@ class PinnedWitnessSchemaTests(unittest.TestCase):
                 self.assertEqual(outcome.kind, fin.MALFORMED)
                 self.assertEqual(ran, [])
 
+    def test_witness_commands_switch_user_when_configured(self):
+        seen = []
+
+        def runner(argv, **kwargs):
+            seen.append((argv, kwargs["env"]))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.BugRepo(tmp, phase3.plan.plan_text({"pbis": [pbi("a")]}))
+            finalizer = fin.Finalizer({"run_as": "agent"}, env={"PATH": "/usr/bin"},
+                                      run=runner, clock=lambda: 0.0)
+            record = finalizer.execute(repo, "AC-1", "echo ok", 10, "M")
+        self.assertEqual(record["exit"], 0)
+        self.assertEqual(seen[0][0][:6],
+                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent", "--"])
+
     class BugRepo:
         def __init__(self, path, plan_text):
             self.path = Path(path)

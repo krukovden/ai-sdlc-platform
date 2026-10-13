@@ -32,6 +32,8 @@ azure = load_script("sync_azure_devops_state")
 state = load_script("state")
 discovery = load_script("discovery", REPO_ROOT / "skills" / "feature-discovery")
 publish_linear = load_script("publish_linear", REPO_ROOT / "skills" / "feature-discovery")
+planning_runner = load_script("planning", REPO_ROOT / "skills" / "planning")
+phase3 = load_script("run").phase3
 
 
 PROFILE = {
@@ -279,6 +281,10 @@ class FakeAz:
                         if name == "System.Tags" else operation["value"])
             elif field == "/relations/-":
                 item.setdefault("relations", []).append(operation["value"])
+                if operation["value"].get("rel") == "System.LinkTypes.Hierarchy-Reverse":
+                    parent = operation["value"].get("url", "").rstrip("/").rsplit("/", 1)[-1]
+                    if str(parent).isdigit():
+                        item["fields"]["System.Parent"] = int(parent)
             elif field.startswith("/relations/") and operation["op"] == "remove":
                 del item["relations"][int(field.rsplit("/", 1)[-1])]
         return item
@@ -556,6 +562,59 @@ class ReadTests(ScriptTestCase):
         self.assertIn("* prints 14", issue["description"])
         self.assertIn("* errors on divide by zero", issue["description"])
 
+    def test_a_planning_card_round_trip_keeps_meta_and_witnesses(self):
+        fake = FakeAz(work_item("7", work_item_type="Feature"))
+        session = {"feature": "7", "branch": "feature/7", "route": "feature",
+                   "language": None, "notes": None}
+        pbi = {
+            "key": "calc-cli",
+            "title": "Calculator CLI",
+            "result": "calc.py exposes evaluate_expression",
+            "acceptance_criteria": [{"id": "AC-1", "text": "prints 14",
+                                      "witness": {"command": "python3 -m calc '2*(3+4)'",
+                                                   "timeout": 30}}],
+            "adr_sections": ["Storage"],
+            "paths": ["calc.py"],
+            "depends_on": [],
+            "where_to_look": ["calc.py is new"],
+            "tasks": [],
+        }
+        body = planning_runner.render_card(session, pbi)
+        with stub(fake):
+            created = azure.Board("pat-secret", PROFILE).create_issue(
+                title="[PBI] Calculator CLI", body=body, parent="7",
+                project_id="Contoso Platform", kind="pbi")
+            issue = azure.Board("pat-secret", PROFILE).get_issue(created["identifier"])
+        self.assertEqual(phase3.shape.read_meta(issue["description"]).get("key"), "calc-cli")
+        self.assertIn("Witness:", issue["description"])
+        self.assertIn("AC-1", issue["description"])
+
+    def test_shape_ensure_stays_idempotent_through_the_real_adapter_round_trip(self):
+        fake = FakeAz(work_item("7", work_item_type="Feature", description="---\n---\n"))
+        feature_issue = {"identifier": "7", "branch": "feature/7", "description": "---\n---\n"}
+        plan = {"pbis": [{
+            "key": "calc-cli",
+            "title": "Calculator CLI",
+            "result": "calc.py exposes evaluate_expression",
+            "acceptance_criteria": [{"id": "AC-1", "text": "prints 14",
+                                      "witness": {"command": "python3 -m calc '2*(3+4)'",
+                                                   "timeout": 30}}],
+            "adr_sections": ["Storage"],
+            "paths": ["calc.py"],
+            "depends_on": [],
+            "where_to_look": ["calc.py is new"],
+            "tasks": [],
+        }]}
+        with stub(fake):
+            board_handle = azure.Board("pat-secret", PROFILE)
+            first, _ = phase3.shape.ensure(
+                board_handle, feature_issue, plan, {"project_id": "Contoso Platform"},
+                {"route": "feature"})
+            second, _ = phase3.shape.ensure(
+                board_handle, feature_issue, plan, {"project_id": "Contoso Platform"},
+                {"route": "feature"})
+        self.assertEqual(first, second)
+
     def test_a_board_key_is_refused_rather_than_pushed_into_wiql(self):
         fake = FakeAz(work_item())
         with stub(fake):
@@ -713,7 +772,9 @@ class MachineHeaderTests(ScriptTestCase):
                 self.assertIsNone(azure.read_cid(absent))
 
     def test_a_card_with_no_id_is_not_tagged_with_one(self):
-        fake = FakeAz(work_item())
+        items = work_item()
+        items.update(work_item("10"))
+        fake = FakeAz(items)
         with stub(fake):
             azure.Board("pat", PROFILE).create_issue(
                 title="t", body='---\ntype: pbi\ncid: null\n---\n', parent="10",
@@ -731,7 +792,9 @@ class MachineHeaderTests(ScriptTestCase):
         starts in (IDE-144).
         """
         body = '---\ntype: pbi\nroute: small-feature\n---\n'
-        fake = FakeAz(work_item())
+        items = work_item()
+        items.update(work_item("10"))
+        fake = FakeAz(items)
         with stub(fake):
             azure.Board("pat", PROFILE).create_issue(
                 title="t", body=body, parent="10", status="New",
@@ -763,7 +826,10 @@ class CreateTests(ScriptTestCase):
 
     def create(self, body=None, parent=None, status="New", profile=None, kind=None,
                env=None):
-        fake = FakeAz()
+        items = {}
+        if parent:
+            items.update(work_item(str(parent)))
+        fake = FakeAz(items)
         patches = [stub(fake)]
         if env is not None:
             patches.append(mock.patch.dict(os.environ, env, clear=False))
@@ -851,20 +917,23 @@ class CreateTests(ScriptTestCase):
 
     def test_a_status_is_a_second_call_because_create_takes_no_state(self):
         fake, _ = self.create(status="New")
-        updates = fake.matching("boards", "work-item", "update")
-        self.assertEqual(len(updates), 1)
-        self.assertEqual(fake.flag(updates[0], "--state"), "New")
+        patches = fake.rest_matching("PATCH", "wit/workitems/500")
+        self.assertEqual(len(patches), 1)
+        body = json.loads(patches[0]["body"].decode("utf-8"))
+        self.assertIn({"op": "replace", "path": "/fields/System.State", "value": "New"}, body)
 
     def test_a_child_is_created_as_the_backlog_item_type_and_linked(self):
         # Agile's name, because Agile is what most Azure DevOps projects are
         # created with. `Product Backlog Item` exists only in Scrum (IDE-129).
         fake, _ = self.create(parent="10", status=None)
         create = fake.matching("boards", "work-item", "create")[0]
-        link = fake.matching("boards", "work-item", "relation", "add")[0]
+        link = json.loads(fake.rest_matching("PATCH", "wit/workitems/500")[0]["body"].decode("utf-8"))
 
         self.assertEqual(fake.flag(create, "--type"), "User Story")
-        self.assertEqual(fake.flag(link, "--relation-type"), "parent")
-        self.assertEqual(fake.flag(link, "--target-id"), "10")
+        self.assertIn({"op": "add", "path": "/relations/-",
+                       "value": {"rel": "System.LinkTypes.Hierarchy-Reverse",
+                                  "url": "https://dev.azure.com/contoso/_apis/wit/workItems/10"}},
+                      link)
 
     def test_a_child_is_not_tagged_as_a_feature_package(self):
         fake, _ = self.create(parent="10", status=None,
@@ -1631,11 +1700,10 @@ class WriteRefusalTests(ScriptTestCase):
         # Losing the id here is how a retry produces the duplicate that
         # idempotency exists to prevent.
         class HalfBroken(FakeAz):
-            def __call__(self, args, **kwargs):
-                if args[:3] == ["boards", "work-item", "update"]:
-                    self.calls.append(list(args))
+            def rest(self, url, method="GET", body=None, **kwargs):
+                if method == "PATCH" and "wit/workitems/500" in url:
                     azure.fail(azure.EXIT.UNAVAILABLE, "the service is unavailable")
-                return super().__call__(args, **kwargs)
+                return super().rest(url, method=method, body=body, **kwargs)
 
         fake = HalfBroken()
         with stub(fake):

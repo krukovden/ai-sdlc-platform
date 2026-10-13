@@ -251,6 +251,11 @@
           "type": "integer",
           "minimum": 1
         },
+        "run_as": {
+          "description": "Optional OS user to run model sessions as. When unset, sessions run as the runner's own user.",
+          "type": "string",
+          "minLength": 1
+        },
         "roles": {
           "type": "object",
           "additionalProperties": false,
@@ -334,6 +339,11 @@
         "reconcile": {
           "description": "Whether the runner calls engineering-catalog's ado-board reconcile after each phase. Default true. Set false only for tightly-scoped live runs whose guard forbids any whole-project scan.",
           "type": "boolean"
+        },
+        "run_as": {
+          "description": "Optional OS user to run witnesses, integration build/test, scanners and similar non-model commands as. When unset, they run as the runner's own user.",
+          "type": "string",
+          "minLength": 1
         },
         "feature_pr": {
           "description": "How phase 3 hands a Feature to QA. `auto` opens a real feature pull request when the remote supports one here and blocks otherwise; `branch-only` records that there is no pull request and tells the human to merge the feature branch by hand after QA.",

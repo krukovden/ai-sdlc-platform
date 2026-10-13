@@ -78,11 +78,13 @@ class SubprocessExecutor(Executor):
 
     backend = "subprocess"
 
-    def __init__(self, resolver, environ=None, popen=subprocess.Popen, timeout=None):
+    def __init__(self, resolver, environ=None, popen=subprocess.Popen, timeout=None,
+                 run_as=None):
         super().__init__(resolver)
         self.environ = dict(os.environ if environ is None else environ)
         self.popen = popen
         self.timeout = timeout
+        self.run_as = str(run_as or "").strip() or None
 
     def run_role(self, role, card, worktree, prompt, context=None, author=None,
                  choice=None):
@@ -104,7 +106,10 @@ class SubprocessExecutor(Executor):
             limit = last = None
             with open(os.path.join(logs, f"{role}.log"), "a", encoding="utf-8") as log:
                 try:
-                    process = self.popen(agents.launch_argv(choice, prompt), cwd=str(worktree),
+                    process = self.popen(
+                        environment.command_argv(agents.launch_argv(choice, prompt),
+                                                 run_as=self.run_as),
+                        cwd=str(worktree),
                                          env=env, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, start_new_session=True)
@@ -155,7 +160,7 @@ class SubprocessExecutor(Executor):
                 if not timed_out:
                     returncode = process.wait()
 
-        result = read_result(worktree)
+        result = None if timed_out else read_result(worktree)
         code = self.finish(role, card, choice, result, crashed=result is None,
                            limit=state["limit"] if (result is None and returncode != EXIT.OK)
                            else None,

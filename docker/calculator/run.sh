@@ -29,11 +29,29 @@ out_dir=$repo_root/docker/calculator/out
 mkdir -p "$out_dir"
 
 env_file=$(mktemp "${TMPDIR:-/tmp}/copilot-docker.XXXXXX")
-cleanup() {
-    rm -f "$env_file"
-    if [ "$mode" = "ado" ] && docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
-        docker stop "$container_name" >/dev/null 2>&1 || true
+run_status=0
+
+stop_container() {
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
+        return 0
     fi
+    docker stop "$container_name" >/dev/null
+    running=$(docker inspect -f '{{.State.Running}}' "$container_name")
+    if [ "$running" != "false" ]; then
+        printf 'container %s is still running after docker stop\n' "$container_name" >&2
+        return 1
+    fi
+}
+
+cleanup() {
+    status=$?
+    rm -f "$env_file"
+    if [ "$mode" = "ado" ]; then
+        if ! stop_container; then
+            status=1
+        fi
+    fi
+    exit "$status"
 }
 trap cleanup EXIT INT TERM HUP
 

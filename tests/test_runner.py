@@ -559,9 +559,11 @@ class SessionOutcomeTests(RunnerTestCase):
         executor = run.select_executor({"executors": {
             "backend": "subprocess",
             "timeout_seconds": 17,
+            "run_as": "agent",
             "roles": {"design": ["claude:opus"]},
         }})
         self.assertEqual(executor.timeout, 17)
+        self.assertEqual(executor.run_as, "agent")
 
 
 class GateTests(RunnerTestCase):

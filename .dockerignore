@@ -1,6 +1,7 @@
 .git
 .github
 .copilot
+.feature-discovery
 .idea
 .pytest_cache
 .venv
@@ -10,6 +11,7 @@ yarn.lock
 pnpm-lock.yaml
 docker/calculator/out
 out
+.idp
 coverage
 dist
 build

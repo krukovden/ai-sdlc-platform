@@ -13,6 +13,10 @@ Every work item created by the run is titled `[IDP TEST] ...`, and the adapter-l
 guard refuses to read, move or comment on any item the run did not create itself.
 The generated profile also sets `development.reconcile: false`, so phase-end
 `ado-board reconcile` never scans the whole project during this experiment.
+The container also uses two OS users: `idp` runs the harness and holds
+`AZURE_DEVOPS_EXT_PAT`; `agent` runs model sessions, witnesses, integration
+commands and local calculator verification with no board credential in its
+environment.
 
 ## Run it
 
@@ -52,6 +56,11 @@ Reuse the stopped container instead of recreating it:
 ```bash
 docker start -ai idp-ado-test
 ```
+
+Inside the image, `/usr/local/bin/idp-entrypoint.sh` starts as root only long
+enough to make the shared output directory group-writable and drop to `idp`.
+From there the platform uses `sudo ... runuser -u agent -- ...` only for the
+profiled `run_as` commands.
 
 ## What it proves
 

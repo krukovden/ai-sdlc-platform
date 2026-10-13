@@ -86,6 +86,8 @@ class CalculatorAdoTests(ScriptTestCase):
         self.assertFalse(profile["development"]["reconcile"])
         self.assertEqual(profile["executors"]["timeout_seconds"],
                          scenario.ADO_SESSION_SECONDS)
+        self.assertEqual(profile["executors"]["run_as"], "agent")
+        self.assertEqual(profile["development"]["run_as"], "agent")
 
     def test_previous_evidence_is_archived_before_a_new_run_directory_is_created(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,6 +152,12 @@ class CalculatorAdoTests(ScriptTestCase):
             .read_text(encoding="utf-8")
         self.assertIn("trap cleanup EXIT INT TERM HUP", script)
         self.assertIn("docker stop \"$container_name\"", script)
+        self.assertIn("docker inspect -f '{{.State.Running}}'", script)
+
+    def test_the_entrypoint_drops_from_root_to_idp(self):
+        script = (Path(__file__).resolve().parents[1] / "docker" / "calculator"
+                  / "entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn("exec /usr/sbin/runuser -u idp -- \"$@\"", script)
 
 
 if __name__ == "__main__":
