@@ -160,6 +160,7 @@ silent default.
 | `development.witness_budget_seconds` | Budget for one PBI's runnable witnesses. |
 | `development.security_scanner` | Optional finalize command; a non-zero exit is a defect. |
 | `development.bug_witness` | Fallback witness for Bugs when the card states none. |
+| `development.feature_pr` | Feature hand-off mode: `auto` (default) opens a real PR where supported and otherwise blocks; `branch-only` records the feature branch for a human to merge by hand after QA. |
 | `development.integration.build` | Optional full-build command for 3.3. |
 | `development.integration.test` | Required full test-suite command for 3.3. |
 | `development.integration.timeout_seconds` | Timeout per 3.3 build or suite command. |
@@ -225,6 +226,7 @@ This exact example is validated by the test suite against the live schema.
     }
   },
   "development": {
+    "feature_pr": "auto",
     "witness_budget_seconds": 1800,
     "security_scanner": "bandit -q -r src",
     "bug_witness": {
@@ -482,6 +484,17 @@ Two operational limits matter even before those experiments run:
 - **Azure PR completion stays off by default.** Until experiment 8 proves the
   target race away, the runner leaves Azure Repos PBI PRs open and blocks the
   Feature unless the profile opts in with `development.azure_complete_unproven`.
+- **Azure recovery needs the real merge commit.** If Azure reports a completed
+  PR but omits the actual merge commit SHA, the runner now refuses to guess
+  from target metadata or branch tips. It leaves recovery blocked on that PR
+  instead of certifying an unprovable landing.
+- **GitHub feature PR opening is idempotent, not atomic.** The runner binds `gh`
+  to the selected remote repository with `--repo`, lists an open PR for the
+  exact branch/target pair, creates one only when none is listed, then lists
+  again. GitHub exposes no single compare-and-swap "open if absent" call here,
+  so a concurrent creator can still win the gap between those steps. The runner
+  narrows that window as far as the provider allows and blocks on any answer
+  that does not produce a visible PR URL.
 - **Copilot hook registration is manual.** This repository ships a hook file, not a
   Copilot plugin hook installer. Without that manual install, only the runner-side
   handoff guarantee exists for Copilot sessions.

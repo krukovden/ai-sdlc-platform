@@ -610,3 +610,26 @@ def move_status(board, identifier, expected, to):
         return card.get("tags") or [], to
 
     return _write(board, identifier, decide)
+
+
+def move_status_owned(board, identifier, expected, to, run, owner=None):
+    """Move a status only when its current owner, if any, still matches too."""
+    run = check_run_id(run)
+
+    def decide(card):
+        holder = foreign_holder(card.get("tags") or [], run, owner)
+        if holder is not None:
+            raise _Conflict(f"{identifier} is held by '{holder}', not by "
+                            f"'{owner or run}'. This run lost it and must not write.",
+                            "abort without pushing; the current owner carries on")
+        status = card.get("status") or ""
+        if _fold(status) == _fold(to):
+            return card.get("tags") or [], None
+        if _fold(status) != _fold(expected):
+            raise _Refused(f"{identifier} is in '{status}', but this move starts from "
+                           f"'{expected}'.",
+                           f"move it to '{expected}' first, or run the command for "
+                           "where it is")
+        return card.get("tags") or [], to
+
+    return _write(board, identifier, decide)

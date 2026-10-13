@@ -26,19 +26,49 @@ class Journal:
         self.path = Path(path)
         self.title = memory.feature_file(feature, "history")
 
-    def text(self):
-        if self.path.exists():
-            return self.path.read_text(encoding="utf-8")
+    def _normalize(self, seed):
+        if not str(seed or "").strip():
+            seed = f"# {self.feature} — feature journal\n"
+        if HEADING not in seed:
+            seed = str(seed).rstrip("\n") + f"\n\n{HEADING}\n\n"
+        return str(seed)
+
+    def _seed(self):
         seed = ""
         for document in self.board.list_attachments(self.feature):
             if document.get("title") == self.title:
                 seed = document.get("content")
                 if seed is None:
                     seed = self.board.get_document(document["slugId"]).get("content") or ""
-        if not seed.strip():
-            seed = f"# {self.feature} — feature journal\n"
-        if HEADING not in seed:
-            seed = seed.rstrip("\n") + f"\n\n{HEADING}\n\n"
+        return self._normalize(seed)
+
+    @staticmethod
+    def _entries(text):
+        found, current = [], []
+        for line in str(text or "").splitlines():
+            if line.startswith("- "):
+                if current:
+                    found.append("\n".join(current).rstrip())
+                current = [line]
+                continue
+            if current:
+                current.append(line)
+        if current:
+            found.append("\n".join(current).rstrip())
+        return found
+
+    def _merged(self, remote, local):
+        merged = remote
+        existing = set(self._entries(remote))
+        extra = [entry for entry in self._entries(local) if entry not in existing]
+        if extra:
+            merged = merged.rstrip("\n") + "\n\n" + "\n\n".join(extra) + "\n"
+        return merged
+
+    def text(self):
+        if self.path.exists():
+            return self._normalize(self.path.read_text(encoding="utf-8"))
+        seed = self._seed()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(seed, encoding="utf-8")
         return seed
@@ -53,4 +83,9 @@ class Journal:
 
     def upload(self):
         """Replace the attachment. Identical bytes are no write at all."""
-        return self.board.attach_document(self.title, self.text(), identifier=self.feature)
+        local = self.text()
+        remote = self._seed()
+        merged = self._merged(remote, local)
+        if merged != local:
+            self.path.write_text(merged, encoding="utf-8")
+        return self.board.attach_document(self.title, merged, identifier=self.feature)

@@ -12,6 +12,7 @@ import io
 import itertools
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -163,6 +164,81 @@ class AssignmentTests(IntegrationTestCase):
         self.assertIsNone(qa.get("assignee"))
         event = world.board.comments[qa["identifier"]]
         self.assertTrue(any("FIX:" in c["body"] and "approvers" in c["body"] for c in event))
+
+
+class FeaturePullRequestTests(IntegrationTestCase):
+
+    def test_an_unsupported_feature_pr_provider_blocks_the_qa_handoff(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        merger = phase3.merge.GitMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertFalse(world.events(FEATURE, integration.FEATURE_PR))
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+        self.assertEqual(self.qa(world)["status"], "New")
+        self.assertNotEqual(self.feature_tags(world), [tags.QA])
+
+    def test_a_cached_synthetic_feature_pr_event_is_replaced_before_qa(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        lease.post_event(world.board, FEATURE, integration.FEATURE_PR,
+                         f"{integration.FEATURE_PR}:{FEATURE}",
+                         text="legacy synthetic PR", id=f"git:{FEATURE_BRANCH}", url=None)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        prs = world.events(FEATURE, integration.FEATURE_PR)
+        self.assertEqual(len(prs), 2)
+        self.assertEqual(prs[-1]["url"], f"https://fake/pr/{FEATURE_BRANCH}")
+        self.assertEqual(self.feature_tags(world), [tags.QA])
+
+    def test_branch_only_hands_off_to_qa_without_blocking(self):
+        profile = dict(PROFILE, development=dict(PROFILE["development"], feature_pr="branch-only"))
+        world = self.world(plan={"pbis": [pbi("a")]}, profile=profile)
+        merger = phase3.merge.GitMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        pr = world.events(FEATURE, integration.FEATURE_PR)
+        self.assertEqual(len(pr), 1)
+        self.assertIsNone(pr[0]["url"])
+        self.assertEqual(pr[0]["mode"], "branch-only")
+        self.assertEqual(pr[0]["branch"], FEATURE_BRANCH)
+        self.assertEqual(self.qa(world)["status"], "Active")
+        self.assertEqual(self.feature_tags(world), [tags.QA])
+        self.assertTrue(world.events(FEATURE, integration.HANDED))
+
+    def test_removing_branch_only_requires_a_real_pr_on_the_next_development_cycle(self):
+        profile = dict(PROFILE, development=dict(PROFILE["development"], feature_pr="branch-only"))
+        world = self.world(plan={"pbis": [pbi("a")]}, profile=profile)
+        merger = phase3.merge.GitMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        world.profile = PROFILE
+        world.board.profile = PROFILE
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.BLOCKED)
+        latest = world.events(FEATURE, integration.FEATURE_PR)[-1]
+        self.assertEqual(latest["mode"], "branch-only")
+        self.assertEqual(len(world.events(FEATURE, integration.HANDED)), 1)
+        self.assertEqual(len(world.events(FEATURE, integration.FEATURE_PR)), 1)
+        reason = world.events(FEATURE, lease.BLOCK)[-1]["reason"]
+        self.assertIn("need a real feature PR", reason)
+        self.assertEqual(self.feature_tags(world), [tags.DEVELOPMENT, tags.BLOCKED])
+
+    def test_the_github_merger_opens_only_the_feature_pull_request_in_a_full_run(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        calls = []
+
+        def gh(argv):
+            calls.append(list(argv))
+            branch = argv[argv.index("--head") + 1]
+            if argv[2] == "list":
+                payload = [] if branch == FEATURE_BRANCH and calls.count(list(argv)) == 1 else [
+                    {"number": 12, "url": f"https://github.com/o/r/pull/{branch.replace('/', '-')}"}
+                ]
+                return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                argv, 0, f"https://github.com/o/r/pull/{branch.replace('/', '-')}\n", "")
+
+        merger = phase3.merge.GitHubMerger(phase3.gitops.Git(world.repo), run=gh)
+        merger.repository = "github.com/o/r"
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        heads = [argv[argv.index("--head") + 1] for argv in calls if "--head" in argv]
+        self.assertEqual(sorted(set(heads)), [FEATURE_BRANCH])
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +447,17 @@ class BugsLoopBackTests(IntegrationTestCase):
         world.runner().run_feature(FEATURE)
         self.assertEqual(world.board.snapshot(), before)
 
+    def test_a_closed_qa_card_is_reopened_for_the_next_qa_cycle(self):
+        world = self.world()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        qa = self.qa(world)
+        world.board.cards[qa["identifier"]]["status"] = "Resolved"
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.board.add_card("900", kind="bug", parent=FEATURE, title="Bug: no value",
+                             description=self.BUG)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.qa(world)["status"], "Active")
+
 
 # ---------------------------------------------------------------------------
 # The documenter: the model writes, the script decides
@@ -511,6 +598,90 @@ class DocumenterTests(IntegrationTestCase):
         self.assertIn("src/a.py", attempts[0]["text"])
         self.assertFalse(world.events(FEATURE, integration.HANDED))
         self.assertNotEqual(self.feature_tags(world), [tags.QA])
+
+    def test_a_no_op_documenter_still_checks_existing_blueprints_for_broken_links(self):
+        world = self.world()
+        seed_blueprint_on_main(world)
+        target = world.repo / "docs" / "blueprint" / "modules.md"
+        target.write_text(BLUEPRINT.replace("../../src/a.py", "../../src/old.py"),
+                          encoding="utf-8")
+        git(world.repo, "commit", "-qam", "docs: stale link")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = None
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("src/old.py", attempts[0]["text"])
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+
+    def test_editing_another_blueprint_still_checks_existing_affected_areas(self):
+        world = self.world()
+        seed_blueprint_on_main(world)
+        target = world.repo / "docs" / "blueprint" / "modules.md"
+        target.write_text(BLUEPRINT.replace("../../src/a.py", "../../src/old.py"),
+                          encoding="utf-8")
+        git(world.repo, "commit", "-qam", "docs: stale link")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = lambda world, worktree: write_blueprint(
+            world, worktree, text=BLUEPRINT.replace("Modules", "Other area"), name="other.md")
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertIn("src/old.py", attempts[0]["text"])
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+
+    def test_product_changes_must_be_covered_by_a_blueprint_path(self):
+        world = self.world()
+        other = world.repo / "docs" / "blueprint" / "other.md"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text(BLUEPRINT.replace("../../src/a.py", "../../docs/project-state.md")
+                         .replace("src/", "docs/")
+                         .replace("Modules", "Other area"), encoding="utf-8")
+        git(world.repo, "add", "-A")
+        git(world.repo, "commit", "-q", "-m", "docs: unrelated area")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = lambda world, worktree: EXIT.DONE
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertIn("src/a.py", attempts[0]["text"])
+        self.assertIn("no area blueprint covers", attempts[0]["text"])
+
+    def test_editing_a_valid_unrelated_blueprint_still_requires_area_coverage(self):
+        world = self.world()
+        other_text = """# Other area
+
+This area documents the repository docs rather than the product code under src/.
+
+## Requirements
+
+### REQ-DOCS-001 Documentation stays present
+Readers can open the top-level documents without generating them.
+- [x] AC-1: the repository keeps its docs — [code](../../README.md) [test](../../README.md)
+
+## Architecture
+
+The docs live outside src/ and are not the product modules.
+
+| Requirement | Code | Role |
+| -- | -- | -- |
+| REQ-DOCS-001 | docs/ | documentation |
+"""
+        other = world.repo / "docs" / "blueprint" / "other.md"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text(other_text, encoding="utf-8")
+        git(world.repo, "add", "-A")
+        git(world.repo, "commit", "-q", "-m", "docs: unrelated area")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = lambda world, worktree: write_blueprint(
+            world, worktree, text=other_text.replace("Other area", "Other area updated"),
+            name="other.md")
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertIn("src/a.py", attempts[0]["text"])
+        self.assertIn("no area blueprint covers", attempts[0]["text"])
 
 
 def seed_blueprint_on_main(world):

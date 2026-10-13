@@ -46,6 +46,7 @@ twice changes nothing the second time.
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 
@@ -73,6 +74,7 @@ VERDICT_MAX_WORDS = 600
 DIRECTORY = "docs/blueprint"
 
 GREEN, FINDINGS, BLOCKED = "green", "findings", "blocked"
+AUTO_PR, BRANCH_ONLY = "auto", "branch-only"
 KINDS = ("duplicate", "unbuilt", "unasked", "inconsistent")
 
 FINDINGS_FILE = "integration-r{round}.json"
@@ -936,7 +938,12 @@ class Integration:
             post_change = set(blueprint.area_files(wt.path))
             product = [p for p in feature_changed if not p.startswith(DIRECTORY + "/")
                        and not p.startswith(plans.PLAN_DIR + "/")
+                       and not p.startswith("docs/")
+                       and not p.startswith("tests/")
                        and not p.startswith(".idp/")]
+            all_blueprints = sorted(str(p.relative_to(wt.path)) for p in post_change)
+            if product and not changed:
+                touched = sorted(set(touched) | set(all_blueprints))
             if product and not post_change:
                 # Nothing to write is a pass only where an area is already covered;
                 # a feature that brings product code to a product with no area
@@ -951,12 +958,23 @@ class Integration:
                 if wt.path / path not in post_change:
                     problems.append(f"{path}: no blueprint remains for this touched area; "
                                     "restore a valid `<area>.md` before reporting done")
-                else:
-                    files.append(wt.path / path)
-            files += [wt.path / p for p in changed if p.startswith(DIRECTORY + "/")
-                      and p not in touched and (wt.path / p).is_file()]
+            files = [wt.path / p for p in all_blueprints]
             for name, found in blueprint.check(files, wt.path).items():
                 problems += found
+            if product:
+                covered = {path: False for path in product}
+                for path in all_blueprints:
+                    text = (wt.path / path).read_text(encoding="utf-8")
+                    for product_path in covered:
+                        if covers_blueprint(text, product_path):
+                            covered[product_path] = True
+                missing = [path for path, ok in covered.items() if not ok]
+                if missing:
+                    problems.append(
+                        "no area blueprint covers changed product path(s): "
+                        + ", ".join(missing[:5]) + (", …" if len(missing) > 5 else "")
+                        + ". FIX: update or add the blueprint file for every product area the "
+                          "feature changed")
             if problems:
                 wt.reset_to(tip)
                 raise IntegrationError("\n".join(problems))
@@ -1000,6 +1018,31 @@ class Integration:
             tip = self.git.tracking(self.branch)
         return tip if tip != candidate else None
 
+    def feature_pr_mode(self):
+        return str((self.profile.get("development") or {}).get("feature_pr") or AUTO_PR)
+
+    def feature_pr_key(self, target):
+        return f"{FEATURE_PR}:{self.feature}:{self.feature_pr_mode()}:{self.branch}:{target}"
+
+    def feature_pr_event(self, target):
+        events = lease.events(self.comments(), FEATURE_PR, branch=self.branch, target=target)
+        mode = self.feature_pr_mode()
+        for found in reversed(events):
+            if mode == BRANCH_ONLY:
+                if found.get("mode") == BRANCH_ONLY:
+                    return found
+                continue
+            if found.get("url") and found.get("mode") in (None, "pull-request"):
+                return found
+        return None
+
+    @staticmethod
+    def hand_off_text(pr, branch, target):
+        pr = pr or {}
+        if pr.get("mode") == BRANCH_ONLY:
+            return f"there is no pull request; QA will merge `{branch}` into `{target}` by hand"
+        return f"the pull request into `{target}` is {pr.get('url') or pr.get('id')}"
+
     def hand_off(self, candidate):
         """PR into main, QA Testing to the human, the journal, then idp:qa.
 
@@ -1016,39 +1059,62 @@ class Integration:
             return self.rerun(candidate, moved)
         head = candidate
         main, _ = self.main_sha()
-        merger = dev.merger_for()
-        pr = self.event(FEATURE_PR)
+        pr = self.feature_pr_event(main)
         if pr is None:
-            title = self.board.get_issue(self.feature).get("title") or self.feature
-            opened = merger.open(self.branch, main, title,
-                                 f"{mention_of(self.feature)} — phase 3 is done; the human "
-                                 "tests it through the QA Testing PBI and merges this.",
-                                 self.feature)
-            lease.post_event(
-                self.board, self.feature, FEATURE_PR, f"{FEATURE_PR}:{self.feature}",
-                text=(f"Pull request `{self.branch}` → `{main}` opened for the AI review "
-                      f"pipeline and the full suite: {opened.get('url') or opened['id']}. "
-                      "The runner never merges it; the human does, after QA."),
-                id=str(opened["id"]), url=opened.get("url"))
-            pr = self.event(FEATURE_PR)
+            if self.feature_pr_mode() == BRANCH_ONLY:
+                lease.post_event(
+                    self.board, self.feature, FEATURE_PR, self.feature_pr_key(main),
+                    text=(f"No pull request was opened for `{self.branch}` → `{main}`. "
+                          "QA tests the feature branch through the QA Testing PBI, then "
+                          "the human merges that branch by hand after QA."),
+                    id=None, url=None, mode=BRANCH_ONLY, branch=self.branch, target=main)
+            else:
+                merger = dev.merger_for()
+                title = self.board.get_issue(self.feature).get("title") or self.feature
+                opened = merger.open(self.branch, main, title,
+                                     f"{mention_of(self.feature)} — phase 3 is done; the human "
+                                     "tests it through the QA Testing PBI and merges this.",
+                                     self.feature)
+                if not opened.get("url"):
+                    fix = opened.get("fix") or (
+                        "configure a PR-capable provider, then re-run")
+                    return dev.block_feature(
+                        f"the feature pull request `{self.branch}` → `{main}` was not "
+                        f"opened: the human and the QA pipeline need a real feature PR. "
+                        f"FIX: {fix}")
+                lease.post_event(
+                    self.board, self.feature, FEATURE_PR, self.feature_pr_key(main),
+                    text=(f"Pull request `{self.branch}` → `{main}` opened for the AI review "
+                          f"pipeline and the full suite: {opened.get('url') or opened['id']}. "
+                          "The runner never merges it; the human does, after QA."),
+                    id=str(opened["id"]), url=opened.get("url"), mode="pull-request",
+                    branch=self.branch, target=main)
+            pr = self.feature_pr_event(main)
         qa = next((i for i in shape.work_items(self.board, self.feature, dev.plan)
                    if shape.is_qa(i)), None)
         if qa is None:
             return dev.block_feature("the Feature has no QA Testing PBI to hand to the human; "
                                      "planning creates it. FIX: re-run planning")
-        dev.mover.move(self.board, qa["id"], "doing",
-                       f"phase 3 is done at `{head[:12]}`; the pull request into `{main}` is "
-                       f"{pr.get('url') or pr.get('id')}", self.runner.run_id)
+        evidence = f"phase 3 is done at `{head[:12]}`; {self.hand_off_text(pr, self.branch, main)}"
+        moved = dev.mover.reopen(self.board, qa["id"], evidence, self.runner.run_id) \
+            if dev.mover.bucket(self.board.get_issue(qa["id"])) == "done" else \
+            dev.mover.move(self.board, qa["id"], "doing", evidence, self.runner.run_id)
+        if moved.get("bucket") != "doing":
+            return dev.block_feature(f"QA Testing {qa['id']} was not reopened for the next "
+                                     "cycle. FIX: move it to doing, then re-run")
         self.assign(qa["id"])
         moved = self.moved_from(candidate, remote=True)
         if moved:
             return self.rerun(candidate, moved)
-        dev.journal.add(f"Handed to QA at `{head[:12]}`: the pull request into `{main}` is "
-                        f"open and the QA Testing PBI {qa['id']} is with the human.")
+        dev.journal.add(f"Handed to QA at `{head[:12]}`: "
+                        f"{self.hand_off_text(pr, self.branch, main)} and the QA Testing PBI "
+                        f"{qa['id']} is with the human.")
         dev.journal.upload()
         lease.post_event(self.board, self.feature, HANDED, f"{HANDED}:{self.feature}:{head}",
                          text=(f"Phase 3 is done at `{head[:12]}`. QA Testing ({qa['id']}) "
-                               f"is with the human: close it and merge the pull request into "
+                               f"is with the human: close it and "
+                               f"{'merge the feature branch by hand into '
+                                 if pr.get('mode') == BRANCH_ONLY else 'merge the pull request into '}"
                                f"`{main}` when the feature is done; otherwise file Bugs under "
                                f"this Feature and set `{tags.DEVELOPMENT}`."),
                          head=head, qa=qa["id"])
@@ -1056,8 +1122,8 @@ class Integration:
         if handed["outcome"] in ("refused", "conflict"):
             self.say(f"{self.feature}: {handed['message']}\nFIX: {handed['fix']}")
             return EXIT.REFUSED
-        self.say(f"{self.feature}: handed to QA — the pull request into {main} is open and "
-                 f"QA Testing {qa['id']} waits for the human.")
+        self.say(f"{self.feature}: handed to QA — {self.hand_off_text(pr, self.branch, main)} "
+                 f"and QA Testing {qa['id']} waits for the human.")
         return EXIT.DONE
 
     def rerun(self, candidate, moved):
@@ -1119,3 +1185,34 @@ def changed_paths(wt):
 
 def blueprint_module():
     return _sibling("blueprint", "idp_blueprint")
+
+
+def covers_blueprint(text, product_path):
+    def normalize(target):
+        cleaned = target.split("#", 1)[0].split("?", 1)[0].strip()
+        while cleaned.startswith("../"):
+            cleaned = cleaned[3:]
+        while cleaned.startswith("./"):
+            cleaned = cleaned[2:]
+        return cleaned
+
+    def covers(ref):
+        ref = normalize(ref)
+        if not ref:
+            return False
+        if ref.endswith("/"):
+            return product_path.startswith(ref)
+        return ref == product_path
+
+    refs = []
+    for label, target in re.findall(r"\[([^\]]+)\]\(([^)\s]+)\)", text):
+        if label.strip().casefold() == "code":
+            refs.append(target)
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) >= 3 and cells[1] not in ("Code", "--"):
+            refs.append(cells[1])
+    return any(covers(ref) for ref in refs)

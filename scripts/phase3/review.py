@@ -27,6 +27,7 @@ CONFIDENCE = ("high", "medium", "low")
 BLOCKING = ("critical", "high")
 MAX_ROUNDS = 2
 FINDINGS_FILE = "review.json"
+FIELDS = ("severity", "confidence", "file", "line", "title", "trigger", "detail")
 
 PROMPT = """You are the rubber duck for PBI {pbi} of Feature {feature}, started by run.py (IDE-147).
 You review; you do not fix. Use read-only tools only: `git diff`, `git log`, `git show`,
@@ -68,6 +69,12 @@ If you cannot review at all, finish with `report --code 2 --reason "<why>"`.
 
 class ReviewError(Exception):
     """The reviewer's answer cannot be read."""
+
+
+def _text(value, what):
+    if not isinstance(value, str) or not value.strip():
+        raise ReviewError(f"{what} is missing or empty")
+    return value.strip()
 
 
 def changed_lines(diff_text):
@@ -122,13 +129,32 @@ def read_findings(path):
     if not isinstance(findings, list):
         raise ReviewError(f"{path.name} has no `findings` list")
     clean = []
-    for finding in findings:
+    for n, finding in enumerate(findings, 1):
         if not isinstance(finding, dict):
-            continue
-        severity = str(finding.get("severity") or "").casefold()
-        confidence = str(finding.get("confidence") or "high").casefold()
-        clean.append(dict(finding, severity=severity if severity in SEVERITIES else "low",
-                          confidence=confidence if confidence in CONFIDENCE else "low"))
+            raise ReviewError(f"findings[{n}] is not an object")
+        extra = sorted(set(finding) - set(FIELDS))
+        if extra:
+            raise ReviewError(f"findings[{n}] has unknown fields: {', '.join(extra)}")
+        severity = _text(finding.get("severity"), f"findings[{n}].severity").casefold()
+        confidence = _text(finding.get("confidence"), f"findings[{n}].confidence").casefold()
+        if severity not in SEVERITIES:
+            raise ReviewError(f"findings[{n}].severity is '{finding.get('severity')}'; it is "
+                              f"one of {', '.join(SEVERITIES)}")
+        if confidence not in CONFIDENCE:
+            raise ReviewError(f"findings[{n}].confidence is '{finding.get('confidence')}'; it "
+                              f"is one of {', '.join(CONFIDENCE)}")
+        try:
+            line = int(finding.get("line"))
+        except (TypeError, ValueError):
+            raise ReviewError(f"findings[{n}].line is not a whole number")
+        if line < 1:
+            raise ReviewError(f"findings[{n}].line is not positive")
+        clean.append({"severity": severity, "confidence": confidence,
+                      "file": _text(finding.get("file"), f"findings[{n}].file"),
+                      "line": line,
+                      "title": _text(finding.get("title"), f"findings[{n}].title"),
+                      "trigger": _text(finding.get("trigger"), f"findings[{n}].trigger"),
+                      "detail": _text(finding.get("detail"), f"findings[{n}].detail")})
     return clean
 
 
