@@ -1,0 +1,64 @@
+{
+  "id": "4df20b79-0c67-4d79-b150-8eb690a02627",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+      "identity": {
+        "key": "wt2:local:455a66ab-d002-4683-bc2d-9dca7a59cfee",
+        "executionHostId": "local",
+        "instanceId": "455a66ab-d002-4683-bc2d-9dca7a59cfee"
+      },
+      "instanceId": "455a66ab-d002-4683-bc2d-9dca7a59cfee",
+      "repoId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c",
+      "projectId": "github:krukovden/ai-sdlc-platform",
+      "hostId": "local",
+      "projectHostSetupId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c",
+      "creatorProvenance": {
+        "kind": "host"
+      },
+      "path": "/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+      "head": "107550f016ea7862f27041838fdc9325f83f4f68",
+      "branch": "refs/heads/krukovden/idp-t7-orca",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "idp-t7-orca",
+      "displayNameMode": "fixed",
+      "comment": "",
+      "linkedIssue": null,
+      "linkedPR": null,
+      "linkedLinearIssue": null,
+      "linkedLinearIssueWorkspaceId": null,
+      "linkedLinearIssueOrganizationUrlKey": null,
+      "linkedGitLabMR": null,
+      "linkedGitLabIssue": null,
+      "linkedBitbucketPR": null,
+      "linkedAzureDevOpsPR": null,
+      "linkedGiteaPR": null,
+      "linkedWorkItem": null,
+      "linkedTaskSourceContext": null,
+      "isArchived": false,
+      "isUnread": false,
+      "isPinned": false,
+      "sortOrder": 1791857402014,
+      "lastActivityAt": 1791856478814,
+      "createdAt": 1791856478814,
+      "createdWithAgent": "claude",
+      "baseRef": "krukovden/idp-t5-runner",
+      "workspaceStatus": "in-progress",
+      "parentWorktreeId": null,
+      "childWorktreeIds": [],
+      "lineage": null,
+      "git": {
+        "path": "/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+        "head": "107550f016ea7862f27041838fdc9325f83f4f68",
+        "branch": "refs/heads/krukovden/idp-t7-orca",
+        "isBare": false,
+        "isMainWorktree": false
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "2424e90d-081c-462a-a050-5ab8209074bf"
+  }
+}
