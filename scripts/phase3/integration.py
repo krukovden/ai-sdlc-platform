@@ -51,6 +51,7 @@ from pathlib import Path
 
 from .common import EXIT, INFRA_BACKOFF, _sibling, flat, lease, memory, planning_module, \
     tags
+from . import merge as merges
 from . import plan as plans
 from . import shape
 from .finalize import Finalizer
@@ -524,7 +525,7 @@ class Integration:
         (context / "plan.json").write_text(plans.plan_text(dev.plan), encoding="utf-8")
 
     def main_sha(self):
-        name = self.git.default_branch() or "main"
+        name = merges.authoritative_default_branch(self.git)
         return name, self.git.tracking(name) or self.git.remote_sha(name)
 
     # -- the bug route's verdict ----------------------------------------------

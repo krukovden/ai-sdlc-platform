@@ -25,10 +25,10 @@ the orchestrator, so a test uses either without a network.
 **Every move is fenced on who holds the item.** The caller names its run and,
 for a PBI it claimed, the exact worker tag. The adapter's move is the tag
 writer's fenced write (`tags.move_owned`: the owner re-read, then `test /rev`
-on Azure DevOps). The catalog's `move` takes no expected revision, so before
-calling it the item is re-read and refused when another run holds it, and
-after it the item is read again: a foreign owner then stops the run before
-its next write. A lost fence is `lease.OwnershipLost`, never a silent move.
+on Azure DevOps). The catalog's `move` takes no expected revision, so any card
+that already carries an `idp:` tag stays on the adapter path; only cards with
+no `idp:` tags go through the catalog, after one last owner re-read and before
+one more after it. A lost fence is `lease.OwnershipLost`, never a silent move.
 """
 
 import json
@@ -150,9 +150,12 @@ class CatalogStates(AdapterStates):
         current = self.bucket(board.get_issue(identifier))
         if BUCKETS.index(current) >= BUCKETS.index(bucket):
             return {"moved": False, "bucket": current}
+        card = self.expect(board, identifier, run, owner)
+        if any(_fold(tag).startswith(lease.tags.TAG_PREFIX) for tag in card.get("tags") or []):
+            return AdapterStates.move(self, board, identifier, bucket, evidence, run,
+                                      owner=owner)
         # The catalog writes through its own process, past the fenced board, and
-        # takes no expected revision: the owner is checked here, before and after.
-        self.expect(board, identifier, run, owner)
+        # takes no expected revision: cards with no idp:* tags may go through it.
         answer = self.call(["node", self.script, "move", str(identifier), bucket,
                             "--comment", evidence, "--allow-idp", "--json"],
                            capture_output=True, text=True, timeout=CATALOG_TIMEOUT,
@@ -169,12 +172,14 @@ class CatalogStates(AdapterStates):
 
     @staticmethod
     def expect(board, identifier, run, owner):
-        """`OwnershipLost` unless this run still holds the Feature and may write the item."""
+        """The current card, or `OwnershipLost` unless this run may write it."""
         lease.fence(board)
-        labels = board.read_card(identifier).get("tags")
+        card = board.read_card(identifier)
+        labels = card.get("tags")
         holder = lease.tags.foreign_holder(labels, lease.tags.check_run_id(run), owner)
         if holder is not None:
             raise _lost(identifier, owner or run, holder)
+        return card
 
 
 def find_catalog(environ=None):

@@ -137,7 +137,7 @@ silent default.
 | `project_id`, `workspace` | Board identifiers the adapter needs. |
 | `repositories` | Repositories the drift checks and docs may need to search. |
 | `approvers` | Humans at the gates, in order; the first gets the QA Testing PBI. |
-| `protected_branches` | Branches the runner never pushes to or merges into, on top of `main` and the remote default branch. |
+| `protected_branches` | Branches the runner never pushes to or merges into, on top of `main`, `master`, and the remote default branch resolved live with `git ls-remote --symref <remote> HEAD`. |
 | `memory_doc` | Legacy board document id kept so older profiles still validate; the feature registry is now `memory/index.md` in the product repository. |
 
 ### Azure DevOps-only keys
@@ -343,7 +343,9 @@ Feature phases, claims and leases are this platform's job. Work-item states
 (`todo`, `doing`, `done`) are delegated when possible:
 
 - on Azure DevOps, `scripts/phase3/states.py` calls engineering-catalog's
-  `ado-board` unit when it is installed;
+  `ado-board` unit when it is installed, except for cards that already carry
+  `idp:` tags — those stay on the adapter's fenced `test /rev` path so a
+  replacement owner cannot move them through a stale catalog read;
 - that unit is the one merged in
   [krukovden/engineering-catalog#3](https://github.com/krukovden/engineering-catalog/pull/3);
 - `reconcile` runs at the end of each phase when that unit is present;

@@ -86,16 +86,13 @@ class Git:
         return answer.stdout.strip() or None
 
     def default_branch(self):
-        """The remote's default branch: `origin/HEAD` as the clone recorded it, else asked.
+        """The remote's default branch, asked of the remote each time.
 
-        `refs/heads/` comes off whole, so a default named `release/2026` stays
-        that and is not cut to `2026`.
+        `origin/HEAD` is this clone's cache and can be stale exactly when the
+        runner most needs the truth. `ls-remote --symref <remote> HEAD` is the
+        authority, so every push/merge guard asks it live and refuses to guess
+        when the remote does not answer with a branch.
         """
-        local = self.run("symbolic-ref", "-q", f"refs/remotes/{self.remote}/HEAD",
-                         check=False)
-        prefix = f"refs/remotes/{self.remote}/"
-        if local.returncode == EXIT.OK and local.stdout.strip().startswith(prefix):
-            return local.stdout.strip()[len(prefix):]
         out = self.run("ls-remote", "--symref", self.remote, "HEAD")
         for line in out.splitlines():
             if line.startswith("ref:"):
