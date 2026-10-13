@@ -49,7 +49,8 @@ import json
 import time
 from pathlib import Path
 
-from .common import EXIT, _sibling, flat, lease, memory, planning_module, tags
+from .common import EXIT, INFRA_BACKOFF, _sibling, flat, lease, memory, planning_module, \
+    tags
 from . import plan as plans
 from . import shape
 from .finalize import Finalizer
@@ -286,7 +287,6 @@ class Integration:
 
     def __init__(self, dev):
         self.dev = dev
-        self.board = dev.board
         self.runner = dev.runner
         self.git = dev.git
         self.profile = dev.profile
@@ -298,6 +298,11 @@ class Integration:
     @property
     def feature(self):
         return self.dev.feature
+
+    @property
+    def board(self):
+        # The run's board, fenced once the Feature is claimed (`Development.run`).
+        return self.dev.board
 
     @property
     def branch(self):
@@ -438,7 +443,8 @@ class Integration:
         """Run until `read()` accepts what the session wrote. (code, answer)."""
         dev = self.dev
         feedback = None
-        for _ in range(MAX_ATTEMPTS * 2):
+        launches = 0
+        for _ in range(MAX_ATTEMPTS * 2 + len(INFRA_BACKOFF) + 1):
             n = self.attempts(phase)
             if n >= MAX_ATTEMPTS:
                 return dev.block_feature(f"{phase} did not produce a usable answer in "
@@ -447,6 +453,13 @@ class Integration:
             code = dev.session(role, self.feature, worktree, prompt_for(feedback),
                                {"IDP_CONTEXT_DIR": str(context)})
             last = dev.executor.last or {}
+            if last.get("launch_failed", False):
+                # Infrastructure: retried with backoff, then paused; never an attempt.
+                launches += 1
+                if launches <= len(INFRA_BACKOFF):
+                    dev.sleep(INFRA_BACKOFF[launches - 1])
+                    continue
+                return dev.launch_paused(self.feature, phase, last), None
             if code == EXIT.DONE:
                 try:
                     return EXIT.DONE, read()
@@ -751,10 +764,11 @@ class Integration:
     # -- the documenter, then the hand-off ------------------------------------
 
     def finish(self, head, tip=None):
-        code = self.document(head, tip if tip is not None else head)
+        """The documenter, then the hand-off — of exactly the commit it validated."""
+        code, candidate = self.document(head, tip if tip is not None else head)
         if code != EXIT.DONE:
             return code
-        return self.hand_off()
+        return self.hand_off(candidate)
 
     def documented_record(self, head):
         """The documented event for this integrated head, repaired from git if a crash ate it."""
@@ -866,11 +880,15 @@ class Integration:
         feature branch now — the same commit, unless QA moved it. The documenter
         works on `tip`; a cached completion is trusted only when that tree still
         holds the blueprints.
+
+        Returns (code, candidate): the commit the hand-off may hand to QA — the
+        documentation commit pushed, or `tip` when nothing needed writing —
+        and nothing else.
         """
         dev = self.dev
         tip = tip or head
         if self.documentation_holds(head, tip):
-            return EXIT.DONE
+            return EXIT.DONE, tip
         blueprint = blueprint_module()
         wt, context = self.worktree("documenter", tip)
         self.write_common(context)
@@ -915,6 +933,18 @@ class Integration:
                     "no area blueprint could be rechecked. FIX: restore the "
                     "docs/blueprint/** files the documenter wrote")
             post_change = set(blueprint.area_files(wt.path))
+            product = [p for p in feature_changed if not p.startswith(DIRECTORY + "/")
+                       and not p.startswith(plans.PLAN_DIR + "/")
+                       and not p.startswith(".idp/")]
+            if product and not post_change:
+                # Nothing to write is a pass only where an area is already covered;
+                # a feature that brings product code to a product with no area
+                # blueprint at all has every area still to document.
+                problems.append(
+                    "the feature changes product code (" + ", ".join(product[:5])
+                    + (", …" if len(product) > 5 else "") + ") and no area blueprint "
+                    "exists. FIX: write docs/blueprint/<area>.md for every area the "
+                    "feature touched before reporting done")
             files = []
             for path in touched:
                 if wt.path / path not in post_change:
@@ -934,7 +964,7 @@ class Integration:
         code, changed = self.session("integration", f"documenter-{head[:12]}", wt.path,
                                      prompt, context, read)
         if code != EXIT.DONE:
-            return code
+            return code, None
         # read() already refused this. Checked again immediately before any
         # commit or push, so a documenter commit cannot ride out on the blueprint.
         full = documenter_changed(wt, tip)
@@ -944,10 +974,10 @@ class Integration:
             return dev.block_feature(
                 "the documenter's diff includes " + ", ".join(outside)
                 + ", outside docs/blueprint/**. FIX: a documenter commit may contain "
-                  "only docs/blueprint/**; nothing else is committed or pushed")
+                  "only docs/blueprint/**; nothing else is committed or pushed"), None
         if not full:
             self.record_documented(head, None)
-            return EXIT.DONE
+            return EXIT.DONE, tip
         areas = sorted({Path(p).stem for p in full})
         sha = wt.commit_all(f"docs(blueprint): {', '.join(areas)} {mention_of(self.feature)}"
                             f"\n\n{BLUEPRINT_MARK} {self.feature}@{head}\n", [DIRECTORY])
@@ -958,13 +988,32 @@ class Integration:
                                                   "was writing", "re-run; nobody else may "
                                                                  "push to the feature branch")
         self.record_documented(head, sha if sha != tip else None)
-        return EXIT.DONE
+        return EXIT.DONE, sha or tip
 
-    def hand_off(self):
-        """PR into main, QA Testing to the human, the journal, then idp:qa."""
+    def moved_from(self, candidate, remote=False):
+        """The feature branch's tip when it is no longer `candidate`, else None."""
+        if remote:
+            tip = self.git.remote_sha(self.branch)
+        else:
+            self.git.fetch()
+            tip = self.git.tracking(self.branch)
+        return tip if tip != candidate else None
+
+    def hand_off(self, candidate):
+        """PR into main, QA Testing to the human, the journal, then idp:qa.
+
+        Only `candidate` is handed off: the commit 3.3 integrated and the
+        documenter validated. A feature branch that moved past it — somebody
+        pushed while the documenter ran, or after its push — is never handed to
+        QA in its place: 3.3 runs again on the new head (`REBUILD`), so the head
+        QA gets is one integration actually ran on. The tip is compared before
+        the first side effect and again immediately before the hand-off event.
+        """
         dev = self.dev
-        self.git.fetch()
-        head = self.git.tracking(self.branch)
+        moved = self.moved_from(candidate)
+        if moved:
+            return self.rerun(candidate, moved)
+        head = candidate
         main, _ = self.main_sha()
         merger = dev.merger_for()
         pr = self.event(FEATURE_PR)
@@ -988,8 +1037,11 @@ class Integration:
                                      "planning creates it. FIX: re-run planning")
         dev.mover.move(self.board, qa["id"], "doing",
                        f"phase 3 is done at `{head[:12]}`; the pull request into `{main}` is "
-                       f"{pr.get('url') or pr.get('id')}")
+                       f"{pr.get('url') or pr.get('id')}", self.runner.run_id)
         self.assign(qa["id"])
+        moved = self.moved_from(candidate, remote=True)
+        if moved:
+            return self.rerun(candidate, moved)
         dev.journal.add(f"Handed to QA at `{head[:12]}`: the pull request into `{main}` is "
                         f"open and the QA Testing PBI {qa['id']} is with the human.")
         dev.journal.upload()
@@ -1006,6 +1058,12 @@ class Integration:
         self.say(f"{self.feature}: handed to QA — the pull request into {main} is open and "
                  f"QA Testing {qa['id']} waits for the human.")
         return EXIT.DONE
+
+    def rerun(self, candidate, moved):
+        self.say(f"{self.feature}: {self.branch} moved from the validated "
+                 f"`{candidate[:12]}` to `{moved[:12]}` before the hand-off; 3.3 runs again "
+                 "on the new head, and only a head it validated goes to QA.")
+        return REBUILD
 
     def assign(self, qa):
         """The QA Testing PBI goes to the human the profile names first under `approvers`."""
