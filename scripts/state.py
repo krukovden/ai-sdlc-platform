@@ -16,15 +16,49 @@ import re
 import sys
 from pathlib import Path
 
-# The route decides which phases a card passes through. Settled in IDE-90 and
-# re-expressed as phases in IDE-147: every route ends at the human's QA.
+# The route decides which phases a card passes through on the board. Settled in
+# IDE-90 and re-expressed as phases in IDE-147: every route ends at the human's
+# QA. A bug is planned too — into a single PBI — and its verdict is written by
+# the phase-3 owner at idp:development, so no route sits at idp:design but the
+# full one (`ROUTE_TABLE` below).
 ROUTES = {
     "feature":       ["design", "planning", "development", "qa"],
     "small-feature": ["planning", "development", "qa"],
-    "bug":           ["development", "qa"],
+    "bug":           ["planning", "development", "qa"],
 }
 
 DEFAULT_ROUTE = "feature"
+
+# The routes of IDE-90, re-expressed as the phases of IDE-147, and the gate each
+# one checks before phase 3 may start. `phases` are the ADR's numbers: 1 task
+# formation, 2 design, 3 development, 4 QA (the human's, for now).
+#
+#   feature        1 → 2 → 3 → 4   the human approves the ADR (design review)
+#   small feature  1 → 3 → 4       no ADR: creating the Feature with
+#                                  idp:development is the approval
+#   bug            1 → 2 → 3 → 4   2 is a short verdict with no review gate, and
+#                                  3 builds a single PBI
+#
+# A bug's verdict has no gate between it and development, and the runner has no
+# path to `idp:development` (`tags.TRANSITIONS`): so a bug is created at
+# idp:development, like a small feature, and its owner writes the verdict as
+# the first step of phase 3, before planning reads it in place of an ADR.
+# Every route ends at the human's QA, and only a human merging into main ends it.
+ROUTE_TABLE = {
+    "feature":       {"phases": (1, 2, 3, 4), "gate": "adr",     "pbis": None},
+    "small-feature": {"phases": (1, 3, 4),    "gate": None,      "pbis": 3},
+    "bug":           {"phases": (1, 2, 3, 4), "gate": "verdict", "pbis": 1},
+}
+
+
+def route_gate(route):
+    """What phase 3 checks before it starts, on this route: 'adr', 'verdict' or None."""
+    return ROUTE_TABLE.get(route if route in ROUTE_TABLE else DEFAULT_ROUTE)["gate"]
+
+
+def starts_with_design(route):
+    """Whether the card is designed at idp:design. Only the full feature route is."""
+    return route_gate(route if route in ROUTE_TABLE else DEFAULT_ROUTE) == "adr"
 
 # What to do when a card sits in a given phase and position. `None` means
 # nobody is waiting on a command: an agent already holds the card.
