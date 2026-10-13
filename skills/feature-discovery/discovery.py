@@ -96,6 +96,23 @@ TRANSITIONS = {
 }
 
 
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_exit_codes", REPO_ROOT / "scripts" / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
@@ -143,17 +160,17 @@ def correlation_id(slug, at):
 def load_registry(path=None, extra_slots=()):
     path = Path(path or REGISTRY)
     if not path.exists():
-        fail(6, f"no slot registry at {path}")
+        fail(EXIT.CONFIG, f"no slot registry at {path}")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{path} is not valid JSON: {exc}")
 
     slots = [s for s in data["slots"]]
     known = {s["id"] for s in slots}
     for extra in extra_slots or ():
         if extra["id"] in known:
-            fail(3, f"extra_slot '{extra['id']}' collides with a base slot")
+            fail(EXIT.INVALID, f"extra_slot '{extra['id']}' collides with a base slot")
         slots.append(extra)
     return {"registry_version": data.get("registry_version", "0"), "slots": slots}
 
@@ -170,7 +187,7 @@ def order_slots(registry):
     for slot in slots:
         for need in slot.get("depends_on", []):
             if need not in by_id:
-                fail(3, f"slot '{slot['id']}' depends on unknown slot '{need}'")
+                fail(EXIT.INVALID, f"slot '{slot['id']}' depends on unknown slot '{need}'")
 
     ordered, placed = [], set()
     remaining = list(slots)
@@ -184,7 +201,7 @@ def order_slots(registry):
                 progressed = True
         if not progressed:
             cycle = ", ".join(s["id"] for s in remaining)
-            fail(3, f"the slot graph has a cycle among: {cycle}")
+            fail(EXIT.INVALID, f"the slot graph has a cycle among: {cycle}")
     return ordered
 
 
@@ -277,11 +294,11 @@ def journal(slug, event):
 def load_state(slug):
     path = session_dir(slug) / "state.json"
     if not path.exists():
-        fail(4, f"no session '{slug}'. Run: discovery.py init --idea-file <f>")
+        fail(EXIT.CONFLICT, f"no session '{slug}'. Run: discovery.py init --idea-file <f>")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is corrupt: {exc}")
+        fail(EXIT.INVALID, f"{path} is corrupt: {exc}")
 
 
 def save_state(state):
@@ -292,7 +309,7 @@ def save_state(state):
 def transition(state, target):
     current = state["state"]
     if target not in TRANSITIONS.get(current, set()):
-        fail(4, f"illegal transition {current} -> {target}")
+        fail(EXIT.CONFLICT, f"illegal transition {current} -> {target}")
     if target != current:
         journal(state["slug"], {"event": "transition", "from": current, "to": target})
     state["state"] = target
@@ -341,7 +358,7 @@ def new_package(slug, cid, project):
 def load_package(slug):
     path = session_dir(slug) / "package.json"
     if not path.exists():
-        fail(4, f"session '{slug}' has no package")
+        fail(EXIT.CONFLICT, f"session '{slug}' has no package")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -439,15 +456,15 @@ def validate(package, state):
 def cmd_init(args):
     idea_path = Path(args.idea_file)
     if not idea_path.exists():
-        fail(3, f"no such file: {idea_path}")
+        fail(EXIT.INVALID, f"no such file: {idea_path}")
     idea = idea_path.read_text(encoding="utf-8").strip()
     if not idea:
-        fail(3, "the idea file is empty; there is nothing to discover")
+        fail(EXIT.INVALID, "the idea file is empty; there is nothing to discover")
 
     slug = args.slug or slugify(idea)
     directory = session_dir(slug)
     if (directory / "state.json").exists() and not args.force:
-        fail(4, f"session '{slug}' already exists; pass --force to start over")
+        fail(EXIT.CONFLICT, f"session '{slug}' already exists; pass --force to start over")
 
     profile = load_profile(args.profile)
     registry = load_registry(args.registry, profile.get("extra_slots", []))
@@ -506,11 +523,11 @@ def load_profile(path):
         return {}
     candidate = Path(path)
     if not candidate.exists():
-        fail(6, f"no profile at {candidate}")
+        fail(EXIT.CONFIG, f"no profile at {candidate}")
     try:
         return json.loads(candidate.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(6, f"{candidate} is not valid JSON: {exc}")
+        fail(EXIT.CONFIG, f"{candidate} is not valid JSON: {exc}")
 
 
 def decide_next(state, package):
@@ -604,11 +621,11 @@ def cmd_answer(args):
 
     slot = args.slot
     if slot in DERIVED_SLOTS:
-        fail(5, f"'{slot}' is derived by the script from Product Owner answers; "
+        fail(EXIT.FORBIDDEN, f"'{slot}' is derived by the script from Product Owner answers; "
                 "it cannot be written directly")
     if slot not in state["slots"]:
         known = ", ".join(state["slot_order"])
-        fail(3, f"unknown slot '{slot}'. Known: {known}")
+        fail(EXIT.INVALID, f"unknown slot '{slot}'. Known: {known}")
 
     definition = state["slots"][slot]
     allowed = definition.get("closable_by", [])
@@ -616,7 +633,7 @@ def cmd_answer(args):
     # are one actor: something outside the Product Owner's head supplied it.
     actor = "source" if args.source == "evidence" else args.source
     if allowed and actor not in allowed:
-        fail(5, f"slot '{slot}' cannot be closed by '{actor}'. "
+        fail(EXIT.FORBIDDEN, f"slot '{slot}' cannot be closed by '{actor}'. "
                 f"Allowed: {', '.join(allowed)}")
 
     if args.unanswerable:
@@ -632,7 +649,7 @@ def cmd_answer(args):
 
     if args.dismiss:
         if not args.reason:
-            fail(3, "dismissing a slot needs --reason: 'not applicable, because …'. "
+            fail(EXIT.INVALID, "dismissing a slot needs --reason: 'not applicable, because …'. "
                     "Silence is not coverage.")
         state.setdefault("dismissed", {})[slot] = {"reason": args.reason, "at": now()}
         journal(args.slug, {"event": "dismiss", "slot": slot, "reason": args.reason})
@@ -679,21 +696,21 @@ def read_value(args):
     if args.value_file:
         path = Path(args.value_file)
         if not path.exists():
-            fail(3, f"no such file: {path}")
+            fail(EXIT.INVALID, f"no such file: {path}")
         text = path.read_text(encoding="utf-8")
     elif args.value is not None:
         text = args.value
     else:
-        fail(3, "pass --value or --value-file")
+        fail(EXIT.INVALID, "pass --value or --value-file")
 
     text = text.strip()
     if not text:
-        fail(3, "an empty answer closes nothing")
+        fail(EXIT.INVALID, "an empty answer closes nothing")
     if text.startswith("[") or text.startswith("{"):
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            fail(3, f"the answer looks like JSON but does not parse: {exc}")
+            fail(EXIT.INVALID, f"the answer looks like JSON but does not parse: {exc}")
     return text
 
 
@@ -716,7 +733,7 @@ def cmd_evidence(args):
     quote = Path(args.quote_file).read_text(encoding="utf-8").strip() if args.quote_file \
         else (args.quote or "")
     if not quote:
-        fail(3, "evidence without a quote is a citation nobody can check")
+        fail(EXIT.INVALID, "evidence without a quote is a citation nobody can check")
 
     entry = {"id": f"ev-{len(package['evidence']) + 1}", "uri": args.uri,
              "quote": quote, "kind": args.kind, "retrieved_at": now()}
@@ -934,11 +951,11 @@ def read_reviewer_response(args):
         return None
     path = Path(args.response_file)
     if not path.exists():
-        fail(3, f"no such file: {path}")
+        fail(EXIT.INVALID, f"no such file: {path}")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"the reviewer response is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"the reviewer response is not valid JSON: {exc}")
 
 
 def gap_key(gap):
@@ -974,18 +991,18 @@ def cmd_gap_round(args):
     state = load_state(args.slug)
     package = load_package(args.slug)
     if state["state"] not in ("REVIEWING", "GAP_HUNTING"):
-        fail(4, f"a gap round is illegal in {state['state']}")
+        fail(EXIT.CONFLICT, f"a gap round is illegal in {state['state']}")
     transition(state, "GAP_HUNTING")
 
     limits = state["limits"]
     if state["gap_rounds_run"] >= limits["max_gap_rounds"]:
-        fail(4, f"the gap limit of {limits['max_gap_rounds']} rounds is already reached")
+        fail(EXIT.CONFLICT, f"the gap limit of {limits['max_gap_rounds']} rounds is already reached")
 
     response, _, failures = obtain_review(args, package, kind="gap-round")
     if response is None and failures:
         # A round that could not run is not a dry round. Counting it as one
         # would let a broken provider end the search and look like completion.
-        fail(2, "the reviewer could not be reached; this round did not run:\n  "
+        fail(EXIT.UNAVAILABLE, "the reviewer could not be reached; this round did not run:\n  "
                 + "\n  ".join(failures))
     response = response or {"gaps": []}
     fresh = apply_gaps(state, package, response.get("gaps", []))
@@ -1030,7 +1047,7 @@ def cmd_validate(args):
         print("valid" if not problems else f"{len(problems)} problems")
 
     if problems:
-        sys.exit(3)
+        sys.exit(EXIT.INVALID)
 
     # Validate is readable from anywhere — asking "would this pass" must never
     # be a move. It only advances the session from the one state the design
@@ -1053,14 +1070,14 @@ def cmd_approve(args):
     package = load_package(args.slug)
 
     if state["state"] != "AWAITING_APPROVAL":
-        fail(4, f"approval is illegal in {state['state']}; run validate first")
+        fail(EXIT.CONFLICT, f"approval is illegal in {state['state']}; run validate first")
 
     problems = validate(package, state)
     if problems:
-        fail(3, f"{len(problems)} validation problems; approval refused")
+        fail(EXIT.INVALID, f"{len(problems)} validation problems; approval refused")
 
     if package["provenance"]["reviewer_mode"] == "skipped" and not args.force_no_review:
-        fail(3, "no independent review was run. Pass --force-no-review to approve "
+        fail(EXIT.INVALID, "no independent review was run. Pass --force-no-review to approve "
                 "anyway; the flag itself is journalled.")
 
     package["approval"] = {
@@ -1272,7 +1289,7 @@ def main(argv=None):
     if args.command != "init" and not args.slug:
         args.slug = current_slug()
         if not args.slug:
-            fail(4, "no current session. Run `discovery.py init --idea-file <f>`, "
+            fail(EXIT.CONFLICT, "no current session. Run `discovery.py init --idea-file <f>`, "
                     "or pass --slug to name one.")
     args.func(args)
 

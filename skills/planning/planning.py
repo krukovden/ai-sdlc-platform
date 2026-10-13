@@ -101,6 +101,23 @@ class PlanError(Exception):
         self.message = message
 
 
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_exit_codes", REPO_ROOT / "scripts" / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
@@ -164,7 +181,7 @@ def load_reviewer():
 def load_plan_schema(path=None):
     candidate = Path(path or PLAN_SCHEMA)
     if not candidate.exists():
-        fail(6, f"no plan schema at {candidate}")
+        fail(EXIT.CONFIG, f"no plan schema at {candidate}")
     return json.loads(candidate.read_text(encoding="utf-8"))
 
 
@@ -794,11 +811,11 @@ def save_session(session):
 def load_session(feature):
     path = session_dir(feature) / "state.json"
     if not path.exists():
-        fail(4, f"no planning session for {feature}. Run: planning.py init {feature}")
+        fail(EXIT.CONFLICT, f"no planning session for {feature}. Run: planning.py init {feature}")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is corrupt: {exc}")
+        fail(EXIT.INVALID, f"{path} is corrupt: {exc}")
 
 
 def save_adr(session, text):
@@ -808,7 +825,7 @@ def save_adr(session, text):
 def load_adr(session):
     path = session_dir(session["feature"]) / "adr.md"
     if not path.exists():
-        fail(4, f"the session for {session['feature']} has no ADR text; re-run init")
+        fail(EXIT.CONFLICT, f"the session for {session['feature']} has no ADR text; re-run init")
     return path.read_text(encoding="utf-8")
 
 
@@ -820,7 +837,7 @@ def save_plan(session, plan):
 def load_plan(session):
     path = session_dir(session["feature"]) / "plan.json"
     if not path.exists():
-        fail(4, f"no plan proposed yet for {session['feature']}. Run: "
+        fail(EXIT.CONFLICT, f"no plan proposed yet for {session['feature']}. Run: "
                 "planning.py propose --plan-file <f>")
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -828,7 +845,7 @@ def load_plan(session):
 def transition(session, target):
     current = session["state"]
     if target not in TRANSITIONS.get(current, set()):
-        fail(4, f"illegal transition {current} -> {target}")
+        fail(EXIT.CONFLICT, f"illegal transition {current} -> {target}")
     if target != current:
         journal(session, {"event": "transition", "from": current, "to": target})
     session["state"] = target
@@ -857,7 +874,7 @@ def check_phase(answer, resume=False):
         hint = " Pass --resume to continue a session someone already claimed."
     elif phase == "design":
         hint = " The ADR is not approved yet; planning has nothing to read."
-    fail(4, f"{answer['identifier']} is in {where}, and planning starts from "
+    fail(EXIT.CONFLICT, f"{answer['identifier']} is in {where}, and planning starts from "
             f"'planning · ready'. Nothing was changed.{hint}")
 
 
@@ -871,13 +888,13 @@ def resolve_adr(board, profile, issue, route, adr_file=None, adr_doc=None):
     if adr_file:
         path = Path(adr_file)
         if not path.exists():
-            fail(3, f"no ADR file at {path}")
+            fail(EXIT.INVALID, f"no ADR file at {path}")
         return path.read_text(encoding="utf-8"), f"file:{path}"
 
     if adr_doc:
         document = board.get_document(adr_doc)
         if not document:
-            fail(3, f"no document with slug {adr_doc}")
+            fail(EXIT.INVALID, f"no document with slug {adr_doc}")
         return document["content"], f"document:{adr_doc}"
 
     if route == "small-feature":
@@ -886,7 +903,7 @@ def resolve_adr(board, profile, issue, route, adr_file=None, adr_doc=None):
         # the path graph are the same.
         body = issue.get("description") or ""
         if not body.strip():
-            fail(4, f"{issue['identifier']} is on the 'small-feature' route, where the "
+            fail(EXIT.CONFLICT, f"{issue['identifier']} is on the 'small-feature' route, where the "
                     "feature card itself is the input, and its description is empty")
         return body, "feature-card"
 
@@ -894,14 +911,14 @@ def resolve_adr(board, profile, issue, route, adr_file=None, adr_doc=None):
     wanted = memory.feature_file(issue["identifier"], "adr")
     project_id = profile.get("project_id")
     if not project_id:
-        fail(6, "the profile has no project_id, so the ADR cannot be looked up")
+        fail(EXIT.CONFIG, "the profile has no project_id, so the ADR cannot be looked up")
 
     for document in board.list_documents(project_id):
         if document["title"] == wanted:
             return board.get_document(document["slugId"])["content"], \
                    f"convention:{document['slugId']}"
 
-    fail(4, f"no ADR attached to {issue['identifier']}: expected a document called "
+    fail(EXIT.CONFLICT, f"no ADR attached to {issue['identifier']}: expected a document called "
             f"'{wanted}'. Planning refuses rather than inventing a design — run "
             f"/idp-design {issue['identifier']} first, or pass --adr-file.")
 
@@ -913,7 +930,7 @@ def reread_adr(board, profile, session):
     if kind == "file":
         path = Path(value)
         if not path.exists():
-            fail(7, f"the ADR file {path} is gone; the approval this plan was "
+            fail(EXIT.INVALIDATED, f"the ADR file {path} is gone; the approval this plan was "
                     "built against can no longer be shown")
         return path.read_text(encoding="utf-8")
     if kind in ("document", "convention"):
@@ -929,7 +946,7 @@ def check_adr_unchanged(board, profile, session):
     """
     current = content_hash(reread_adr(board, profile, session))
     if current != session["adr"]["hash"]:
-        fail(7, f"the ADR of {session['feature']} changed after this session started: "
+        fail(EXIT.INVALIDATED, f"the ADR of {session['feature']} changed after this session started: "
                 f"it hashed to {session['adr']['hash']}, and now hashes to {current}. "
                 "Re-run init and re-cut the plan against the design that exists.")
 
@@ -948,7 +965,7 @@ def start_session(board, profile, identifier, state_module, adr_file=None,
 
     branch = (issue.get("branch") or "").strip()
     if not branch:
-        fail(3, f"{identifier} has no branch name on the board, and the branch name "
+        fail(EXIT.INVALID, f"{identifier} has no branch name on the board, and the branch name "
                 "is taken from the board verbatim rather than slugified here")
 
     session = {
@@ -1060,11 +1077,11 @@ def cmd_propose(args):
     session = load_session(args.id)
     path = Path(args.plan_file)
     if not path.exists():
-        fail(3, f"no plan at {path}")
+        fail(EXIT.INVALID, f"no plan at {path}")
     try:
         plan = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{path} is not valid JSON: {exc}")
 
     adr_text = load_adr(session)
     try:
@@ -1166,7 +1183,7 @@ def cmd_render(args):
     plan = load_plan(session)
     wanted = [p for p in plan["pbis"] if not args.pbi or p["key"] == args.pbi]
     if not wanted:
-        fail(3, f"no PBI with key '{args.pbi}' in this plan")
+        fail(EXIT.INVALID, f"no PBI with key '{args.pbi}' in this plan")
 
     out = Path(args.out) if args.out else None
     for pbi in wanted:
