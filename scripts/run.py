@@ -768,7 +768,46 @@ class Runner:
 # Commands
 # ---------------------------------------------------------------------------
 
+def lease_run_id(explicit, home):
+    """The lease this invocation holds.
+
+    `--run-id` or `IDP_RUN_ID` resumes that run, but only when no other live
+    process on this machine already holds it. With neither, each invocation
+    gets its own id. `tags.current_run_id` stays the stable skill identity and
+    is not a runner lease: two terminals would share it, and `claim` would
+    accept the second as the first.
+    """
+    chosen = (explicit or os.environ.get("IDP_RUN_ID") or "").strip()
+    if not chosen:
+        return tags.new_run_id()
+    try:
+        run = tags.check_run_id(chosen)
+    except ValueError as exc:
+        raise RunnerError(
+            EXIT.REFUSED, str(exc),
+            "pass a run id of letters, digits, '.', '_' and '-', at most 64, "
+            "starting with a letter or digit") from exc
+    presence = agent_mode.Presence(home, run)
+    if presence.alive():
+        pid = presence.pid_file.read_text(encoding="utf-8").strip()
+        raise RunnerError(
+            EXIT.REFUSED,
+            f"run '{run}' is already live on this machine (pid {pid}). "
+            "A second process must not share its lease.",
+            "stop that run, or omit --run-id so this invocation gets its own lease")
+    return run
+
+
+def acquire_lease(explicit):
+    """Resolve this invocation's lease before any board read or phase."""
+    try:
+        return lease_run_id(explicit, load_design().HOME)
+    except RunnerError as exc:
+        fail(exc.code, exc.message, fix=exc.fix)
+
+
 def cmd_run(args):
+    run_id = acquire_lease(args.run_id)
     profile, _, board = board_cli.open_board()
     try:
         executor = executors.select(profile.get("executors"))
@@ -777,8 +816,7 @@ def cmd_run(args):
     ask = None
     if not args.no_ask and sys.stdin.isatty():
         ask = input
-    runner = Runner(board, profile, executor, args.run_id or tags.current_run_id(),
-                    repo=os.getcwd(), ask=ask)
+    runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=ask)
     runner.stopping = agent_mode.stop_signal(
         board, agent_mode.Presence(runner.design.HOME, runner.run_id))
     try:
@@ -840,8 +878,8 @@ def project_cards(board, profile):
 
 
 def cmd_agent(args):
+    run_id = acquire_lease(args.run_id)
     profile, _, board = board_cli.open_board()
-    run_id = args.run_id or tags.current_run_id()
     serve = [p.strip() for p in (args.serve or "").split(",") if p.strip()] or None
     unknown = sorted(set(serve or ()) - set(agent_mode.PHASES))
     if unknown:
@@ -879,8 +917,8 @@ def cmd_stop(args):
 
 
 def cmd_takeover(args):
+    run_id = acquire_lease(args.run_id)
     profile, _, board = board_cli.open_board()
-    run_id = args.run_id or tags.current_run_id()
     interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
     try:
         result = agent_mode.takeover(board, args.card, run_id, input,
@@ -933,8 +971,8 @@ def build_parser():
     p = sub.add_parser("run", help="run a Feature to its next human gate "
                                    "(the default: `run.py <feature-id>`)")
     p.add_argument("feature")
-    p.add_argument("--run-id", help="claim as this run; default IDP_RUN_ID, else this "
-                                    "user and machine")
+    p.add_argument("--run-id", help="resume this run; default IDP_RUN_ID if set, else a "
+                                    "fresh lease for this invocation")
     p.add_argument("--no-ask", action="store_true",
                    help="stop at a gate instead of waiting in the terminal")
     p.set_defaults(func=cmd_run)
@@ -956,8 +994,8 @@ def build_parser():
     p.set_defaults(func=cmd_adr_check)
 
     p = sub.add_parser("agent", help="loop until stopped (also `run.py --agent`)")
-    p.add_argument("--run-id", help="claim as this run; default IDP_RUN_ID, else this "
-                                    "user and machine")
+    p.add_argument("--run-id", help="resume this run; default IDP_RUN_ID if set, else a "
+                                    "fresh lease for this invocation")
     p.add_argument("--serve", help="only these phases, comma-separated: "
                                    + ", ".join(agent_mode.PHASES))
     p.set_defaults(func=cmd_agent)
@@ -969,7 +1007,8 @@ def build_parser():
 
     p = sub.add_parser("takeover", help="claim a dead run's card after you confirm")
     p.add_argument("card")
-    p.add_argument("--run-id", help="claim as this run")
+    p.add_argument("--run-id", help="resume this run; default IDP_RUN_ID if set, else a "
+                                    "fresh lease for this invocation")
     p.add_argument("--claim-only", action="store_true", help="claim, and do not resume")
     p.set_defaults(func=cmd_takeover)
 

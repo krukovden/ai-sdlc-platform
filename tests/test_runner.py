@@ -607,5 +607,70 @@ class HeartbeatTests(RunnerTestCase):
         self.assertTrue(beat._stop.is_set())
 
 
+class LeaseIdentityTests(unittest.TestCase):
+    """A runner lease is one invocation, not the stable skill identity (A2)."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("IDP_RUN_ID", None)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._saved is not None:
+            os.environ["IDP_RUN_ID"] = self._saved
+
+    def test_two_invocations_do_not_share_the_stable_skill_identity(self):
+        home = Path(self.id())
+        first = run.lease_run_id(None, home)
+        second = run.lease_run_id(None, home)
+        self.assertNotEqual(first, second)
+        self.assertRegex(first, tags.RUN_ID.pattern)
+        self.assertRegex(second, tags.RUN_ID.pattern)
+        self.assertEqual(tags.current_run_id(), tags.current_run_id())
+        self.assertNotEqual(first, tags.current_run_id())
+
+    def test_two_default_invocations_are_not_both_accepted_as_the_same_owner(self):
+        board = new_board()
+        first = run.lease_run_id(None, Path(self.id()))
+        second = run.lease_run_id(None, Path(self.id()))
+        self.assertEqual(tags.claim(board, FEATURE, first)["outcome"], "written")
+        self.assertNotEqual(tags.claim(board, FEATURE, second)["outcome"], "unchanged")
+
+    def test_a_second_process_cannot_resume_a_live_run_id(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        run.agent_mode.Presence(home, "run-1").announce()
+        with self.assertRaises(run.RunnerError) as caught:
+            run.lease_run_id("run-1", home)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertIn("already live", caught.exception.message)
+        # A dead pid is a resume, not a second live holder. IDP_RUN_ID is the same path.
+        (home / "agent" / "run-1.pid").write_text("999999999", encoding="utf-8")
+        self.assertEqual(run.lease_run_id("run-1", home), "run-1")
+        os.environ["IDP_RUN_ID"] = "run-1"
+        self.assertEqual(run.lease_run_id(None, home), "run-1")
+
+    def test_cmd_run_refuses_a_live_run_before_opening_the_board(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        run.agent_mode.Presence(home, "run-1").announce()
+        opened = []
+
+        def open_board():
+            opened.append("opened")
+            raise AssertionError("the board must not be opened while the run is live")
+
+        design_home = mock.Mock()
+        design_home.HOME = home
+        args = mock.Mock(run_id="run-1", no_ask=True, feature=FEATURE)
+        with mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board", side_effect=open_board):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_run(args)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertEqual(opened, [])
+
+
 if __name__ == "__main__":
     unittest.main()
