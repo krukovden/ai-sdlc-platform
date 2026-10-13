@@ -418,6 +418,55 @@ class ReapTests(ScriptTestCase):
         self.assertEqual(len(claims), 1)
         self.assertEqual(claims[0]["base"], "original")
 
+    def test_a_resume_after_release_crash_renews_the_lease_without_replacing_claim_facts(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        self.assertEqual(tags.release(board, "1", A)["outcome"], "written")
+        board.advance(61)
+        board.crash_after(1)
+        with self.assertRaises(Crash):
+            lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        board.disarm()
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                     base="replacement")["outcome"], "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["base"], "original")
+        beats = lease.events(board.list_comments("1"), lease.HEARTBEAT)
+        self.assertEqual(len(beats), 1)
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
+    def test_a_second_stop_pause_that_dedupes_still_renews_the_resumed_lease(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        lease.post_event(board, "1", "pause", f"pause:1:stop:{A}:g0",
+                         text="Paused: stop. Any run may take this card now.",
+                         run=A, reason="stop")
+        board.advance(61)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "written")
+        before = [c["key"] for c in lease.events(board.list_comments("1"), lease.CLAIM)]
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        self.assertEqual(lease.post_event(board, "1", "pause", f"pause:1:stop:{A}:g0",
+                                          text="Paused: stop. Any run may take this card now.",
+                                          run=A, reason="stop")["posted"], False)
+        board.advance(61)
+        board.crash_after(1)
+        with self.assertRaises(Crash):
+            lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        board.disarm()
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                     base="replacement")["outcome"], "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual(len(claims), 2)
+        self.assertEqual([c["key"] for c in claims], before)
+        beats = lease.events(board.list_comments("1"), lease.HEARTBEAT)
+        self.assertEqual(len(beats), 1)
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
     def test_a_claim_after_a_release_is_a_new_sign_of_life(self):
         board = self.claimed()
         self.assertEqual(tags.release(board, "1", A)["outcome"], "written")

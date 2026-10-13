@@ -312,10 +312,14 @@ def claim(board, identifier, run, phase=None, profile=None, **facts):
             fix="pass profile=board.profile_hash(profile) to lease.claim")
     result = tags.claim(board, identifier, run, phase=phase)
     if result["outcome"] in ("written", "unchanged"):
-        key, n = _claim_key(board, identifier, run, phase, result)
+        key, n, renewed = _claim_key(board, identifier, run, phase, result)
         post_event(board, identifier, CLAIM, key,
                    text=f"Claimed by run `{run}`.", run=run, phase=phase,
-                   generation=n, profile=profile, **facts)
+                   generation=n, profile=profile, rev=result.get("rev"), **facts)
+        if renewed:
+            post_event(board, identifier, HEARTBEAT, renewed,
+                       text=f"Run `{run}` resumed this card after reclaiming it.",
+                       run=run, source="claim-resume", rev=result.get("rev"))
     return result
 
 
@@ -335,15 +339,18 @@ def _claim_key(board, identifier, run, phase, result):
              if event.get("run") == run and event.get("generation") == n
              and str(event.get("key", "")).startswith(base)]
     if result["outcome"] == "written" and prior:
-        return f"{base}:r{result.get('rev')}", n
+        return f"{base}:r{result.get('rev')}", n, None
     if result["outcome"] == "unchanged" and prior:
         candidate = f"{base}:r{result.get('rev')}"
         if any(event.get("key") == candidate for event in prior):
-            return candidate, n
+            return candidate, n, None
         if _missing_claim_for_current_hold(board, identifier, run, prior[-1]):
-            return candidate, n
-        return prior[-1]["key"], n
-    return base, n
+            return candidate, n, None
+        renewed = None
+        if _renewed_claim_for_current_hold(board, identifier, run, prior[-1], result):
+            renewed = f"{HEARTBEAT}:{run}:claim:r{result.get('rev')}"
+        return prior[-1]["key"], n, renewed
+    return base, n, None
 
 
 def _missing_claim_for_current_hold(board, identifier, run, latest):
@@ -362,6 +369,30 @@ def _missing_claim_for_current_hold(board, identifier, run, latest):
         if found_latest and event.get("kind") == "pause" and event.get("run") == run:
             return True
     return False
+
+
+def _renewed_claim_for_current_hold(board, identifier, run, latest, result):
+    """Whether an unchanged owner can prove a later reacquisition by revision gap.
+
+    A retry after the first claim's own comment may see one extra revision when
+    comments move the card revision, but a release/pause followed by a fresh
+    owner-tag write moves it farther. Only that wider gap renews the lease
+    without replacing the claim's pinned facts.
+    """
+    found_latest = False
+    for event in events(board.list_comments(identifier)):
+        if event.get("key") == latest.get("key"):
+            found_latest = True
+            continue
+        if found_latest and event.get("run") == run and \
+                event.get("kind") in (HEARTBEAT, CLAIM, TAKEOVER):
+            return False
+    try:
+        latest_rev = int(latest.get("rev"))
+        current_rev = int(result.get("rev"))
+    except (TypeError, ValueError):
+        return False
+    return current_rev > latest_rev + 1
 
 
 def generation(board, identifier):
