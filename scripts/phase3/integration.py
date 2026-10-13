@@ -714,8 +714,10 @@ class Integration:
         self.write_common(context)
         main, base_tip = self.main_sha()
         base = self.git.run("merge-base", base_tip, head) if base_tip else head
+        feature_changed = self.git.run("diff", "--name-only", "--no-renames",
+                                       base, head).splitlines()
         (context / "changed.txt").write_text(
-            "\n".join(self.git.changed_files(base, head)) + "\n", encoding="utf-8")
+            "\n".join(feature_changed) + "\n", encoding="utf-8")
         (context / "blueprints.txt").write_text(
             "\n".join(str(p.relative_to(wt.path)) for p in blueprint.area_files(wt.path))
             + "\n", encoding="utf-8")
@@ -735,8 +737,18 @@ class Integration:
             problems = []
             if outside:
                 problems.append("changed outside docs/blueprint/: " + ", ".join(outside))
-            files = [wt.path / p for p in changed
-                     if p.startswith(DIRECTORY + "/") and (wt.path / p).exists()]
+            touched = sorted({p for p in feature_changed + changed
+                              if p.startswith(DIRECTORY + "/") and p.endswith(".md")})
+            post_change = set(blueprint.area_files(wt.path))
+            files = []
+            for path in touched:
+                if wt.path / path not in post_change:
+                    problems.append(f"{path}: no blueprint remains for this touched area; "
+                                    "restore a valid `<area>.md` before reporting done")
+                else:
+                    files.append(wt.path / path)
+            files += [wt.path / p for p in changed if p.startswith(DIRECTORY + "/")
+                      and p not in touched and (wt.path / p).is_file()]
             for name, found in blueprint.check(files, wt.path).items():
                 problems += found
             if problems:
@@ -841,7 +853,9 @@ def changed_paths(wt):
             continue
         paths.append(item[3:])
         if item[0] in "RC":
-            next(entries, None)               # the rename's source follows it
+            source = next(entries, None)
+            if item[0] == "R" and source:
+                paths.append(source)
     return sorted(p for p in paths if not p.startswith(".idp/"))
 
 

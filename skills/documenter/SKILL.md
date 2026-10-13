@@ -27,6 +27,12 @@ Three layers answer three questions, and you write only the third:
 - **Change nothing outside `docs/blueprint/`.** Code, tests, the plan: none of it.
   The runner discards anything else and counts the attempt.
 - **Commit nothing, push nothing.** The runner checks your files and commits them.
+- **Keep coverage for every touched area.** The runner uses `<area>.md` as the
+  area identity and validates its post-change file, including blueprint paths
+  changed earlier on the feature branch. Deleting or renaming it is refused
+  unless a valid blueprint remains at that path; a differently named file alone
+  does not prove replacement coverage. When splitting, retain the original
+  area's file for its remaining scope.
 - **Never call a tracker.** You hold no board credential and need none.
 - **No sub-agents.** Act, don't narrate.
 

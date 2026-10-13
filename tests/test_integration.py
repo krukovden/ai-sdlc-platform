@@ -21,8 +21,8 @@ from unittest import mock
 from support import ScriptTestCase, load_script
 from fakeboard import crash_and_resume
 from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, World,
-                          design, git, integration_finding, lease, pbi, phase3, run, shape,
-                          tags, write_blueprint)
+                          commit_push, design, git, integration_finding, lease, pbi,
+                          phase3, run, shape, tags, write_blueprint)
 
 integration = phase3.integration
 state = run.state
@@ -351,6 +351,78 @@ class BugsLoopBackTests(IntegrationTestCase):
 # ---------------------------------------------------------------------------
 
 class DocumenterTests(IntegrationTestCase):
+
+    def test_an_invalid_blueprint_from_building_cannot_pass_an_idle_documenter(self):
+        world = self.world()
+
+        def build(world, worktree, key, branch, card):
+            commit_push(worktree, branch, "build module and blueprint",
+                        {"src/a.py": "VALUE = 1\n",
+                         "docs/blueprint/modules.md":
+                             BLUEPRINT.replace("## Architecture", "## Design")})
+            return EXIT.DONE
+
+        world.behaviors["a"] = [build]
+        world.documenter = None
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("## Architecture", attempts[0]["text"])
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+
+    def test_deleting_or_renaming_an_area_blueprint_is_refused(self):
+        for rename in ("delete", "unstaged", "staged"):
+            with self.subTest(rename=rename):
+                world = self.world()
+                write_blueprint(world, world.repo)
+                git(world.repo, "add", "docs/blueprint/modules.md")
+                git(world.repo, "commit", "-q", "-m", "seed area blueprint")
+                git(world.repo, "push", "-q", "origin", "main")
+
+                def remove_area(world, worktree):
+                    path = worktree / "docs/blueprint/modules.md"
+                    if rename != "delete":
+                        path.rename(path.with_name("other.md"))
+                        if rename == "staged":
+                            git(worktree, "add", "-A", "docs/blueprint")
+                    else:
+                        path.unlink()
+                    return EXIT.DONE
+
+                world.documenter = remove_area
+                self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+                attempts = [e for e in with_text(world, "attempt")
+                            if e["phase"].startswith("documenter-")]
+                self.assertEqual(len(attempts), 3)
+                self.assertIn("modules.md", attempts[0]["text"])
+                self.assertIn("no blueprint", attempts[0]["text"])
+                self.assertFalse(world.events(FEATURE, integration.DOCUMENTED))
+                self.assertFalse(world.events(FEATURE, integration.HANDED))
+                self.assertEqual(world.remote_file(FEATURE_BRANCH,
+                                                    "docs/blueprint/modules.md"), BLUEPRINT)
+
+    def test_a_deleted_area_can_be_restored_on_the_next_attempt(self):
+        world = self.world()
+        write_blueprint(world, world.repo)
+        git(world.repo, "add", "docs/blueprint/modules.md")
+        git(world.repo, "commit", "-q", "-m", "seed area blueprint")
+        git(world.repo, "push", "-q", "origin", "main")
+        sessions = []
+
+        def restore_area(world, worktree):
+            sessions.append(1)
+            if len(sessions) == 1:
+                (worktree / "docs/blueprint/modules.md").unlink()
+                return EXIT.DONE
+            return write_blueprint(world, worktree,
+                                   text=BLUEPRINT.replace("Modules", "Product modules"))
+
+        world.documenter = restore_area
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(len(sessions), 2)
+        self.assertIn("Product modules", world.remote_file(
+            FEATURE_BRANCH, "docs/blueprint/modules.md"))
 
     def test_a_change_outside_the_blueprints_is_refused_and_three_block(self):
         world = self.world()
