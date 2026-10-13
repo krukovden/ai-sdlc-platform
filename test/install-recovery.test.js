@@ -139,10 +139,14 @@ test('the freshness reminder names --local only for a project-local installation
   await run(['install', '--local', '--target', 'orca'], ctx); ctx.output.length = 0;
   check(options);
   assert.match(ctx.output[0], /update --local$/);
+  await run(['check', '--local'], {...options, getLatest: () => '99.0.0'});
+  assert.match(ctx.output.at(-1), /update --local$/);
   fs.rmSync(path.join(ctx.cwd, '.idp'), {recursive: true});
   await run(['install', '--target', 'orca'], ctx); ctx.output.length = 0;
   check({...options, now: options.now + 8 * 86400000});
   assert.doesNotMatch(ctx.output[0], /--local/);
+  await run(['check'], {...options, getLatest: () => '99.0.0'});
+  assert.doesNotMatch(ctx.output.at(-1), /--local/);
 });
 
 // --- recoverable update transaction -------------------------------------------------------

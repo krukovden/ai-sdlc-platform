@@ -127,7 +127,8 @@ async function run(argv, context = {}) {
   if (args.command === 'list') { out(`${catalog.name} ${pkg.version}`); catalog.skills.forEach(s => out(`skill ${s.name}`)); return; }
   if (args.command === 'check') {
     const version = receipt.version || pkg.version, newest = getLatest(catalog.source);
-    out(newest && compare(newest, version) > 0 ? `${version} → ${newest} available. Update: npx git+${catalog.source} update` : `${version}: no newer release available`); return;
+    const scope = args.local ? ' --local' : '';
+    out(newest && compare(newest, version) > 0 ? `${version} → ${newest} available. Update: npx git+${catalog.source} update${scope}` : `${version}: no newer release available`); return;
   }
   if (args.command === 'status') {
     const interrupted = exists(journalFile) && `! interrupted ${read(journalFile).command}: run the command again to finish it`;
