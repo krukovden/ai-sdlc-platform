@@ -344,9 +344,9 @@ class ReapTests(ScriptTestCase):
         tags.claim_pbi(board, "3", A, 2, feature="1")
         board.advance(61)
         report = lease.reap(board, "1")
-        self.assertEqual([r["outcome"] for r in report], ["reaped", "reaped", "reaped"])
-        self.assertEqual(board.cards["2"]["tags"], [])
-        self.assertEqual(board.cards["3"]["tags"], [])
+        self.assertEqual([r["outcome"] for r in report], ["reaped", "waiting", "waiting"])
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-a/w1"])
+        self.assertEqual(board.cards["3"]["tags"], ["idp:owner:run-a/w2"])
         self.assertEqual(board.cards["4"]["tags"], ["idp:owner:run-z/w1"])
 
     def test_a_workers_lease_is_its_runs_heartbeat_on_the_feature(self):
@@ -466,9 +466,31 @@ class ReapTests(ScriptTestCase):
         self.addCleanup(setattr, lease.tags, "release_stale", real)
         report = lease.reap(board, "1")
         child = next(entry for entry in report if entry["identifier"] == "2")
-        self.assertEqual(child["outcome"], "alive")
+        self.assertEqual(child["outcome"], "waiting")
         self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
         self.assertEqual(lease.count_events(board, "2", lease.REAP), 0)
+
+    def test_a_parent_heartbeat_during_child_reap_leaves_the_child_for_the_next_pass(self):
+        board = self.claimed(comment_bumps_rev=True)
+        board.add_card("2", (), kind="pbi", parent="1")
+        tags.claim_pbi(board, "2", A, 1, feature="1")
+        board.advance(61)
+        real = lease.post_event
+
+        def delayed(board_, identifier, kind, key, *args, **kwargs):
+            posted = real(board_, identifier, kind, key, *args, **kwargs)
+            if kind == lease.REAP and str(identifier) == "1":
+                lease.heartbeat(board_, "1", A, 9)
+            return posted
+
+        lease.post_event = delayed
+        self.addCleanup(setattr, lease, "post_event", real)
+        report = lease.reap(board, "1")
+        self.assertEqual(report[0]["outcome"], "reaped")
+        child = next(entry for entry in report if entry["identifier"] == "2")
+        self.assertEqual(child["outcome"], "waiting")
+        self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
+        self.assertEqual(lease.reap(board, "2")[0]["outcome"], "alive")
 
 
 class TakeoverTests(ScriptTestCase):

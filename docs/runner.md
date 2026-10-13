@@ -485,6 +485,16 @@ Two operational limits matter even before those experiments run:
 - **Azure PR completion stays off by default.** Until experiment 8 proves the
   target race away, the runner leaves Azure Repos PBI PRs open and blocks the
   Feature unless the profile opts in with `development.azure_complete_unproven`.
+- **Reaping still has one provider-shaped last-window limit.** The reaper fences
+  a stale removal on the card revision it read and on one final reread of the
+  lease's latest sign of life. That closes renewals that have already reached the
+  board, but it cannot make a provider give an atomic "remove owner only if no new
+  comment landed after this exact read" guarantee when comment writes do not carry
+  a comparable token. The runner therefore narrows the cross-card case it can:
+  after reaping a Feature, PBIs whose lease clock lives on that Feature are left
+  for the next reap pass instead of being removed in the same window. The held card
+  itself still has that final unclosable window until experiment 2 proves a
+  board-native fence for comment writes.
 - **Copilot hook registration is manual.** This repository ships a hook file, not a
   Copilot plugin hook installer. Without that manual install, only the runner-side
   handoff guarantee exists for Copilot sessions.

@@ -383,8 +383,8 @@ def block(board, identifier, run, reason):
 # Reap
 # ---------------------------------------------------------------------------
 
-def last_sign_of_life(board, card, owner):
-    """When the owning run last showed it was alive, by the server's timestamps.
+def sign_of_life(board, card, owner):
+    """When the owning run last showed it was alive, and on which card.
 
     A heartbeat or the claim itself, by that run. A worker's owner tag on a PBI
     lives as long as its run's lease on the Feature, so the parent's comments
@@ -401,11 +401,16 @@ def last_sign_of_life(board, card, owner):
             if event.get("run") == run and event.get("kind") in (HEARTBEAT, CLAIM, TAKEOVER):
                 moment = parse_time(event.get("created_at"))
                 if moment:
-                    moments.append(moment)
+                    moments.append((moment, identifier))
     if not moments:
         changed = parse_time(card.get("changed_at"))
-        return changed
-    return max(moments)
+        return {"moment": changed, "card": card["identifier"] if changed else None}
+    moment, identifier = max(moments, key=lambda item: item[0])
+    return {"moment": moment, "card": identifier}
+
+
+def last_sign_of_life(board, card, owner):
+    return sign_of_life(board, card, owner)["moment"]
 
 
 def _stale(now, seen, lease_minutes):
@@ -422,7 +427,8 @@ def _release_expired(board, identifier, now, lease_minutes, reevaluate=True):
     owner = tags.owner_of(card.get("tags"))
     if owner is None:
         return {"identifier": card["identifier"], "owner": None, "outcome": "free"}
-    seen = last_sign_of_life(board, card, owner)
+    observed = sign_of_life(board, card, owner)
+    seen = observed["moment"]
     if not _stale(now, seen, lease_minutes):
         return {"identifier": card["identifier"], "owner": owner, "outcome": "alive",
                 "last_seen": seen.isoformat()}
@@ -442,7 +448,8 @@ def _release_expired(board, identifier, now, lease_minutes, reevaluate=True):
             "outcome": "reaped" if result["outcome"] in ("written", "unchanged")
             else result["outcome"],
             "last_seen": seen.isoformat() if seen else None,
-            "_removed": result["outcome"] in ("written", "unchanged")}
+            "_removed": result["outcome"] in ("written", "unchanged"),
+            "_source": observed.get("card")}
 
 
 def reap(board, identifier, now=None, lease_minutes=LEASE_MINUTES):
@@ -458,6 +465,7 @@ def reap(board, identifier, now=None, lease_minutes=LEASE_MINUTES):
         raise ValueError("reap needs the server's clock and got none")
     entry = _release_expired(board, identifier, now, lease_minutes)
     removed = entry.pop("_removed", False)
+    entry.pop("_source", None)
     report = [entry]
     if not removed:
         return report
@@ -476,8 +484,19 @@ def reap(board, identifier, now=None, lease_minutes=LEASE_MINUTES):
         for child in board.list_children(identifier):
             for held in tags.owners(child.get("labels") or []):
                 if tags.run_of(held) == run:
+                    observed = sign_of_life(board, board.read_card(child["identifier"]), held)
+                    if observed.get("card") == identifier:
+                        report.append({
+                            "identifier": child["identifier"],
+                            "owner": held,
+                            "outcome": "waiting",
+                            "last_seen": observed["moment"].isoformat()
+                            if observed.get("moment") else None,
+                        })
+                        continue
                     freed = _release_expired(board, child["identifier"], now, lease_minutes)
                     freed.pop("_removed", None)
+                    freed.pop("_source", None)
                     report.append(freed)
     return report
 
