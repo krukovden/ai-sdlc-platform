@@ -12,3 +12,4 @@ __pycache__/
 # Python
 # their git history is the record of how the work changed over time)
 venv/
+docker/calculator/out/

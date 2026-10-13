@@ -201,6 +201,7 @@ class Development:
             / Path(runner.repo).resolve().name
         self.running = {}
         self.busy = {}
+        self.busy_choices = {}
         self.skip = {}
         self.pin = None
         self.plan = None
@@ -538,7 +539,9 @@ class Development:
         """
         executors = runner_executors()
         try:
-            return self.executor.resolve("worker", busy=dict(self.busy))
+            busy = dict(self.busy)
+            busy.update(self.busy_choices)
+            return self.executor.resolve("worker", busy=busy)
         except executors.ResolutionError as exc:
             if self.running:
                 return None
@@ -736,6 +739,8 @@ class Development:
                if item.get("planned") is None else ""))
         choice = claim["choice"]
         self.busy[choice.agent] = self.busy.get(choice.agent, 0) + 1
+        label = str(choice)
+        self.busy_choices[label] = self.busy_choices.get(label, 0) + 1
         self.running[pbi] = {"item": item, "claim": claim, "wt": wt, "choice": choice,
                              "worker": claim["worker"], "prompt": prompt,
                              "env": {"IDP_CONTEXT_DIR": str(context)}}
@@ -761,6 +766,8 @@ class Development:
         job = self.running.pop(pbi)
         agent = job["choice"].agent
         self.busy[agent] = max(0, self.busy.get(agent, 0) - 1)
+        label = str(job["choice"])
+        self.busy_choices[label] = max(0, self.busy_choices.get(label, 0) - 1)
         if error is not None:
             executors = runner_executors()
             if isinstance(error, executors.ResolutionError):

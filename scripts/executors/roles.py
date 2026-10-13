@@ -171,9 +171,27 @@ class Resolver:
                 "is installed and signed in, and no other agent is either",
                 "install and sign in to one of the agents the profile names "
                 "(a probe like `claude -p ok` must succeed), then re-run")
-        for choice in eligible:
-            if busy.get(choice.agent, 0) < self.cap(choice.agent):
-                return choice
+        own = set(self.roles.get(role) or [])
+        own_pool = [choice for choice in eligible if choice in own]
+        if any(busy.get(choice.agent, 0) < self.cap(choice.agent) for choice in own_pool):
+            pool = own_pool
+        else:
+            pool = eligible
+        order = {choice: n for n, choice in enumerate(self.candidates(role))}
+        agents = []
+        grouped = {}
+        for choice in pool:
+            if choice.agent not in grouped:
+                agents.append(choice.agent)
+                grouped[choice.agent] = []
+            grouped[choice.agent].append(choice)
+        for agent in agents:
+            if busy.get(agent, 0) >= self.cap(agent):
+                continue
+            ranked = sorted(grouped[agent], key=lambda choice: (
+                int(busy.get(str(choice), 0)) if choice.model is not None else 0,
+                order[choice]))
+            return ranked[0]
         return None
 
     def capacity(self):
