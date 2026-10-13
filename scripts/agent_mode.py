@@ -46,6 +46,11 @@ import threading
 import time
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:                                    # pragma: no cover - Windows only
+    fcntl = None
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
@@ -291,10 +296,15 @@ class Presence:
     def __init__(self, home, run_id):
         self.dir = Path(home) / "agent"
         self.run_id = tags.check_run_id(run_id)
+        self._announced_pid = None
 
     @property
     def pid_file(self):
         return self.dir / f"{self.run_id}.pid"
+
+    @property
+    def lock_file(self):
+        return self.dir / f"{self.run_id}.lock"
 
     @property
     def stop_file(self):
@@ -302,12 +312,23 @@ class Presence:
 
     def announce(self, pid=None):
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.pid_file.write_text(str(pid or os.getpid()), encoding="utf-8")
+        self._announced_pid = int(pid or os.getpid())
+        self.pid_file.write_text(str(self._announced_pid), encoding="utf-8")
 
-    def leave(self):
-        for path in (self.pid_file, self.stop_file):
-            if path.exists():
-                path.unlink()
+    def leave(self, force=False):
+        if force:
+            for path in (self.pid_file, self.stop_file):
+                if path.exists():
+                    path.unlink()
+            return
+        try:
+            pid = int(self.pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid == self._announced_pid:
+            for path in (self.pid_file, self.stop_file):
+                if path.exists():
+                    path.unlink()
 
     def alive(self, kill=os.kill):
         try:
@@ -338,6 +359,90 @@ class Presence:
             if presence.alive(kill):
                 runs.append(path.stem)
         return runs
+
+    @staticmethod
+    def known_runs(home):
+        directory = Path(home) / "agent"
+        if not directory.exists():
+            return []
+        runs = {path.stem for path in directory.glob("*.pid")}
+        for path in directory.glob("*.lock"):
+            try:
+                holder = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if holder and holder != RunLock.FREE:
+                runs.add(path.stem)
+        return sorted(runs, key=natural)
+
+
+class RunLock:
+    """A process-lifetime local mutex for one run id."""
+
+    FREE = "free"
+
+    def __init__(self, home, run_id):
+        self.presence = Presence(home, run_id)
+        self.fd = None
+        self.pid = os.getpid()
+
+    def acquire(self):
+        self.presence.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.presence.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            if fcntl is None:                          # pragma: no cover - Windows only
+                raise BlockingIOError
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            os.close(fd)
+            holder = ""
+            try:
+                holder = self.presence.lock_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+            if not holder.isdigit():
+                holder = ""
+            raise AgentError(
+                EXIT.REFUSED,
+                f"run '{self.presence.run_id}' is already starting or live on this machine"
+                + (f" (pid {holder})" if holder else "") + ". A second process must not "
+                "share its lease.",
+                "stop that run, or omit --run-id so this invocation gets its own lease")
+        os.ftruncate(fd, 0)
+        os.write(fd, str(self.pid).encode("utf-8"))
+        self.fd = fd
+        return self
+
+    @staticmethod
+    def held(home, run_id):
+        presence = Presence(home, run_id)
+        if not presence.lock_file.exists():
+            return False
+        fd = os.open(presence.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            if fcntl is None:                          # pragma: no cover - Windows only
+                return True
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def release(self):
+        if self.fd is None:
+            return
+        try:
+            os.ftruncate(self.fd, 0)
+            os.lseek(self.fd, 0, os.SEEK_SET)
+            os.write(self.fd, self.FREE.encode("utf-8"))
+            if fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
+            self.fd = None
 
 
 def stop_signal(board, presence):
@@ -602,8 +707,11 @@ class AgentLoop:
     def reap(self, cards):
         """Release the project's stale leases. How many were released."""
         reaped = 0
-        for item in cards:
-            if not tags.owners(item.get("labels") or []):
+        deferred = set()
+        ordered = sorted(cards, key=lambda item: (item.get("parent") is not None,
+                                                  natural(item["identifier"])))
+        for item in ordered:
+            if item["identifier"] in deferred or not tags.owners(item.get("labels") or []):
                 continue
             try:
                 for entry in lease.reap(self.board, item["identifier"],
@@ -612,6 +720,8 @@ class AgentLoop:
                         reaped += 1
                         self.say(f"{entry['identifier']}: reaped `{entry['owner']}`, last "
                                  f"seen {entry.get('last_seen') or 'never'}")
+                    elif entry["outcome"] == "waiting":
+                        deferred.add(entry["identifier"])
             except Exception as exc:                    # noqa: BLE001 - reap is best effort
                 self.say(f"{item['identifier']}: reap failed: {exc}")
         return reaped
@@ -814,20 +924,26 @@ class AgentLoop:
 
 def stop(board, home, run_ids, list_cards, worktrees, handoff=None, mention=None,
          out=None, kill=os.kill):
-    """`run.py stop`. A live loop is asked; a run with no loop is released now."""
+    """`run.py stop`. A live process is asked; release only once it is gone.
+
+    Agent mode, a foreground `run.py <feature>` and an executing takeover all
+    announce a pid. While that process is alive, stop only writes the stop
+    file — the owner commits and pauses between sessions. Releasing here would
+    commit and push a tree that process is still editing.
+    """
     out = out or sys.stdout
     for run in run_ids:
         presence = Presence(home, run)
-        if presence.alive(kill):
+        if presence.alive(kill) or RunLock.held(home, run):
             presence.request_stop()
             print(f"run '{run}' stops after its task in flight: it commits, writes "
                   "handoff.md and pauses what it holds.", file=out)
             continue
-        print(f"run '{run}' has no live loop on this machine: releasing what it holds "
-              "now.", file=out)
+        print(f"run '{run}' has no live process on this machine: releasing what it "
+              "holds now.", file=out)
         release_run(board, run, list_cards(), worktrees, "run.py stop", handoff=handoff,
                     mention=mention, out=out)
-        presence.leave()
+        presence.leave(force=True)
     return EXIT.DONE
 
 

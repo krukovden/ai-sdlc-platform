@@ -100,6 +100,9 @@ PBIs carry no phase tag. During 3.2 a worker claims them with
 - A claim is one fenced write: on Azure DevOps `test /rev` plus the phase tag and
   owner tag in one patch; on Linear, a reread of `updatedAt` immediately before
   the write.
+- Reusing an explicit `--run-id` is also fenced locally before the board opens:
+  one process on one machine holds that run id, and a second local start is
+  refused before it can read or claim anything.
 - Every write after the claim re-reads the owner card first. Losing the owner tag
   stops the run before the next comment, attachment, tag write or push.
 - A claim is a **lease**, not a lock. Heartbeats keep it fresh; `run.py reap`
@@ -501,6 +504,17 @@ Two operational limits matter even before those experiments run:
   so a concurrent creator can still win the gap between those steps. The runner
   narrows that window as far as the provider allows and blocks on any answer
   that does not produce a visible PR URL.
+- **Reaping still has one provider-shaped last-window limit.** The reaper fences
+  a stale removal on the card revision it read and on one final reread of the
+  lease's latest sign of life. That closes renewals that have already reached the
+  board, but it cannot make a provider give an atomic "remove owner only if no new
+  comment landed after this exact read" guarantee when comment writes do not carry
+  a comparable token. The runner therefore narrows the cross-card case it can:
+  after reaping a Feature, PBIs whose lease clock lives on that Feature are deferred
+  for the rest of that project-wide reap pass and left to a later pass instead of
+  being removed in the same window. The held card itself still has that final
+  unclosable window until experiment 2 proves a board-native fence for comment
+  writes.
 - **Copilot hook registration is manual.** This repository ships a hook file, not a
   Copilot plugin hook installer. Without that manual install, only the runner-side
   handoff guarantee exists for Copilot sessions.

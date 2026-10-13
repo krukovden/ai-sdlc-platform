@@ -231,7 +231,10 @@ class Fenced:
     The state writes underneath are fenced on the revision as well (the tag
     writer's `test /rev`); a comment or an attachment has no revision to
     test on either board, so for those the owner re-read immediately before
-    the call is the fence.
+    the call is the fence. An attachment retries a revision conflict inside
+    that one call. The retry is not a new authorization: before each
+    publishing write the adapter calls `_publish_check`, and a takeover
+    aborts the old owner instead of linking against the new revision.
     """
 
     def __init__(self, board, card, run):
@@ -248,7 +251,23 @@ class Fenced:
 
         def fenced(*args, **kwargs):
             self.check()
-            return attribute(*args, **kwargs)
+            if name != "attach_document":
+                return attribute(*args, **kwargs)
+            # The retry lives inside the adapter. Hand it this fence so a
+            # conflict it answers by reading a fresh revision still asks who
+            # holds the card before it publishes.
+            previous = getattr(self.unfenced, "_publish_check", None)
+            self.unfenced._publish_check = self.check
+            try:
+                return attribute(*args, **kwargs)
+            finally:
+                if previous is None:
+                    try:
+                        del self.unfenced._publish_check
+                    except AttributeError:
+                        pass
+                else:
+                    self.unfenced._publish_check = previous
         return fenced
 
 
@@ -282,7 +301,7 @@ def claim(board, identifier, run, phase=None, profile=None, **facts):
     Without one nothing is written at all: a claim with no profile hash is
     refused before its tag write. The comment is keyed on the lease's
     generation, so a claim resumed after a crash does not post twice, while a
-    claim after a reap or a takeover is a new lease and does.
+    claim after a reap, a takeover, a pause or a release is a new lease and does.
     """
     if not profile:
         card = {"identifier": str(identifier), "tags": [], "status": None}
@@ -293,11 +312,82 @@ def claim(board, identifier, run, phase=None, profile=None, **facts):
             fix="pass profile=board.profile_hash(profile) to lease.claim")
     result = tags.claim(board, identifier, run, phase=phase)
     if result["outcome"] in ("written", "unchanged"):
-        n = generation(board, identifier)
-        post_event(board, identifier, CLAIM, f"{CLAIM}:{run}:{phase or '-'}:g{n}",
+        key, n, renewed = _claim_key(board, identifier, run, phase, result)
+        post_event(board, identifier, CLAIM, key,
                    text=f"Claimed by run `{run}`.", run=run, phase=phase,
-                   generation=n, profile=profile, **facts)
+                   generation=n, profile=profile, rev=result.get("rev"), **facts)
+        if renewed:
+            post_event(board, identifier, HEARTBEAT, renewed,
+                       text=f"Run `{run}` resumed this card after reclaiming it.",
+                       run=run, source="claim-resume", rev=result.get("rev"))
     return result
+
+
+def _claim_key(board, identifier, run, phase, result):
+    """Dedupe retries of one acquisition, not the next acquisition by the same run.
+
+    The first claim of a generation keeps `claim:<run>:<phase>:g<N>`. That is
+    also the key after a reap or a takeover, because `generation` counts those
+    and nothing else. A later acquisition in the same generation — the owner
+    tag written again after a pause or a release — is a new sign of life, keyed
+    on the revision of that write. A retry (`unchanged`) reuses the latest key
+    of this hold, so a comment that moved the revision cannot mint another.
+    """
+    n = generation(board, identifier)
+    base = f"{CLAIM}:{run}:{phase or '-'}:g{n}"
+    prior = [event for event in events(board.list_comments(identifier), CLAIM)
+             if event.get("run") == run and event.get("generation") == n
+             and str(event.get("key", "")).startswith(base)]
+    if result["outcome"] == "written" and prior:
+        return f"{base}:r{result.get('rev')}", n, None
+    if result["outcome"] == "unchanged" and prior:
+        candidate = f"{base}:r{result.get('rev')}"
+        if any(event.get("key") == candidate for event in prior):
+            return candidate, n, None
+        if _missing_claim_for_current_hold(board, identifier, run, prior[-1]):
+            return candidate, n, None
+        # `unchanged` means this run already holds the owner tag and is alive right
+        # now. Whatever happened in between — a release, a pause whose comment
+        # deduped, a heartbeat of an earlier hold — a lease this run's last sign of
+        # life has let age past half its term is renewed here, before anything can
+        # reap it. Renewal is a heartbeat, not a new claim: the pinned claim facts
+        # stay. A fresh lease (a retry right after a crash) gets nothing, so a
+        # resumed run leaves the same board as a clean one.
+        renewed = None
+        if _lease_ageing(board, identifier, run, result):
+            renewed = f"{HEARTBEAT}:{run}:claim:r{result.get('rev')}"
+        return prior[-1]["key"], n, renewed
+
+    return base, n, None
+
+
+def _missing_claim_for_current_hold(board, identifier, run, latest):
+    """Whether a later pause proves this unchanged owner is a resumed hold.
+
+    A crash can land after a resumed owner's tag write and before its claim
+    comment. The durable fact that distinguishes that from an ordinary retry is
+    the pause event of the earlier hold. Unrelated card edits must not mint a
+    replacement claim or replace the original claim facts.
+    """
+    found_latest = False
+    for event in events(board.list_comments(identifier)):
+        if event.get("key") == latest.get("key"):
+            found_latest = True
+            continue
+        if found_latest and event.get("kind") == "pause" and event.get("run") == run:
+            return True
+    return False
+
+
+def _lease_ageing(board, identifier, run, result):
+    """Whether this run's last sign of life on the card is older than half a lease."""
+    card = dict(result.get("card") or {})
+    card.setdefault("identifier", str(identifier))
+    seen = last_sign_of_life(board, card, run)
+    now = parse_time(board.server_now())
+    if seen is None or now is None:
+        return True
+    return (now - seen).total_seconds() > LEASE_MINUTES * 60 / 2
 
 
 def generation(board, identifier):
@@ -324,8 +414,8 @@ def block(board, identifier, run, reason):
 # Reap
 # ---------------------------------------------------------------------------
 
-def last_sign_of_life(board, card, owner):
-    """When the owning run last showed it was alive, by the server's timestamps.
+def sign_of_life(board, card, owner):
+    """When the owning run last showed it was alive, and on which card.
 
     A heartbeat or the claim itself, by that run. A worker's owner tag on a PBI
     lives as long as its run's lease on the Feature, so the parent's comments
@@ -342,57 +432,103 @@ def last_sign_of_life(board, card, owner):
             if event.get("run") == run and event.get("kind") in (HEARTBEAT, CLAIM, TAKEOVER):
                 moment = parse_time(event.get("created_at"))
                 if moment:
-                    moments.append(moment)
+                    moments.append((moment, identifier))
     if not moments:
         changed = parse_time(card.get("changed_at"))
-        return changed
-    return max(moments)
+        return {"moment": changed, "card": card["identifier"] if changed else None}
+    moment, identifier = max(moments, key=lambda item: item[0])
+    return {"moment": moment, "card": identifier}
+
+
+def last_sign_of_life(board, card, owner):
+    return sign_of_life(board, card, owner)["moment"]
+
+
+def _stale(now, seen, lease_minutes):
+    return seen is None or now - seen > timedelta(minutes=lease_minutes)
+
+
+def _release_expired(board, identifier, now, lease_minutes, reevaluate=True):
+    """Remove a stale owner, fenced on the revision and the sign of life just read.
+
+    A renewal between the read and the removal is a conflict. Re-evaluate once:
+    if the lease is alive now, leave it and do not post a reap.
+    """
+    card = board.read_card(identifier)
+    owner = tags.owner_of(card.get("tags"))
+    if owner is None:
+        return {"identifier": card["identifier"], "owner": None, "outcome": "free"}
+    observed = sign_of_life(board, card, owner)
+    seen = observed["moment"]
+    if not _stale(now, seen, lease_minutes):
+        return {"identifier": card["identifier"], "owner": owner, "outcome": "alive",
+                "last_seen": seen.isoformat()}
+
+    def renewed(fresh):
+        later = last_sign_of_life(board, fresh, owner)
+        return later is not None and (seen is None or later > seen)
+
+    result = tags.release_stale(board, identifier, owner, seen_rev=card.get("rev"),
+                                renewed=renewed)
+    if result["outcome"] == "conflict":
+        if reevaluate:
+            return _release_expired(board, identifier, now, lease_minutes, reevaluate=False)
+        return {"identifier": card["identifier"], "owner": owner, "outcome": "conflict",
+                "last_seen": seen.isoformat() if seen else None}
+    return {"identifier": card["identifier"], "owner": owner,
+            "outcome": "reaped" if result["outcome"] in ("written", "unchanged")
+            else result["outcome"],
+            "last_seen": seen.isoformat() if seen else None,
+            "_removed": result["outcome"] in ("written", "unchanged"),
+            "_source": observed.get("card")}
 
 
 def reap(board, identifier, now=None, lease_minutes=LEASE_MINUTES):
     """Release a stale owner tag on one card; on a Feature, its run's PBI tags too.
 
     `now` is the server's clock; asked of the board when not given. Returns one
-    entry per card looked at, each with what happened to it.
+    entry per card looked at, each with what happened to it. Removal is fenced
+    on the revision and the sign of life that showed the lease was stale; a
+    renewal in between is re-read once and left alone.
     """
     now = parse_time(now) if now is not None else parse_time(board.server_now())
     if now is None:
         raise ValueError("reap needs the server's clock and got none")
-    card = board.read_card(identifier)
-    owner = tags.owner_of(card.get("tags"))
-    if owner is None:
-        return [{"identifier": card["identifier"], "owner": None, "outcome": "free"}]
+    entry = _release_expired(board, identifier, now, lease_minutes)
+    removed = entry.pop("_removed", False)
+    entry.pop("_source", None)
+    report = [entry]
+    if not removed:
+        return report
+    seen = entry.get("last_seen")
+    post_event(board, identifier, REAP,
+               f"{REAP}:{entry['owner']}:{seen or 'never'}",
+               text=(f"Released `{entry['owner']}`: no sign of life for more than "
+                     f"{lease_minutes} minutes by the server's clock. The card waits "
+                     "in its phase for the next run."),
+               owner=entry["owner"], last_seen=seen)
 
-    seen = last_sign_of_life(board, card, owner)
-    if seen is not None and now - seen <= timedelta(minutes=lease_minutes):
-        return [{"identifier": card["identifier"], "owner": owner, "outcome": "alive",
-                 "last_seen": seen.isoformat()}]
-
-    report = []
-    result = tags.release_stale(board, card["identifier"], owner)
-    report.append({"identifier": card["identifier"], "owner": owner,
-                   "outcome": "reaped" if result["outcome"] in ("written", "unchanged")
-                   else result["outcome"],
-                   "last_seen": seen.isoformat() if seen else None})
-    if result["outcome"] in ("written", "unchanged"):
-        post_event(board, card["identifier"], REAP,
-                   f"{REAP}:{owner}:{seen.isoformat() if seen else 'never'}",
-                   text=(f"Released `{owner}`: no sign of life for more than "
-                         f"{lease_minutes} minutes by the server's clock. The card waits "
-                         "in its phase for the next run."),
-                   owner=owner, last_seen=seen.isoformat() if seen else None)
-
-        # A Feature's run also held its PBIs. They go with it.
-        run = tags.run_of(owner)
-        if owner == run:
-            for child in board.list_children(card["identifier"]):
-                for held in tags.owners(child.get("labels") or []):
-                    if tags.run_of(held) == run:
-                        freed = tags.release_stale(board, child["identifier"], held)
-                        report.append({"identifier": child["identifier"], "owner": held,
-                                       "outcome": "reaped"
-                                       if freed["outcome"] in ("written", "unchanged")
-                                       else freed["outcome"]})
+    # A Feature's run also held its PBIs. Each is fenced on its own observation,
+    # so a heartbeat that lands before the child's removal keeps the child.
+    run = tags.run_of(entry["owner"])
+    if entry["owner"] == run:
+        for child in board.list_children(identifier):
+            for held in tags.owners(child.get("labels") or []):
+                if tags.run_of(held) == run:
+                    observed = sign_of_life(board, board.read_card(child["identifier"]), held)
+                    if observed.get("card") == identifier:
+                        report.append({
+                            "identifier": child["identifier"],
+                            "owner": held,
+                            "outcome": "waiting",
+                            "last_seen": observed["moment"].isoformat()
+                            if observed.get("moment") else None,
+                        })
+                        continue
+                    freed = _release_expired(board, child["identifier"], now, lease_minutes)
+                    freed.pop("_removed", None)
+                    freed.pop("_source", None)
+                    report.append(freed)
     return report
 
 

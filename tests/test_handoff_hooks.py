@@ -309,6 +309,54 @@ class LayerTwoTests(GitTestCase):
         self.assertEqual(sorted(copilot["hooks"]), ["errorOccurred", "sessionEnd"])
 
 
+class ExcludedIndexTests(GitTestCase):
+    """A file select() refused must not ride along in a commit that was already staged."""
+
+    def branch_paths(self, branch):
+        shown = git(self.remote, "log", "--name-only", "--format=", branch)
+        return {line for line in shown.splitlines() if line}
+
+    def test_already_staged_secrets_oversized_and_scratch_are_not_committed(self):
+        self.branch("pbi/7-store/g1")
+        (self.repo / "src.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (self.repo / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        scratch = self.repo / ".idp" / "context"
+        scratch.mkdir(parents=True)
+        (scratch / "card.json").write_text('{"token":"x"}\n', encoding="utf-8")
+        (self.repo / "payload.bin").write_bytes(b"x" * 32)
+        git(self.repo, "add", "--", ".env", ".idp/context/card.json", "payload.bin")
+        with mock.patch.object(handoff_script, "MAX_BYTES", 16):
+            result = handoff_script.handoff(self.repo, "limit", "7")
+        published = self.branch_paths("pbi/7-store/g1")
+        self.assertNotIn(".env", published)
+        self.assertNotIn(".idp/context/card.json", published)
+        self.assertNotIn("payload.bin", published)
+        self.assertIn("src.py", published)
+        self.assertIn("handoff.md", published)
+        left = {item["path"]: item["why"] for item in result["left_out"]}
+        self.assertIn("secret", left[".env"])
+        self.assertIn("5 MB", left["payload.bin"])
+        self.assertEqual((self.repo / ".env").read_text(encoding="utf-8"), "TOKEN=secret\n")
+        self.assertTrue((scratch / "card.json").exists())
+        still = set(git(self.repo, "diff", "--cached", "--name-only").splitlines())
+        self.assertEqual(still, {".env", ".idp/context/card.json", "payload.bin"})
+
+    def test_a_staged_secret_is_not_published_when_no_source_change_is_accepted(self):
+        self.branch("pbi/7-store/g1")
+        (self.repo / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        git(self.repo, "add", "--", ".env")
+        result = handoff_script.handoff(self.repo, "limit", "7")
+        published = self.branch_paths("pbi/7-store/g1")
+        self.assertNotIn(".env", published)
+        self.assertIn("handoff.md", published)
+        self.assertFalse(result["wip"])
+        self.assertEqual(git(self.repo, "show", "--name-only", "--format=", "HEAD").splitlines(),
+                         ["handoff.md"])
+        self.assertIn(".env", git(self.repo, "diff", "--cached", "--name-only").splitlines())
+        self.assertEqual((self.repo / ".env").read_text(encoding="utf-8"), "TOKEN=secret\n")
+        self.assertIn("secret", {item["path"]: item["why"] for item in result["left_out"]}[".env"])
+
+
 class ShippedHookFilesTests(unittest.TestCase):
 
     def read(self, name):

@@ -318,12 +318,117 @@ class SessionOutcomeTests(RunnerTestCase):
         self.assertIn(tags.BLOCKED, board.cards[FEATURE]["tags"])
         self.assertTrue(lease.events(board.list_comments(FEATURE), lease.BLOCK))
 
+    def test_lost_supervision_is_not_an_attempt_and_does_not_start_another_session(self):
+        board = new_board()
+
+        class Holding(ScriptedExecutor):
+            def __init__(self, *steps, **kwargs):
+                super().__init__(*steps, **kwargs)
+                self.design_starts = 0
+                self.reconnects = 0
+
+            def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                         choice=None):
+                if role == "design":
+                    self.design_starts += 1
+                    if self.design_starts == 1:
+                        who = run.executors.roles.as_choice(choice) if choice else self.choice
+                        code = self.finish(role, card, who, None, crashed=False)
+                        self.last["unsettled"] = True
+                        self.last["crashed"] = False
+                        return code
+                return super().run_role(role, card, worktree, prompt, context=context,
+                                        author=author, choice=choice)
+
+            def reconnect(self, role, card, worktree, prompt, context=None, author=None,
+                          choice=None):
+                self.reconnects += 1
+                return super().run_role(role, card, worktree, prompt, context=context,
+                                        author=author, choice=choice)
+
+        holding = Holding(self.session())
+        code = self.runner(board, executor=holding).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.DONE)
+        self.assertEqual(holding.design_starts, 1)
+        self.assertEqual(holding.reconnects, 1)
+        self.assertFalse(lease.events(board.list_comments(FEATURE), run.ATTEMPT))
+
+    def test_a_ready_adr_is_not_published_until_unsettled_supervision_reconnects(self):
+        board = new_board()
+        session = self.session()
+
+        class Holding(ScriptedExecutor):
+            def __init__(self, *steps, **kwargs):
+                super().__init__(*steps, **kwargs)
+                self.design_starts = 0
+                self.reconnects = 0
+
+            def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                         choice=None):
+                code = super().run_role(role, card, worktree, prompt, context=context,
+                                        author=author, choice=choice)
+                if role == "design":
+                    self.design_starts += 1
+                    if self.design_starts == 1:
+                        self.last["unsettled"] = True
+                        self.last["crashed"] = False
+                return code
+
+            def reconnect(self, role, card, worktree, prompt, context=None, author=None,
+                          choice=None):
+                self.reconnects += 1
+                who = run.executors.roles.as_choice(choice) if choice else self.choice
+                return self.finish(role, card, who, {"code": EXIT.DONE, "reason": "rejoined"})
+
+        holding = Holding(session)
+        code = self.runner(board, executor=holding).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.DONE)
+        self.assertEqual(holding.design_starts, 1)
+        self.assertEqual(holding.reconnects, 1)
+        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN_REVIEW])
+        self.assertEqual(len(adr_documents(board)), 1)
+
     def test_a_crash_is_an_attempt_and_the_next_session_carries_on(self):
         board = new_board()
         code = self.runner(board, lambda *a: None, self.session()).run_feature(FEATURE)
         self.assertEqual(code, EXIT.DONE)
         attempts = lease.events(board.list_comments(FEATURE), run.ATTEMPT)
         self.assertEqual([a["cause"] for a in attempts], ["crash"])
+
+    def test_a_design_limit_exhausts_that_choice_before_the_card_is_paused(self):
+        board = new_board()
+        profile = {"roles": {"design": ["claude:opus", "codex:gpt-5"],
+                             "worker": ["codex:gpt-5"],
+                             "review": ["copilot:gpt-4.1"]}}
+        executor = ScriptedExecutor(lambda *a: {"limit": "rate_limit"},
+                                    executors_profile=profile)
+        code = self.runner(board, executor=executor).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.HANDOFF)
+        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertFalse(executor.resolver.available(run.executors.Choice("claude", "opus")))
+        self.assertEqual(str(executor.resolve("design")), "codex:gpt-5")
+        self.assertEqual(self.slept, [])
+
+    def test_a_design_limit_with_nothing_left_waits_before_pausing(self):
+        board = new_board()
+
+        class Spent(ScriptedExecutor):
+            def exhaust(self, choice):
+                super().exhaust(choice)
+                self._spent = True
+
+            def resolve(self, role, author=None, busy=None):
+                if getattr(self, "_spent", False):
+                    raise run.executors.ResolutionError(
+                        "no agent can fill the role 'design'", "wait for a limit to reset")
+                return super().resolve(role, author=author, busy=busy)
+
+        executor = Spent(lambda *a: {"limit": "rate_limit"})
+        code = self.runner(board, executor=executor).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.HANDOFF)
+        self.assertEqual(self.slept, list(run.INFRA_BACKOFF))
+        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertFalse(lease.events(board.list_comments(FEATURE), run.ATTEMPT))
 
     def test_a_rate_limit_pauses_the_card_for_any_run_to_take(self):
         board = new_board()
@@ -522,6 +627,35 @@ class CommandLineTests(RunnerTestCase):
         self.assertTrue(json.loads(output))
 
 
+    def test_cmd_reap_does_not_reap_a_child_deferred_by_the_features_reap(self):
+        board = FakeBoard(profile=dict(PROFILE, project_id="project-1"), comment_bumps_rev=True)
+        board.add_card(FEATURE, tags_=[tags.DEVELOPMENT], kind="feature",
+                       title="Feature: offline search", description=FEATURE_BODY)
+        lease.claim(board, FEATURE, "run-1", tags.DEVELOPMENT,
+                    profile=run.board_cli.profile_hash(PROFILE))
+        board.add_card("2", (), kind="pbi", parent=FEATURE)
+        tags.claim_pbi(board, "2", "run-1", 1, feature=FEATURE)
+        board.advance(61)
+        real = lease.post_event
+
+        def delayed(board_, identifier, kind, key, *args, **kwargs):
+            posted = real(board_, identifier, kind, key, *args, **kwargs)
+            if kind == lease.REAP and str(identifier) == FEATURE:
+                lease.heartbeat(board_, FEATURE, "run-1", 9)
+            return posted
+
+        args = mock.Mock(cards=[FEATURE, "2"], lease_minutes=60)
+        with mock.patch.object(run.board_cli, "open_board",
+                               return_value=(dict(PROFILE, project_id="project-1"), None, board)), \
+                mock.patch.object(lease, "post_event", side_effect=delayed), \
+                mock.patch.object(run.agent_mode, "branch_reader", return_value=lambda *_: (None, False)), \
+                mock.patch.object(run.sys, "stdout", io.StringIO()), \
+                mock.patch.object(run.sys, "exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                run.cmd_reap(args)
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-1/w1"])
+
+
 class LaunchFails(ScriptedExecutor):
     """A scripted executor whose agent cannot be started for the first `fails[role]` calls.
 
@@ -605,6 +739,216 @@ class HeartbeatTests(RunnerTestCase):
         self.assertIsNone(beat.beat())
         self.assertEqual(lease.events(board.list_comments(FEATURE), lease.HEARTBEAT), [])
         self.assertTrue(beat._stop.is_set())
+
+
+class LeaseIdentityTests(unittest.TestCase):
+    """A runner lease is one invocation, not the stable skill identity (A2)."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("IDP_RUN_ID", None)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._saved is not None:
+            os.environ["IDP_RUN_ID"] = self._saved
+
+    @contextlib.contextmanager
+    def hold_lock(self, home, run_id):
+        script = """
+import importlib.util
+import pathlib
+import sys
+
+repo, home, run_id = sys.argv[1:]
+path = pathlib.Path(repo) / "scripts" / "agent_mode.py"
+spec = importlib.util.spec_from_file_location("idp_agent_mode_child", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+lock = module.RunLock(home, run_id).acquire()
+print("locked", flush=True)
+sys.stdin.read(1)
+lock.release()
+"""
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(REPO_ROOT), str(home), run_id],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "locked")
+            yield child
+        finally:
+            if child.stdin is not None:
+                child.stdin.write("x")
+                child.stdin.flush()
+            child.wait(timeout=5)
+            if child.stdin is not None:
+                child.stdin.close()
+            if child.stdout is not None:
+                child.stdout.close()
+            if child.stderr is not None:
+                child.stderr.close()
+
+    def test_two_invocations_do_not_share_the_stable_skill_identity(self):
+        home = Path(self.id())
+        first = run.lease_run_id(None, home)
+        second = run.lease_run_id(None, home)
+        self.assertNotEqual(first, second)
+        self.assertRegex(first, tags.RUN_ID.pattern)
+        self.assertRegex(second, tags.RUN_ID.pattern)
+        self.assertEqual(tags.current_run_id(), tags.current_run_id())
+        self.assertNotEqual(first, tags.current_run_id())
+
+    def test_two_default_invocations_are_not_both_accepted_as_the_same_owner(self):
+        board = new_board()
+        first = run.lease_run_id(None, Path(self.id()))
+        second = run.lease_run_id(None, Path(self.id()))
+        self.assertEqual(tags.claim(board, FEATURE, first)["outcome"], "written")
+        self.assertNotEqual(tags.claim(board, FEATURE, second)["outcome"], "unchanged")
+
+    def test_a_second_process_cannot_resume_a_live_run_id(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        run.agent_mode.Presence(home, "run-1").announce()
+        with self.assertRaises(run.RunnerError) as caught:
+            run.lease_run_id("run-1", home)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertIn("already live", caught.exception.message)
+        # A dead pid is a resume, not a second live holder. IDP_RUN_ID is the same path.
+        (home / "agent" / "run-1.pid").write_text("999999999", encoding="utf-8")
+        self.assertEqual(run.lease_run_id("run-1", home), "run-1")
+        os.environ["IDP_RUN_ID"] = "run-1"
+        self.assertEqual(run.lease_run_id(None, home), "run-1")
+
+    def test_a_second_process_cannot_open_the_board_as_the_same_explicit_run_id(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        with self.hold_lock(home, "run-1"):
+            with self.assertRaises(run.agent_mode.AgentError) as caught:
+                run.agent_mode.RunLock(home, "run-1").acquire()
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertIn("already starting or live", caught.exception.message)
+
+    def test_releasing_a_lock_never_unlinks_a_successors_inode(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        first = run.agent_mode.RunLock(home, "run-1").acquire()
+        second = run.agent_mode.RunLock(home, "run-1")
+        third = run.agent_mode.RunLock(home, "run-1")
+        original = Path.read_text
+        injected = {"done": False}
+
+        def racing_read_text(path, *args, **kwargs):
+            text = original(path, *args, **kwargs)
+            if path == first.presence.lock_file and not injected["done"]:
+                injected["done"] = True
+                second.acquire()
+            return text
+
+        with mock.patch.object(Path, "read_text", racing_read_text):
+            first.release()
+        if second.fd is None:
+            second.acquire()
+        self.assertTrue(second.presence.lock_file.exists())
+        with self.assertRaises(run.agent_mode.AgentError):
+            third.acquire()
+        second.release()
+        third.acquire()
+        third.release()
+
+    def test_releasing_a_lock_marks_it_free_at_offset_zero_and_hides_it_from_known_runs(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        lock = run.agent_mode.RunLock(home, "run-1").acquire()
+        lock.release()
+        lock_file = home / "agent" / "run-1.lock"
+        self.assertEqual(lock_file.read_bytes(), b"free")
+        self.assertEqual(run.agent_mode.Presence.known_runs(home), [])
+
+    def test_cmd_run_refuses_a_live_run_before_opening_the_board(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        run.agent_mode.Presence(home, "run-1").announce()
+        opened = []
+
+        def open_board():
+            opened.append("opened")
+            raise AssertionError("the board must not be opened while the run is live")
+
+        design_home = mock.Mock()
+        design_home.HOME = home
+        args = mock.Mock(run_id="run-1", no_ask=True, feature=FEATURE)
+        with mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board", side_effect=open_board):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_run(args)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertEqual(opened, [])
+
+    def test_cmd_agent_refuses_a_locally_locked_run_before_opening_the_board(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        opened = []
+
+        def open_board():
+            opened.append("opened")
+            raise AssertionError("the board must not be opened while the run is locked")
+
+        design_home = mock.Mock()
+        design_home.HOME = home
+        args = mock.Mock(run_id="run-1", serve=None)
+        with self.hold_lock(home, "run-1"), \
+                mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board", side_effect=open_board):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_agent(args)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertEqual(opened, [])
+
+    def test_cmd_takeover_refuses_a_locally_locked_run_before_opening_the_board(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        opened = []
+
+        def open_board():
+            opened.append("opened")
+            raise AssertionError("the board must not be opened while the run is locked")
+
+        design_home = mock.Mock()
+        design_home.HOME = home
+        args = mock.Mock(run_id="run-1", claim_only=True, card=FEATURE)
+        with self.hold_lock(home, "run-1"), \
+                mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board", side_effect=open_board):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_takeover(args)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertEqual(opened, [])
+
+    def test_cmd_stop_without_a_run_id_targets_dead_local_runner_ids_too(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        run_id = run.lease_run_id(None, home)
+        run.agent_mode.Presence(home, run_id).announce(pid=999999999)
+        board = new_board(tags.DESIGN, tags.owner_tag(run_id))
+        args = mock.Mock(run_id=None)
+        design_home = mock.Mock()
+        design_home.HOME = home
+        profile = dict(PROFILE, project_id="project-1")
+        with mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board",
+                                  return_value=(profile, None, board)), \
+                mock.patch.object(run.sys, "exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_stop(args)
+        self.assertIsNone(caught.exception.code)
+        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, f"idp:paused:{run_id}"])
 
 
 if __name__ == "__main__":

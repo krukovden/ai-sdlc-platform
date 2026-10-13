@@ -16,7 +16,7 @@ import os
 import unittest
 from unittest import mock
 
-from support import FakeLinear, ScriptTestCase, issue_node, linear, make_board
+from support import FakeLinear, ScriptTestCase, issue_node, linear, load_script, make_board
 
 RUN = {"IDP_RUN_ID": "run-a"}
 
@@ -230,6 +230,54 @@ class LinearFenceTests(ScriptTestCase):
         self.assertEqual(fake.label_names(), ["idp:design", "idp:owner:run-b"],
                          "the loser takes nothing")
         self.assertEqual(fake.writes, 1, "only the rival's write landed")
+
+
+class CommentHistoryTests(ScriptTestCase):
+    """A lease is read from every comment, not from the first page of a hundred."""
+
+    def test_pages_past_the_first_keep_the_heartbeat_and_the_counters(self):
+        lease = load_script("lease")
+        board = make_board()
+        attempt = lease.render_event("attempt", "attempt:development:IDE-1:1",
+                                     text="Attempt 1 of 3 did not finish",
+                                     phase="development", n=1, cause="crash")
+        heartbeat = lease.render_event("heartbeat", "heartbeat:run-a:9",
+                                       text="Run `run-a` is working on this card",
+                                       run="run-a", beat=9)
+        pages = {
+            None: {
+                "nodes": [{"id": "attempt", "body": attempt,
+                           "createdAt": "2026-01-01T01:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+            },
+            "cursor-1": {
+                "nodes": [{"id": "beat", "body": heartbeat,
+                           "createdAt": "2026-10-12T12:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": False, "endCursor": "cursor-2"},
+            },
+        }
+        calls = []
+
+        def query(token, document, variables=None):
+            calls.append((document, dict(variables or {})))
+            self.assertIn("orderBy: createdAt", document)
+            self.assertIn("pageInfo", document)
+            after = (variables or {}).get("after")
+            page = pages.get(after)
+            self.assertIsNotNone(page, f"no page for cursor {after!r}")
+            return {"issue": {"id": "uuid-IDE-90", "comments": page}}
+
+        with mock.patch.object(linear, "query", query):
+            comments = board.list_comments("IDE-90")
+
+        self.assertEqual([c["id"] for c in comments], ["attempt", "beat"])
+        self.assertEqual(lease.events(comments, "attempt")[0]["n"], 1)
+        self.assertEqual(lease.events(comments, "heartbeat")[-1]["beat"], 9)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[1][1].get("after"), "cursor-1")
+        self.assertLessEqual(
+            max(document.count("comments(") for document, _ in calls), 1,
+            "one comments connection per query, so a page stays under the complexity cap")
 
 
 if __name__ == "__main__":

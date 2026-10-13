@@ -1246,6 +1246,10 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         # fenced on the revision they were decided on; identical bytes already
         # attached are not uploaded again, so attaching twice changes nothing.
         for _ in range(ATTACH_ATTEMPTS):
+            # A fenced caller checked the owner once, on the way in. This loop
+            # answers a revision conflict by reading again and writing again;
+            # a takeover in between is not a revision this run may publish on.
+            self._recheck_publish()
             item = self._show(work_item_id, expand="relations")
             rev = item.get("rev")
             same = [(index, relation)
@@ -1265,6 +1269,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             # parses `--in-file` as JSON before sending it, so Markdown never
             # survived the trip (IDE-137). The body below is bytes and reaches
             # the service as it was written.
+            self._recheck_publish()
             uploaded = self._rest("wit/attachments", method="POST",
                                   body=content.encode("utf-8"),
                                   content_type="application/octet-stream",
@@ -1291,12 +1296,13 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             # This one would have survived the CLI — it really is JSON — but
             # keeping the three attachment calls on one door beats remembering
             # which is the exception.
+            self._recheck_publish()
             answer = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
                                 body=json.dumps(operations).encode("utf-8"),
                                 content_type="application/json-patch+json",
                                 project=project, conflict=True)
             if answer is CONFLICT:
-                continue          # the card moved under us: read it again
+                continue          # same owner, new revision: read it and ask again
 
             # `{url, slugId}`, because that is what the Linear adapter answers
             # and what `board.py doc` and `board.py memory record` index into.
@@ -1309,6 +1315,17 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         fail(EXIT.UNAVAILABLE, f"work item {work_item_id} kept changing while '{title}' was "
                                f"being attached; gave up after {ATTACH_ATTEMPTS} reads",
              fix="retry once nobody else is editing the work item")
+
+    def _recheck_publish(self):
+        """Re-read the owner when a `Fenced` board is driving this call.
+
+        Unfenced callers have no check to make. A fenced one set
+        `_publish_check` for the duration of `attach_document`, because that
+        method retries a conflict inside the call the fence already allowed.
+        """
+        check = getattr(self, "_publish_check", None)
+        if check is not None:
+            check()
 
     def list_attachments(self, identifier):
         """The documents attached to one work item: slugId, title, url."""

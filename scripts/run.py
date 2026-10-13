@@ -460,6 +460,34 @@ class Runner:
             reviewed = {r.get("sha256") for r in reviews}
             round_ = len(reviews)
             attempts = len(lease.events(comments, ATTEMPT, phase="design", round=round_))
+            if (self.executor.last or {}).get("unsettled"):
+                stop = self.stopping(feature)
+                if stop and self._supervision_released(feature):
+                    return self.pause(feature, stop)
+                code = self.reconnect_design(feature, base, feedback)
+                last = self.executor.last or {}
+                if last.get("unsettled"):
+                    self.sleep(INFRA_BACKOFF[0])
+                    continue
+                if code == EXIT.DONE:
+                    feedback = None
+                    continue
+                if code == EXIT.BLOCKED:
+                    return self.block(feature, last.get("reason") or "the design session "
+                                               "asked for a human")
+                if code == EXIT.REFUSED:
+                    tags.release(self.board, feature, self.run_id)
+                    self.say(f"{feature}: the design session refused: {last.get('reason')}")
+                    return EXIT.REFUSED
+                if last.get("crashed") and last.get("limit"):
+                    self.exhaust_design(last)
+                    return self.pause(feature, f"the {last.get('agent')} session hit "
+                                               f"{last.get('limit')}")
+                if last.get("crashed") or not self.design_progressed(feature, round_):
+                    cause = "crash" if last.get("crashed") else "handoff-without-progress"
+                    self.attempt(feature, round_, attempts + 1, cause,
+                                 last.get("reason") or cause)
+                continue
 
             candidate = None if feedback else self.design_candidate(feature, reviewed)
             if candidate is None:
@@ -468,10 +496,15 @@ class Runner:
                                                f"{MAX_ATTEMPTS} attempts; the last reason: "
                                                f"{feedback or 'no ADR came out'}")
                 stop = self.stopping(feature)
-                if stop:
+                if stop and self._supervision_released(feature):
                     return self.pause(feature, stop)
                 code = self.design_session(feature, base, feedback)
                 last = self.executor.last or {}
+                if last.get("unsettled"):
+                    # The worker may still be editing. Not an attempt, and not a pause:
+                    # a pause would let another run start a second session.
+                    self.sleep(INFRA_BACKOFF[0])
+                    continue
                 if last.get("launch_failed", False):
                     # The agent never started: infrastructure, never an attempt.
                     # Retried with backoff, then paused for any run to take.
@@ -500,6 +533,7 @@ class Runner:
                     return EXIT.REFUSED
                 # HANDOFF: a crash, a cliff, or context running out.
                 if last.get("crashed") and last.get("limit"):
+                    self.exhaust_design(last)
                     return self.pause(feature, f"the {last.get('agent')} session hit "
                                                f"{last.get('limit')}")
                 if last.get("crashed") or not self.design_progressed(feature, round_):
@@ -574,6 +608,49 @@ class Runner:
                               "a fresh session continues from its state.",
                          phase="design", round=round_, digest=digest, run=self.run_id)
         return True
+
+    def exhaust_design(self, last):
+        """The choice that hit a usage limit is done for this run.
+
+        The next resolution takes the next entry, which is how agent mode moves
+        from Claude to Codex instead of claiming the same paused card again.
+        When nothing remains, wait out the infrastructure backoff before the
+        pause: a fresh probe in the same breath would launch the limited agent
+        again and starve every other card.
+        """
+        if last.get("agent"):
+            self.executor.exhaust(executors.Choice(last.get("agent"), last.get("model")))
+        try:
+            self.executor.resolve("design")
+        except executors.ResolutionError:
+            for delay in INFRA_BACKOFF:
+                self.sleep(delay)
+
+    def _supervision_released(self, feature):
+        """True when stop may pause: no worker is unaccounted for, or it has exited."""
+        if not (self.executor.last or {}).get("unsettled"):
+            return True
+        confirm = getattr(self.executor, "confirm_stopped", None)
+        return bool(confirm(feature)) if confirm is not None else False
+
+    def reconnect_design(self, feature, base, feedback):
+        """Wait on the design dispatch already running. Never starts another."""
+        worktree = Path(self.worktree_for(feature, "design", base))
+        reconnect = getattr(self.executor, "reconnect", None)
+        if reconnect is None:
+            return EXIT.HANDOFF
+        context = self.write_context(feature, worktree)
+        prompt = DESIGN_PROMPT.format(
+            feature=feature, skill=DESIGN_SKILL / "SKILL.md", context=context,
+            design_py=DESIGN_SKILL / "design.py", run_py=SCRIPT_DIR / "run.py",
+            feedback=f"\nThe last attempt was refused by the runner's checks: {feedback}\n"
+                     "Fix exactly that." if feedback else "")
+        try:
+            return reconnect("design", feature, worktree, prompt,
+                             context={"IDP_CONTEXT_DIR": str(context)})
+        except executors.ResolutionError as exc:
+            tags.release(self.board, feature, self.run_id)
+            raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
 
     def design_session(self, feature, base, feedback):
         worktree = Path(self.worktree_for(feature, "design", base))
@@ -768,24 +845,75 @@ class Runner:
 # Commands
 # ---------------------------------------------------------------------------
 
-def cmd_run(args):
-    profile, _, board = board_cli.open_board()
+def lease_run_id(explicit, home):
+    """The lease this invocation holds.
+
+    `--run-id` or `IDP_RUN_ID` resumes that run, but only when no other live
+    process on this machine already holds it. With neither, each invocation
+    gets its own id. `tags.current_run_id` stays the stable skill identity and
+    is not a runner lease: two terminals would share it, and `claim` would
+    accept the second as the first.
+    """
+    chosen = (explicit or os.environ.get("IDP_RUN_ID") or "").strip()
+    if not chosen:
+        return tags.new_run_id()
     try:
-        executor = executors.select(profile.get("executors"))
-    except executors.ResolutionError as exc:
-        fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
-    ask = None
-    if not args.no_ask and sys.stdin.isatty():
-        ask = input
-    runner = Runner(board, profile, executor, args.run_id or tags.current_run_id(),
-                    repo=os.getcwd(), ask=ask)
-    runner.stopping = agent_mode.stop_signal(
-        board, agent_mode.Presence(runner.design.HOME, runner.run_id))
+        run = tags.check_run_id(chosen)
+    except ValueError as exc:
+        raise RunnerError(
+            EXIT.REFUSED, str(exc),
+            "pass a run id of letters, digits, '.', '_' and '-', at most 64, "
+            "starting with a letter or digit") from exc
+    presence = agent_mode.Presence(home, run)
+    if presence.alive():
+        pid = presence.pid_file.read_text(encoding="utf-8").strip()
+        raise RunnerError(
+            EXIT.REFUSED,
+            f"run '{run}' is already live on this machine (pid {pid}). "
+            "A second process must not share its lease.",
+            "stop that run, or omit --run-id so this invocation gets its own lease")
+    return run
+
+
+def acquire_lease(explicit):
+    """Resolve this invocation's lease before any board read or phase."""
+    home = load_design().HOME
     try:
-        code = runner.run_feature(args.feature)
+        run_id = lease_run_id(explicit, home)
+        return run_id, agent_mode.RunLock(home, run_id).acquire()
     except RunnerError as exc:
         fail(exc.code, exc.message, fix=exc.fix)
-    sys.exit(code)
+    except agent_mode.AgentError as exc:
+        fail(exc.code, exc.message, fix=exc.fix)
+
+
+def cmd_run(args):
+    run_id, held = acquire_lease(args.run_id)
+    # A foreground run is a live process. Without a pid, `run.py stop` treats
+    # it as dead and commits, pushes and pauses while it is still editing.
+    presence = agent_mode.Presence(load_design().HOME, run_id)
+    presence.announce()
+    try:
+        profile, _, board = board_cli.open_board()
+        try:
+            executor = executors.select(profile.get("executors"))
+        except executors.ResolutionError as exc:
+            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+        ask = None
+        if not args.no_ask and sys.stdin.isatty():
+            ask = input
+        runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=ask)
+        runner.stopping = agent_mode.stop_signal(board, presence)
+        try:
+            code = runner.run_feature(args.feature)
+        except RunnerError as exc:
+            fail(exc.code, exc.message, fix=exc.fix)
+        sys.exit(code)
+    finally:
+        try:
+            presence.leave()
+        finally:
+            held.release()
 
 
 def cmd_report(args):
@@ -808,10 +936,17 @@ def cmd_reap(args):
         project = board_cli.project_id_from(profile, None)
         cards = [n["identifier"] for n in board.list_project(project)
                  if tags.owners(n.get("labels") or [])]
+    cards = sorted(cards, key=lambda card: (board.get_issue(card).get("parent") is not None,
+                                            agent_mode.natural(card)))
+    deferred = set()
     for card in cards:
+        if card in deferred:
+            continue
         for entry in lease.reap(board, card, lease_minutes=args.lease_minutes):
             print(f"{entry['identifier']:<10} {entry['outcome']:<8} "
                   f"{entry.get('owner') or '—'}  last seen {entry.get('last_seen') or 'never'}")
+            if entry["outcome"] == "waiting":
+                deferred.add(entry["identifier"])
     # A hook that handed off with no board credential asked on the branch for the
     # pause it could not make; that is honoured now, not when the lease runs out.
     held = [board.get_issue(card) for card in cards]
@@ -840,38 +975,41 @@ def project_cards(board, profile):
 
 
 def cmd_agent(args):
-    profile, _, board = board_cli.open_board()
-    run_id = args.run_id or tags.current_run_id()
-    serve = [p.strip() for p in (args.serve or "").split(",") if p.strip()] or None
-    unknown = sorted(set(serve or ()) - set(agent_mode.PHASES))
-    if unknown:
-        fail(EXIT.REFUSED, f"agent mode serves no phase called {', '.join(unknown)}",
-             fix=f"pass --serve with any of {', '.join(agent_mode.PHASES)}")
+    run_id, held = acquire_lease(args.run_id)
+    try:
+        profile, _, board = board_cli.open_board()
+        serve = [p.strip() for p in (args.serve or "").split(",") if p.strip()] or None
+        unknown = sorted(set(serve or ()) - set(agent_mode.PHASES))
+        if unknown:
+            fail(EXIT.REFUSED, f"agent mode serves no phase called {', '.join(unknown)}",
+                 fix=f"pass --serve with any of {', '.join(agent_mode.PHASES)}")
 
-    def make_executor():
-        try:
-            return executors.select(profile.get("executors"))
-        except executors.ResolutionError as exc:
-            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+        def make_executor():
+            try:
+                return executors.select(profile.get("executors"))
+            except executors.ResolutionError as exc:
+                fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
 
-    def make_runner(executor, out):
-        return Runner(board, profile, executor, run_id, repo=os.getcwd(), out=out)
+        def make_runner(executor, out):
+            return Runner(board, profile, executor, run_id, repo=os.getcwd(), out=out)
 
-    os.environ["IDP_AGENT_MODE"] = "1"
-    loop = agent_mode.AgentLoop(
-        board, profile, run_id, make_executor, make_runner, project_cards(board, profile),
-        agent_mode.Presence(load_design().HOME, run_id), executors, SCRIPT_DIR / "run.py",
-        serve=serve, out=sys.stderr, worktrees=worktrees_home(os.getcwd()).parent,
-        handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention,
-        read_branch=agent_mode.branch_reader(os.getcwd()))
-    sys.exit(loop.run())
+        os.environ["IDP_AGENT_MODE"] = "1"
+        loop = agent_mode.AgentLoop(
+            board, profile, run_id, make_executor, make_runner, project_cards(board, profile),
+            agent_mode.Presence(load_design().HOME, run_id), executors, SCRIPT_DIR / "run.py",
+            serve=serve, out=sys.stderr, worktrees=worktrees_home(os.getcwd()).parent,
+            handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention,
+            read_branch=agent_mode.branch_reader(os.getcwd()))
+        sys.exit(loop.run())
+    finally:
+        held.release()
 
 
 def cmd_stop(args):
     profile, _, board = board_cli.open_board()
     home = load_design().HOME
     runs = [args.run_id] if args.run_id else (
-        agent_mode.Presence.live_runs(home) or [tags.current_run_id()])
+        agent_mode.Presence.known_runs(home) or [tags.current_run_id()])
     sys.exit(agent_mode.stop(board, home, runs, project_cards(board, profile),
                              worktrees_home(os.getcwd()).parent,
                              handoff=phase3.common.handoff_module(),
@@ -879,34 +1017,41 @@ def cmd_stop(args):
 
 
 def cmd_takeover(args):
-    profile, _, board = board_cli.open_board()
-    run_id = args.run_id or tags.current_run_id()
-    interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
+    run_id, held = acquire_lease(args.run_id)
     try:
-        result = agent_mode.takeover(board, args.card, run_id, input,
-                                     agent_mode=not interactive,
-                                     profile=board_cli.profile_hash(profile))
-    except agent_mode.AgentError as exc:
-        fail(exc.code, exc.message, fix=exc.fix)
-    if result["outcome"] not in ("written", "unchanged"):
-        sys.exit(EXIT.REFUSED)
-    children = [c["identifier"] for c in board.list_children(args.card)]
-    found = agent_mode.handoff_branches(lambda *a: git(os.getcwd(), *a), children)
-    print("It resumes from " + (", ".join(f"handoff.md on {b}" for b in found) if found
-                                else "git and the board: no PBI branch carries a handoff.md"))
-    if args.claim_only:
-        sys.exit(EXIT.DONE)
-    try:
-        executor = executors.select(profile.get("executors"))
-    except executors.ResolutionError as exc:
-        fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
-    runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
-    runner.stopping = agent_mode.stop_signal(board, agent_mode.Presence(runner.design.HOME,
-                                                                        run_id))
-    try:
-        sys.exit(runner.run_feature(args.card))
-    except RunnerError as exc:
-        fail(exc.code, exc.message, fix=exc.fix)
+        profile, _, board = board_cli.open_board()
+        interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
+        try:
+            result = agent_mode.takeover(board, args.card, run_id, input,
+                                         agent_mode=not interactive,
+                                         profile=board_cli.profile_hash(profile))
+        except agent_mode.AgentError as exc:
+            fail(exc.code, exc.message, fix=exc.fix)
+        if result["outcome"] not in ("written", "unchanged"):
+            sys.exit(EXIT.REFUSED)
+        children = [c["identifier"] for c in board.list_children(args.card)]
+        found = agent_mode.handoff_branches(lambda *a: git(os.getcwd(), *a), children)
+        print("It resumes from " + (", ".join(f"handoff.md on {b}" for b in found) if found
+                                    else "git and the board: no PBI branch carries a handoff.md"))
+        if args.claim_only:
+            sys.exit(EXIT.DONE)
+        presence = agent_mode.Presence(load_design().HOME, run_id)
+        presence.announce()
+        try:
+            try:
+                executor = executors.select(profile.get("executors"))
+            except executors.ResolutionError as exc:
+                fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+            runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
+            runner.stopping = agent_mode.stop_signal(board, presence)
+            try:
+                sys.exit(runner.run_feature(args.card))
+            except RunnerError as exc:
+                fail(exc.code, exc.message, fix=exc.fix)
+        finally:
+            presence.leave()
+    finally:
+        held.release()
 
 
 def cmd_decide(args):
@@ -933,8 +1078,8 @@ def build_parser():
     p = sub.add_parser("run", help="run a Feature to its next human gate "
                                    "(the default: `run.py <feature-id>`)")
     p.add_argument("feature")
-    p.add_argument("--run-id", help="claim as this run; default IDP_RUN_ID, else this "
-                                    "user and machine")
+    p.add_argument("--run-id", help="resume this run; default IDP_RUN_ID if set, else a "
+                                    "fresh lease for this invocation")
     p.add_argument("--no-ask", action="store_true",
                    help="stop at a gate instead of waiting in the terminal")
     p.set_defaults(func=cmd_run)
@@ -956,8 +1101,8 @@ def build_parser():
     p.set_defaults(func=cmd_adr_check)
 
     p = sub.add_parser("agent", help="loop until stopped (also `run.py --agent`)")
-    p.add_argument("--run-id", help="claim as this run; default IDP_RUN_ID, else this "
-                                    "user and machine")
+    p.add_argument("--run-id", help="resume this run; default IDP_RUN_ID if set, else a "
+                                    "fresh lease for this invocation")
     p.add_argument("--serve", help="only these phases, comma-separated: "
                                    + ", ".join(agent_mode.PHASES))
     p.set_defaults(func=cmd_agent)
@@ -969,7 +1114,8 @@ def build_parser():
 
     p = sub.add_parser("takeover", help="claim a dead run's card after you confirm")
     p.add_argument("card")
-    p.add_argument("--run-id", help="claim as this run")
+    p.add_argument("--run-id", help="resume this run; default IDP_RUN_ID if set, else a "
+                                    "fresh lease for this invocation")
     p.add_argument("--claim-only", action="store_true", help="claim, and do not resume")
     p.set_defaults(func=cmd_takeover)
 

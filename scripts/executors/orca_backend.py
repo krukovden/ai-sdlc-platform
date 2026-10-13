@@ -269,6 +269,7 @@ class OrcaExecutor(Executor):
         self._inbox = {}                 # dispatch -> [messages]
         self._ack = None
         self._env_refusal = None         # None = not measured yet, "" = clean
+        self._live = {}                  # card -> dispatch still unsupervised
 
     # -- the interface --------------------------------------------------------
 
@@ -277,6 +278,11 @@ class OrcaExecutor(Executor):
         choice = self.chosen(role, author=author, choice=choice)
         if choice is None:
             raise RuntimeError(f"no free slot for role '{role}'; wait for a worker")
+        if card in self._live:
+            # The previous wait lost the inbox and left the worker running.
+            # Another start would be a second session on the same worktree.
+            return self.reconnect(role, card, worktree, prompt, context,
+                                  author=author, choice=choice)
         clear_result(worktree)
         write_runner_session(worktree, card, self.environ)
         try:
@@ -472,12 +478,53 @@ class OrcaExecutor(Executor):
         task_id, dispatch, blocked = self.start(run, role, card, choice, worktree, text, context)
         if blocked is not None:
             return self.conclude(role, card, choice, worktree, blocked, dispatch, task_id)
+        self._live[card] = {"run": run, "dispatch": dispatch, "task_id": task_id,
+                            "choice": choice, "worktree": str(worktree)}
         outcome = None
         try:
             outcome = self.wait(run, role, card, choice, dispatch, worktree)
             return self.conclude(role, card, choice, worktree, outcome, dispatch, task_id)
         finally:
             self.settle(dispatch, outcome)
+            if outcome is not None and outcome.kind != "lost":
+                self._live.pop(card, None)
+
+    def reconnect(self, role, card, worktree, prompt, context=None, author=None, choice=None):
+        """Wait on the dispatch already running for this card. Never starts another."""
+        live = self._live.get(card)
+        if not live:
+            raise RuntimeError(f"no open dispatch for {card}; refusing to start a replacement")
+        outcome = self.wait(live["run"], role, card, live["choice"], live["dispatch"], worktree)
+        try:
+            return self.conclude(role, card, live["choice"], worktree, outcome,
+                                 live["dispatch"], live["task_id"])
+        finally:
+            self.settle(live["dispatch"], outcome)
+            if outcome is not None and outcome.kind != "lost":
+                self._live.pop(card, None)
+
+    def confirm_stopped(self, card):
+        """Stop the open dispatch and return True only once it has actually exited."""
+        live = self._live.get(card)
+        if not live:
+            return True
+        dispatch = live["dispatch"]
+        try:
+            stopped = self.cli("orchestration", "worker-stop", "--dispatch", dispatch)
+            if not succeeded(stopped) or not self._exited(dispatch):
+                return False
+            self.release(dispatch)
+        except Unavailable:
+            return False
+        self._live.pop(card, None)
+        return True
+
+    def _exited(self, dispatch):
+        shown = result_of(self.cli("orchestration", "worker-show", "--dispatch", dispatch))
+        projection = shown.get("projection") or {}
+        observation = shown.get("observation") or {}
+        return (projection.get("liveness") or {}).get("verdict") == "exited" \
+            or observation.get("status") == "exited"
 
     def prompt_for(self, role, card, choice, worktree, prompt, context):
         extra = {"IDP_ROLE": role, "IDP_CARD": card, "IDP_WORKTREE": str(worktree),
@@ -578,10 +625,10 @@ class OrcaExecutor(Executor):
             try:
                 message = self.take(run, dispatch, self.slice_ms)
             except Unavailable as exc:
-                # The worker may well be running. Falling through to subprocess now would
-                # put a second session on the same worktree: report a crash instead and
-                # leave the worker alone (no proof it stopped, so no stop and no release).
-                return Outcome("lost", str(exc))
+                # The worker may well be running. A crash here would free the slot and
+                # start a second session on the same worktree. Only a positive exit is
+                # a finished wait; otherwise the liveness stays unknown.
+                return self._lost(dispatch, choice, exc)
             if self.heartbeat:
                 self.heartbeat(card=card, role=role, agent=str(choice), dispatch=dispatch)
             if message is not None:
@@ -593,7 +640,7 @@ class OrcaExecutor(Executor):
                 try:
                     verdict = self.inspect(run, dispatch, choice)
                 except Unavailable as exc:
-                    return Outcome("lost", str(exc))
+                    return self._lost(dispatch, choice, exc)
                 if verdict is not None:
                     return verdict
 
@@ -664,12 +711,27 @@ class OrcaExecutor(Executor):
             return Outcome("exited", f"{choice.agent} exited without settling its Orca dispatch")
         return None
 
+    def _lost(self, dispatch, choice, exc):
+        """Inbox gone. An exited worker is a real end; anything else is still unknown."""
+        try:
+            if self._exited(dispatch):
+                return Outcome("exited", f"{choice.agent} exited; the inbox was lost: {exc}")
+        except Unavailable:
+            pass
+        return Outcome("lost", str(exc))
+
     # -- the answer ---------------------------------------------------------------------
 
     def conclude(self, role, card, choice, worktree, outcome, dispatch, task_id):
-        result, crashed, limit = read_result(worktree), False, None
+        result, crashed, limit, unsettled = read_result(worktree), False, None, False
         kind, said = outcome.kind, outcome.body
-        if kind == "done":
+        if kind == "lost":
+            # The inbox vanished before termination was established. A result
+            # file may already exist, but it is not yet safe to act on it:
+            # phase 3 must reconnect or stop the worker before it releases the
+            # claim, finalizes, or blocks on that report.
+            unsettled = True
+        elif kind == "done":
             reported_ok = outcome.verdict == "succeeded"
             if result is None:
                 if reported_ok:
@@ -690,11 +752,12 @@ class OrcaExecutor(Executor):
             elif kind in ("blocked", "escalation"):
                 result = {"code": EXIT.BLOCKED,
                           "reason": EXIT.with_fix(outcome.reason, outcome.fix)}
-            else:                              # limit, exited, timeout, lost: a crash
+            else:                              # limit, exited, timeout: a crash
                 crashed, limit = True, outcome.limit
         code = self.finish(role, card, choice, result, crashed=crashed, limit=limit,
-                           last_message=said or None, launch_failed=outcome.launch_failed)
-        if crashed and outcome.reason:
+                           last_message=said or None, launch_failed=outcome.launch_failed,
+                           unsettled=unsettled)
+        if (crashed or unsettled) and outcome.reason:
             self.last["reason"] = outcome.reason
         self.last.update(dispatch=dispatch, task=task_id, orca=kind)
         return code

@@ -344,9 +344,9 @@ class ReapTests(ScriptTestCase):
         tags.claim_pbi(board, "3", A, 2, feature="1")
         board.advance(61)
         report = lease.reap(board, "1")
-        self.assertEqual([r["outcome"] for r in report], ["reaped", "reaped", "reaped"])
-        self.assertEqual(board.cards["2"]["tags"], [])
-        self.assertEqual(board.cards["3"]["tags"], [])
+        self.assertEqual([r["outcome"] for r in report], ["reaped", "waiting", "waiting"])
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-a/w1"])
+        self.assertEqual(board.cards["3"]["tags"], ["idp:owner:run-a/w2"])
         self.assertEqual(board.cards["4"]["tags"], ["idp:owner:run-z/w1"])
 
     def test_a_workers_lease_is_its_runs_heartbeat_on_the_feature(self):
@@ -367,6 +367,216 @@ class ReapTests(ScriptTestCase):
         lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
         self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
         self.assertEqual(lease.generation(board, "1"), 1)
+        self.assertEqual(lease.events(board.list_comments("1"), lease.CLAIM)[-1]["key"],
+                         f"claim:{A}:{tags.DESIGN}:g1")
+
+    def test_a_claim_after_a_pause_is_a_new_sign_of_life(self):
+        board = self.claimed()
+        self.assertEqual(lease.events(board.list_comments("1"), lease.CLAIM)[0]["key"],
+                         f"claim:{A}:{tags.DESIGN}:g0")
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        board.advance(61)
+        again = lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        self.assertEqual(again["outcome"], "written")
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
+        self.assertEqual(lease.generation(board, "1"), 0)
+        # The resumed hold is alive now; the old claim must not still be the clock.
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "unchanged")
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
+
+    def test_a_resume_after_a_crash_between_the_owner_tag_and_claim_comment_starts_a_new_clock(self):
+        board = self.claimed()
+        tags.pause(board, "1", A)
+        lease.post_event(board, "1", "pause", f"pause:1:stop:{A}:g0",
+                         text="Paused: stop. Any run may take this card now.",
+                         run=A, reason="stop")
+        board.advance(61)
+        board.crash_after(1)
+        with self.assertRaises(Crash):
+            lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        board.disarm()
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 1)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual([c["key"] for c in claims],
+                         [f"claim:{A}:{tags.DESIGN}:g0",
+                          f"claim:{A}:{tags.DESIGN}:g0:r{board.cards['1']['rev']}"])
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
+    def test_an_unrelated_card_edit_does_not_mint_a_new_claim_for_the_same_hold(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        board.advance(1)
+        board.write_card("1", board.cards["1"]["rev"], board.cards["1"]["tags"], status="Doing")
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                     base="new-tip")["outcome"], "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["base"], "original")
+
+    def test_a_resume_after_release_crash_renews_the_lease_without_replacing_claim_facts(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        self.assertEqual(tags.release(board, "1", A)["outcome"], "written")
+        board.advance(61)
+        board.crash_after(1)
+        with self.assertRaises(Crash):
+            lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        board.disarm()
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                     base="replacement")["outcome"], "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["base"], "original")
+        beats = lease.events(board.list_comments("1"), lease.HEARTBEAT)
+        self.assertEqual(len(beats), 1)
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
+    def test_an_interrupted_reacquisition_renews_even_after_a_heartbeat_of_the_earlier_hold(self):
+        # The reviewer's R1 cases: a heartbeat in the previous hold, then a release,
+        # 61 minutes, a crash after the owner-tag write; and the same twice in a row.
+        for bumps in (False, True):
+            with self.subTest(comment_bumps_rev=bumps):
+                board = FakeBoard(comment_bumps_rev=bumps)
+                feature(board, "1", tags.DESIGN)
+                lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+                lease.heartbeat(board, "1", A, 1)
+                for _ in range(2):
+                    self.assertEqual(tags.release(board, "1", A)["outcome"], "written")
+                    board.advance(61)
+                    board.crash_after(1)
+                    with self.assertRaises(Crash):
+                        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+                    board.disarm()
+                    self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                                 base="replacement")["outcome"], "unchanged")
+                    self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+                claims = lease.events(board.list_comments("1"), lease.CLAIM)
+                self.assertEqual([c["base"] for c in claims], ["original"])
+
+    def test_a_second_stop_pause_that_dedupes_still_renews_the_resumed_lease(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        lease.post_event(board, "1", "pause", f"pause:1:stop:{A}:g0",
+                         text="Paused: stop. Any run may take this card now.",
+                         run=A, reason="stop")
+        board.advance(61)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "written")
+        before = [c["key"] for c in lease.events(board.list_comments("1"), lease.CLAIM)]
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        self.assertEqual(lease.post_event(board, "1", "pause", f"pause:1:stop:{A}:g0",
+                                          text="Paused: stop. Any run may take this card now.",
+                                          run=A, reason="stop")["posted"], False)
+        board.advance(61)
+        board.crash_after(1)
+        with self.assertRaises(Crash):
+            lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+        board.disarm()
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                     base="replacement")["outcome"], "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual(len(claims), 2)
+        self.assertEqual([c["key"] for c in claims], before)
+        beats = lease.events(board.list_comments("1"), lease.HEARTBEAT)
+        self.assertEqual(len(beats), 1)
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
+    def test_a_claim_after_a_release_is_a_new_sign_of_life(self):
+        board = self.claimed()
+        self.assertEqual(tags.release(board, "1", A)["outcome"], "written")
+        board.advance(61)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "written")
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
+    def test_a_comment_that_bumps_rev_does_not_mint_another_claim_on_retry(self):
+        board = FakeBoard(comment_bumps_rev=True)
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        tags.pause(board, "1", A)
+        board.advance(61)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "unchanged")
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
+
+    def _renew_before_release(self, board, beat=9):
+        real = lease.tags.release_stale
+
+        def renew(board_, identifier, owner, *args, **kwargs):
+            lease.heartbeat(board_, identifier, A, beat)
+            return real(board_, identifier, owner, *args, **kwargs)
+
+        lease.tags.release_stale = renew
+        self.addCleanup(setattr, lease.tags, "release_stale", real)
+
+    def test_a_heartbeat_that_moves_rev_before_removal_is_not_evicted(self):
+        board = self.claimed(comment_bumps_rev=True)
+        board.advance(61)
+        self._renew_before_release(board)
+        report = lease.reap(board, "1")
+        self.assertEqual(report[0]["outcome"], "alive")
+        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertEqual(lease.count_events(board, "1", lease.REAP), 0)
+
+    def test_a_heartbeat_that_does_not_move_rev_before_removal_is_not_evicted(self):
+        board = self.claimed()
+        board.advance(61)
+        self._renew_before_release(board)
+        report = lease.reap(board, "1")
+        self.assertEqual(report[0]["outcome"], "alive")
+        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertEqual(lease.count_events(board, "1", lease.REAP), 0)
+
+    def test_a_renewal_before_a_child_release_keeps_the_pbi(self):
+        board = self.claimed()
+        board.add_card("2", (), kind="pbi", parent="1")
+        tags.claim_pbi(board, "2", A, 1, feature="1")
+        board.advance(61)
+        real = lease.tags.release_stale
+
+        def renew_child(board_, identifier, owner, *args, **kwargs):
+            if identifier == "2":
+                lease.heartbeat(board_, "1", A, 4)
+            return real(board_, identifier, owner, *args, **kwargs)
+
+        lease.tags.release_stale = renew_child
+        self.addCleanup(setattr, lease.tags, "release_stale", real)
+        report = lease.reap(board, "1")
+        child = next(entry for entry in report if entry["identifier"] == "2")
+        self.assertEqual(child["outcome"], "waiting")
+        self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
+        self.assertEqual(lease.count_events(board, "2", lease.REAP), 0)
+
+    def test_a_parent_heartbeat_during_child_reap_leaves_the_child_for_the_next_pass(self):
+        board = self.claimed(comment_bumps_rev=True)
+        board.add_card("2", (), kind="pbi", parent="1")
+        tags.claim_pbi(board, "2", A, 1, feature="1")
+        board.advance(61)
+        real = lease.post_event
+
+        def delayed(board_, identifier, kind, key, *args, **kwargs):
+            posted = real(board_, identifier, kind, key, *args, **kwargs)
+            if kind == lease.REAP and str(identifier) == "1":
+                lease.heartbeat(board_, "1", A, 9)
+            return posted
+
+        lease.post_event = delayed
+        self.addCleanup(setattr, lease, "post_event", real)
+        report = lease.reap(board, "1")
+        self.assertEqual(report[0]["outcome"], "reaped")
+        child = next(entry for entry in report if entry["identifier"] == "2")
+        self.assertEqual(child["outcome"], "waiting")
+        self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
+        self.assertEqual(lease.reap(board, "2")[0]["outcome"], "alive")
 
 
 class TakeoverTests(ScriptTestCase):

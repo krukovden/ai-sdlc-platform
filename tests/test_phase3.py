@@ -531,6 +531,51 @@ class OutcomeTests(Phase3TestCase):
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
         self.assertEqual(self.attempts(world, "a"), ["crash"])
 
+    def test_lost_supervision_keeps_the_slot_and_does_not_start_a_replacement(self):
+        world = self.one()
+        inner = world.executor()
+
+        class Holding:
+            """First worker call is a lost inbox; a reconnect finishes the same claim."""
+
+            def __init__(self):
+                self.worker_starts = 0
+                self.reconnects = 0
+                self.last = None
+
+            def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                         choice=None):
+                if role == "worker":
+                    self.worker_starts += 1
+                    if self.worker_starts == 1:
+                        who = choice or inner.choice
+                        code = inner.finish(role, card, who, None, crashed=False)
+                        inner.last["unsettled"] = True
+                        inner.last["crashed"] = False
+                        self.last = inner.last
+                        return code
+                code = inner.run_role(role, card, worktree, prompt, context=context,
+                                      author=author, choice=choice)
+                self.last = inner.last
+                return code
+
+            def reconnect(self, role, card, worktree, prompt, context=None, author=None,
+                          choice=None):
+                self.reconnects += 1
+                code = inner.run_role(role, card, worktree, prompt, context=context,
+                                      author=author, choice=choice)
+                self.last = inner.last
+                return code
+
+            def __getattr__(self, name):
+                return getattr(inner, name)
+
+        holding = Holding()
+        self.assertEqual(world.runner(executor=holding).run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(holding.worker_starts, 1)
+        self.assertEqual(holding.reconnects, 1)
+        self.assertEqual(self.attempts(world, "a"), [])
+
 
 class CounterTests(Phase3TestCase):
 
@@ -972,6 +1017,49 @@ class ReviewTests(Phase3TestCase):
         reviews = [c for c in world.executor_.calls if c["role"] == "review"]
         self.assertEqual(reviews[0]["author"], "codex:gpt-5")
         self.assertEqual(reviews[0]["choice"], "copilot:gpt-4.1")
+
+    def test_an_unsettled_review_reconnects_before_retrying_or_blocking(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        inner = world.executor()
+
+        class Holding:
+            def __init__(self):
+                self.review_starts = 0
+                self.reconnects = 0
+                self.last = None
+
+            def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                         choice=None):
+                if role == "review":
+                    self.review_starts += 1
+                    if self.review_starts == 1:
+                        who = choice or inner.choice
+                        code = inner.finish(role, card, who, None, unsettled=True)
+                        self.last = inner.last
+                        return code
+                code = inner.run_role(role, card, worktree, prompt, context=context,
+                                      author=author, choice=choice)
+                self.last = inner.last
+                return code
+
+            def reconnect(self, role, card, worktree, prompt, context=None, author=None,
+                          choice=None):
+                self.reconnects += 1
+                code = inner.run_role(role, card, worktree, prompt, context=context,
+                                      author=author, choice=choice)
+                self.last = inner.last
+                return code
+
+            def __getattr__(self, name):
+                return getattr(inner, name)
+
+        holding = Holding()
+        self.assertEqual(world.runner(executor=holding).run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(holding.review_starts, 1)
+        self.assertEqual(holding.reconnects, 1)
+        card = world.items()["a"]["id"]
+        self.assertNotIn(tags.BLOCKED, world.board.cards[card]["tags"])
+        self.assertNotIn(tags.BLOCKED, world.board.cards[FEATURE]["tags"])
 
     def test_the_review_rule_refuses_to_start_with_nothing_written(self):
         world = self.world()
