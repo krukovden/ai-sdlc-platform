@@ -36,8 +36,9 @@ python3 scripts/board.py init --team IDE --project <id>   # create and verify a 
 python3 scripts/board.py list --parent IDE-79             # what is under a feature
 python3 scripts/board.py start IDE-42 --phase design      # claim a card for a phase
 python3 scripts/board.py status IDE-42                    # where it is, what to run next
-python3 scripts/board.py memory core                      # what exists, one line each
-python3 scripts/board.py memory check                     # drift between registry and git
+python3 scripts/board.py memory why IDE-42                # a feature's own files on the board
+python3 scripts/board.py memory check                     # closed cards with no commits behind them
+python3 scripts/blueprint.py check --root <product repo>  # area blueprints against the template
 python3 scripts/board.py sync                             # regenerate the offline mirror
 python3 scripts/install.py --dry-run                      # what installing would do
 python3 -m unittest discover tests                        # 276 tests, none touch the network
