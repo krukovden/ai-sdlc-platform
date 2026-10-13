@@ -1158,6 +1158,60 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                   "--org", self.organization, "-o", "json"])
         return self.web_url(work_item_id)
 
+    # -- pull requests, for the runner's tech lead (IDE-147, 3.2) -------------
+    #
+    # Here and not in scripts/phase3/merge.py, because this module is the only
+    # one that talks to Azure DevOps. The runner opens a PBI's pull request into
+    # the feature branch **without auto-complete**, and completes it itself,
+    # pinned to the merge it tested: `lastMergeSourceCommit` makes the service
+    # refuse to complete anything else.
+
+    def _pull_requests(self, repository):
+        return f"git/repositories/{urllib.parse.quote(str(repository))}/pullrequests"
+
+    def _json(self, payload):
+        return json.dumps(payload).encode("utf-8")
+
+    def create_pull_request(self, repository, source, target, title, description,
+                            work_items):
+        """The active PR source → target, created unless one is already open."""
+        found = self._rest(self._pull_requests(repository), query={
+            "searchCriteria.sourceRefName": f"refs/heads/{source}",
+            "searchCriteria.targetRefName": f"refs/heads/{target}",
+            "searchCriteria.status": "active"}) or {}
+        for pr in found.get("value") or []:
+            return {"id": pr.get("pullRequestId"), "url": pr.get("url")}
+        created = self._rest(
+            self._pull_requests(repository), method="POST",
+            content_type="application/json",
+            body=self._json({"sourceRefName": f"refs/heads/{source}",
+                             "targetRefName": f"refs/heads/{target}",
+                             "title": title, "description": description,
+                             "workItemRefs": [{"id": str(_as_id(w))} for w in work_items]}))
+        return {"id": (created or {}).get("pullRequestId"), "url": (created or {}).get("url")}
+
+    def complete_pull_request(self, repository, pull_request_id, merge_source, message):
+        """Squash-complete, but only the tested merge: `lastMergeSourceCommit` is pinned."""
+        return self._rest(
+            f"{self._pull_requests(repository)}/{pull_request_id}", method="PATCH",
+            content_type="application/json",
+            body=self._json({"status": "completed",
+                             "lastMergeSourceCommit": {"commitId": merge_source},
+                             "completionOptions": {"mergeStrategy": "squash",
+                                                   "squashMerge": True,
+                                                   "deleteSourceBranch": False,
+                                                   "mergeCommitMessage": message}}))
+
+    def get_pull_request(self, repository, pull_request_id):
+        return self._rest(f"{self._pull_requests(repository)}/{pull_request_id}")
+
+    def comment_pull_request(self, repository, pull_request_id, text):
+        return self._rest(
+            f"{self._pull_requests(repository)}/{pull_request_id}/threads", method="POST",
+            content_type="application/json",
+            body=self._json({"comments": [{"parentCommentId": 0, "content": text,
+                                           "commentType": 1}], "status": 1}))
+
     # -- documents, which Azure DevOps calls attachments ---------------------
 
     def attach_document(self, title, content, identifier=None, project_id=None):
