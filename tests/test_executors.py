@@ -162,6 +162,15 @@ class ParallelTests(ScriptTestCase):
         self.assertEqual(resolver({"codex"}).capacity(), 2)
         self.assertEqual(resolver({"gemini"}).capacity(), 1)   # unlisted: the default
 
+    def test_parallel_slots_on_one_agent_spread_across_named_models_first(self):
+        config = {"roles": {"worker": ["copilot:grok-4.7", "copilot:gemini-3.8-flash"]},
+                  "parallel": {"copilot": 2}}
+        handle = resolver({"copilot"}, config=config)
+        first = handle.resolve("worker", busy={})
+        second = handle.resolve("worker", busy={"copilot": 1, str(first): 1})
+        self.assertEqual(str(first), "copilot:grok-4.7")
+        self.assertEqual(str(second), "copilot:gemini-3.8-flash")
+
 
 class EnvironmentTests(ScriptTestCase):
 
