@@ -300,5 +300,58 @@ class LayerOneTests(unittest.TestCase):
         self.assertIsNone(watch.check({}, self.state, {}))
 
 
+
+class ExperimentFourTests(unittest.TestCase):
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name) / "e4"
+        patch = mock.patch.dict(os.environ, GIT_ENV)
+        patch.start()
+        self.addCleanup(patch.stop)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "idp_e4", SCRIPTS_DIR / "experiments" / "e4_cliff_hooks.py")
+        self.e4 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.e4)
+
+    def test_setup_arms_recorders_and_copilot_gets_no_session_start(self):
+        repo = self.e4.setup(self.dir)
+        self.assertEqual(git(repo, "rev-parse", "--abbrev-ref", "HEAD"), self.e4.BRANCH)
+        claude = json.loads((repo / ".claude" / "settings.local.json").read_text())
+        self.assertIn("hook --dir", claude["hooks"]["StopFailure"][0]["hooks"][0]["command"])
+        copilot = json.loads((repo / ".github" / "hooks" / "e4.json").read_text())
+        self.assertEqual(sorted(copilot["hooks"]), ["errorOccurred", "sessionEnd"])
+
+    def test_the_recorder_logs_the_payload_and_whether_its_push_landed(self):
+        self.e4.setup(self.dir)
+        entry = self.e4.record_hook(self.dir, "claude", None,
+                                    {"hook_event_name": "StopFailure", "error": "rate_limit"})
+        self.assertTrue(entry["push"]["landed"], entry)
+        self.assertEqual(self.e4.read(self.dir / self.e4.EVENTS)[0]["event"], "StopFailure")
+
+    def test_judging_follows_the_pass_rules(self):
+        events = [{"host": "claude", "event": "StopFailure",
+                   "payload": {"error": "rate_limit"}, "push": {"landed": True}},
+                  {"host": "copilot", "event": "sessionEnd", "payload": {"reason": "complete"}}]
+        probes = [{"agent": "codex", "returncode": 1, "tail": [], "api_retry": [],
+                   "limit_lines": [CODEX_LIMIT]},
+                  {"agent": "claude", "returncode": 1, "tail": ["boom"], "api_retry": []}]
+        results = self.e4.judge(events, probes)
+        self.assertEqual({h: v for h, (v, _) in results.items()},
+                         {"H1": "PASS", "H2": "PASS", "H3": "INCONCLUSIVE", "H4": "FAIL",
+                          "H5": "PASS"})
+        verdict, block = self.e4.render(results)
+        self.assertEqual(verdict, "FAIL")
+        self.assertIn("- H4: **FAIL**", block)
+
+    def test_the_preregistration_carries_the_codex_observation(self):
+        text = self.e4.DOC.read_text(encoding="utf-8")
+        for word in ("Hypothes", "**n.**", "Pass rule", "Stop rule", "Oct 13th, 2026 12:12 AM"):
+            self.assertIn(word, text)
+        self.assertTrue(text.rstrip().endswith("## Results"))
+
+
 if __name__ == "__main__":
     unittest.main()
