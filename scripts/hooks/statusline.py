@@ -54,6 +54,11 @@ CHAIN_TIMEOUT = 5
 MARK = "scripts/hooks/statusline.py"
 
 
+def launcher():
+    candidate = SCRIPTS.parent.parent / "bin" / "statusline.py"
+    return candidate if candidate.exists() else Path(__file__).resolve()
+
+
 def state_dir(environ=None):
     environ = os.environ if environ is None else environ
     return Path(environ.get("IDP_STATE_DIR") or Path.home() / ".idp" / "hooks")
@@ -168,7 +173,7 @@ def install(settings_path, state, script=None, out=sys.stdout):
     settings = json.loads(settings_path.read_text(encoding="utf-8")) \
         if settings_path.exists() else {}
     current = settings.get("statusLine")
-    target_script = str(script or Path(__file__).resolve())
+    target_script = str(script or launcher())
     expected_command = f'python3 "{target_script}"'
     if ours(current):
         cur_cmd = command_of(current)

@@ -205,6 +205,9 @@ def run(host, event, payload, environ=None, open_board=None):
 def config(host, root=None):
     """The hook registration for `host`, with this installation's absolute path."""
     script = Path(root or SCRIPTS.parent) / "scripts" / "hooks" / "cliff_handoff.py"
+    launcher = SCRIPTS.parent.parent / "bin" / "cliff_handoff.py"
+    if root is None and launcher.exists():
+        script = launcher
     if host == "claude":
         return {"hooks": {"StopFailure": [{"hooks": [{
             "type": "command", "command": f'python3 "{script}" --host claude',

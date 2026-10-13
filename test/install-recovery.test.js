@@ -3,7 +3,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const {execFileSync} = require('node:child_process');
+const {execFileSync, spawnSync} = require('node:child_process');
 const {run} = require('../cli');
 const {sync} = require('../cli/version');
 const {check} = require('../skills/platform-freshness/check');
@@ -17,16 +17,19 @@ const dropCatalogSkill = (ctx, name) => {
   fs.writeFileSync(file, JSON.stringify(catalog));
 };
 const statusOf = async ctx => { ctx.output.length = 0; await run(['status'], ctx); return ctx.output.join('\n'); };
+const commandOf = entry => typeof entry === 'string' ? entry : entry && entry.command;
+const stateDirOf = ctx => path.join(ctx.home, '.idp/platform');
+const hookStateOf = ctx => path.join(ctx.home, '.idp/hooks');
 
 // Everything a finished installation promises: receipt hashes match the payload, every link
 // resolves to its recorded target, nothing of an earlier payload or a transaction is left behind.
 async function assertConsistent(ctx, version) {
-  const state = path.join(ctx.home, '.idp/platform');
+  const state = stateDirOf(ctx);
   const receipt = receiptOf(ctx);
   assert.equal(receipt.version, version);
   assert.equal(fs.existsSync(path.join(state, 'journal.json')), false, 'journal removed');
   assert.equal(fs.existsSync(path.join(state, 'staging')), false, 'staging removed');
-  assert.deepEqual(fs.readdirSync(state).filter(n => n !== 'receipt.json' && n !== version && n !== 'freshness.json'), [], 'only the current payload remains');
+  assert.deepEqual(fs.readdirSync(state).filter(n => n !== 'receipt.json' && n !== version && n !== 'freshness.json' && n !== 'bin'), [], 'only the current payload remains');
   for (const [link, destination] of Object.entries(receipt.links)) {
     assert.equal(fs.readlinkSync(link), destination);
     assert.ok(fs.existsSync(destination), `${link} resolves`);
@@ -153,10 +156,32 @@ test('update into existing version directory protects unmanaged files', async t 
   const ctx = fixture(t);
   await run(['install', '--target', 'orca'], ctx);
   sync(NEXT, ctx.root);
-  const dest = path.join(ctx.home, '.idp/platform', NEXT);
+  const dest = path.join(stateDirOf(ctx), NEXT);
   fs.mkdirSync(dest, {recursive: true});
   fs.writeFileSync(path.join(dest, 'foreign.txt'), 'do not touch');
   await assert.rejects(run(['update', '--yes'], ctx), new RegExp(`Unmanaged payload preserved: ${dest.replace(/\./g, '\\.')}`));
+});
+
+test('interrupted recovery preserves a user-created collision for a newly added file', async t => {
+  const ctx = fixture(t);
+  await run(['install'], ctx);
+  const newFile = 'skills/design/recovery-new.txt';
+  fs.writeFileSync(path.join(ctx.root, newFile), 'release bytes\n');
+  const installed = path.join(receiptOf(ctx).payload, newFile);
+  const staged = path.join(stateDirOf(ctx), 'staging', newFile);
+  const original = fs.renameSync;
+  let fired = false;
+  fs.renameSync = function (from, to) {
+    if (from === staged && to === installed) { fired = true; throw new Error('injected new-file place'); }
+    return original.call(this, from, to);
+  };
+  try { await assert.rejects(run(['update', '--yes'], ctx), /injected new-file place/); } finally { fs.renameSync = original; }
+  assert.ok(fired);
+  fs.mkdirSync(path.dirname(installed), {recursive: true});
+  fs.writeFileSync(installed, 'user bytes\n');
+  await run(['update', '--keep-local'], ctx);
+  assert.equal(fs.readFileSync(installed, 'utf8'), 'user bytes\n');
+  assert.match(await statusOf(ctx), /skills\/design\/recovery-new.txt: missing or edited locally/);
 });
 
 test('interrupted recovery revalidates edited files before replacing or deleting them', async t => {
@@ -201,6 +226,127 @@ test('interrupted recovery revalidates edited files before replacing or deleting
     assert.equal(fs.existsSync(path.join(ctx.home, '.claude')), false);
     assert.equal(fs.existsSync(path.join(ctx.home, '.idp/platform/receipt.json')), false);
   });
+});
+
+test('keep-local recovery does not overwrite a post-link edit in the new payload', async t => {
+  const ctx = fixture(t);
+  await run(['install'], ctx);
+  const installed = path.join(receiptOf(ctx).payload, 'skills/design/SKILL.md');
+  fs.appendFileSync(installed, '\nkeep me\n');
+  sync(NEXT, ctx.root);
+  const receiptFile = path.join(stateDirOf(ctx), 'receipt.json');
+  const original = fs.renameSync;
+  let fired = false;
+  fs.renameSync = function (from, to) {
+    if (to === receiptFile) { fired = true; throw new Error('injected receipt commit'); }
+    return original.call(this, from, to);
+  };
+  try { await assert.rejects(run(['update', '--keep-local'], ctx), /injected receipt commit/); } finally { fs.renameSync = original; }
+  assert.ok(fired);
+  const linked = path.join(ctx.home, '.claude/skills/design/SKILL.md');
+  fs.appendFileSync(linked, '\nnew payload edit\n');
+  await run(['update', '--keep-local'], ctx);
+  assert.match(fs.readFileSync(linked, 'utf8'), /new payload edit\n$/);
+  assert.match(await statusOf(ctx), /skills\/design\/SKILL.md: missing or edited locally/);
+});
+
+test('interactive yes approvals finish the initial settlement they approved', async t => {
+  const script = `
+const path = require('node:path');
+const fs = require('node:fs');
+const rl = require('node:readline/promises');
+rl.createInterface = () => ({question: async () => 'yes', close() {}});
+Object.defineProperty(process.stdin, 'isTTY', {value: true});
+const {run} = require(${JSON.stringify(path.join(__dirname, '..', 'cli'))});
+const {sync} = require(${JSON.stringify(path.join(__dirname, '..', 'cli', 'version.js'))});
+(async () => {
+  const ctx = {root: process.env.IDP_ROOT, home: process.env.IDP_HOME, cwd: process.env.IDP_CWD, out() {}};
+  await run(['install'], ctx);
+  const receipt = JSON.parse(fs.readFileSync(path.join(process.env.IDP_HOME, '.idp/platform/receipt.json'), 'utf8'));
+  const edited = path.join(receipt.payload, 'skills/design/SKILL.md');
+  fs.appendFileSync(edited, '\\napproved overwrite\\n');
+  sync(process.env.IDP_NEXT, process.env.IDP_ROOT);
+  await run(['update'], ctx);
+  const afterUpdate = fs.readFileSync(path.join(process.env.IDP_HOME, '.idp/platform', process.env.IDP_NEXT, 'skills/design/SKILL.md'), 'utf8');
+  if (/approved overwrite/.test(afterUpdate)) throw new Error('interactive update kept the local edit');
+  const receipt2 = JSON.parse(fs.readFileSync(path.join(process.env.IDP_HOME, '.idp/platform/receipt.json'), 'utf8'));
+  const uninstallEdited = path.join(receipt2.payload, 'skills/planning/SKILL.md');
+  fs.appendFileSync(uninstallEdited, '\\napproved delete\\n');
+  await run(['uninstall'], ctx);
+  if (fs.existsSync(uninstallEdited)) throw new Error('interactive uninstall preserved the approved deletion');
+})().catch(error => { console.error(error.stack || String(error)); process.exit(1); });
+`;
+  const ctx = fixture(t);
+  const child = spawnSync(process.execPath, ['-e', script], {
+    cwd: ctx.cwd,
+    env: {...process.env, IDP_ROOT: ctx.root, IDP_HOME: ctx.home, IDP_CWD: ctx.cwd, IDP_NEXT: NEXT},
+    encoding: 'utf8',
+  });
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+});
+
+test('uninstall ignores an unmanaged newer payload directory', async t => {
+  const ctx = fixture(t);
+  await run(['install', '--target', 'orca'], ctx);
+  const foreign = path.join(stateDirOf(ctx), NEXT);
+  fs.mkdirSync(foreign, {recursive: true});
+  fs.writeFileSync(path.join(foreign, 'foreign.txt'), 'keep me');
+  sync(NEXT, ctx.root);
+  await run(['uninstall', '--target', 'all'], ctx);
+  assert.equal(fs.existsSync(path.join(foreign, 'foreign.txt')), true);
+  assert.equal(fs.existsSync(path.join(stateDirOf(ctx), 'receipt.json')), false);
+});
+
+test('manual hook registrations survive update and are cleaned up on uninstall', async t => {
+  const ctx = fixture(t);
+  await run(['install', '--target', 'all'], ctx);
+  const receipt = receiptOf(ctx);
+  const hooksState = hookStateOf(ctx);
+  const statusScript = path.join(receipt.payload, 'scripts/hooks/statusline.py');
+  const cliffScript = path.join(receipt.payload, 'scripts/hooks/cliff_handoff.py');
+  const stableStatus = path.join(stateDirOf(ctx), 'bin/statusline.py');
+  const stableCliff = path.join(stateDirOf(ctx), 'bin/cliff_handoff.py');
+  const settings = path.join(ctx.home, '.claude/settings.json');
+  fs.mkdirSync(path.dirname(settings), {recursive: true});
+  fs.writeFileSync(path.join(ctx.home, 'wrapped-statusline.sh'), '#!/bin/sh\nprintf wrapped\n');
+  fs.chmodSync(path.join(ctx.home, 'wrapped-statusline.sh'), 0o755);
+  fs.writeFileSync(settings, JSON.stringify({statusLine: path.join(ctx.home, 'wrapped-statusline.sh')}));
+  execFileSync('python3', [statusScript, '--install', '--settings', settings], {
+    env: {...process.env, HOME: ctx.home, IDP_STATE_DIR: hooksState},
+    encoding: 'utf8',
+  });
+  const staleStatus = `python3 "${statusScript}"`;
+  const installedSettings = json(settings);
+  installedSettings.statusLine.command = staleStatus;
+  fs.writeFileSync(settings, JSON.stringify(installedSettings, null, 2) + '\n');
+  const hooksDir = path.join(ctx.home, '.copilot/hooks');
+  fs.mkdirSync(hooksDir, {recursive: true});
+  const copilotFile = path.join(hooksDir, 'idp-cliff-handoff.json');
+  const copilot = JSON.parse(execFileSync('python3', [cliffScript, '--print-config', 'copilot'], {
+    env: {...process.env, HOME: ctx.home},
+    encoding: 'utf8',
+  }));
+  copilot.hooks.errorOccurred[0].bash = `python3 "${cliffScript}" --host copilot --event errorOccurred`;
+  copilot.hooks.sessionEnd[0].bash = `python3 "${cliffScript}" --host copilot --event sessionEnd`;
+  fs.writeFileSync(copilotFile, JSON.stringify(copilot, null, 2) + '\n');
+  sync(NEXT, ctx.root);
+  await run(['update', '--yes'], ctx);
+  const migratedSettings = json(settings);
+  assert.equal(commandOf(migratedSettings.statusLine), `python3 "${stableStatus}"`);
+  const rendered = execFileSync('sh', ['-c', commandOf(migratedSettings.statusLine)], {
+    env: {...process.env, HOME: ctx.home, IDP_STATE_DIR: hooksState},
+    input: JSON.stringify({session_id: 's-1', context_window: {used_percentage: 10}}),
+    encoding: 'utf8',
+  });
+  assert.equal(rendered, 'wrapped');
+  const migratedCopilot = json(copilotFile);
+  assert.equal(migratedCopilot.hooks.errorOccurred[0].bash,
+               `python3 "${stableCliff}" --host copilot --event errorOccurred`);
+  assert.equal(migratedCopilot.hooks.sessionEnd[0].bash,
+               `python3 "${stableCliff}" --host copilot --event sessionEnd`);
+  await run(['uninstall', '--target', 'all'], ctx);
+  assert.equal(json(settings).statusLine, path.join(ctx.home, 'wrapped-statusline.sh'));
+  assert.equal(fs.existsSync(copilotFile), false);
 });
 
 // --- recoverable update transaction -------------------------------------------------------

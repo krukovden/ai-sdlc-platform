@@ -399,6 +399,12 @@ with absolute paths through:
 python3 scripts/hooks/cliff_handoff.py --print-config copilot
 ```
 
+The packaged CLI keeps stable launchers at `.idp/platform/bin/statusline.py` and
+`.idp/platform/bin/cliff_handoff.py`. The status-line wrapper and printed
+Copilot config point there, so a package update does not strand a manual
+registration on a deleted versioned payload; uninstall restores or removes the
+verified default registrations it owns.
+
 ## Exit codes
 
 ### Session result codes (`run.py report`)
