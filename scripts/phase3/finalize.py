@@ -79,6 +79,29 @@ class Outcome:
         return f"Outcome({self.kind or 'pass'}, {self.detail!r})"
 
 
+def witness_problem(ac, witness):
+    """What is wrong with one witness against plan.schema's three rungs, or None."""
+    if not isinstance(ac, str) or not ac.strip():
+        return "the criterion has no id"
+    if not isinstance(witness, dict):
+        return "the witness is not an object"
+    keys = set(witness)
+    if keys == {"command", "timeout"}:
+        if not isinstance(witness["command"], str) or not witness["command"].strip():
+            return "the command is empty"
+        timeout = witness["timeout"]
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+            return f"the timeout {timeout!r} is not a positive whole number of seconds"
+        return None
+    for rung in ("evidence", "manual"):
+        if keys == {rung}:
+            if not isinstance(witness[rung], str) or not witness[rung].strip():
+                return f"the {rung} text is empty"
+            return None
+    return (f"the witness has {sorted(keys)}; it must be exactly one of "
+            "{evidence}, {command, timeout} or {manual}")
+
+
 def tail(text, lines=LOG_TAIL_LINES):
     return "\n".join(str(text or "").splitlines()[-lines:])
 
@@ -149,6 +172,13 @@ class Finalizer:
             return Outcome(MALFORMED, f"the pinned plan has no PBI with key '{key}', so it "
                                       "has no witness"), []
         criteria = plans.witnesses(entry)
+        broken = [f"{c[0] or '?'}: {why}" for c in criteria
+                  for why in [witness_problem(c[0], c[2])] if why]
+        if broken:
+            # plan.schema held at planning; a pinned file is re-checked anyway,
+            # because a malformed witness must block, never crash finalize.
+            return Outcome(MALFORMED, f"PBI '{key}' has malformed witnesses in the pinned "
+                                      "plan: " + "; ".join(broken)), []
         commands = [c for c in criteria if c[2].get("command")]
         if not commands:
             return Outcome(MALFORMED, f"PBI '{key}' has zero runnable witnesses; zero "

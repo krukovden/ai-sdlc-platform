@@ -871,6 +871,49 @@ class ReviewFilterTests(unittest.TestCase):
         self.assertFalse(phase3.review.inside(finding("high", "gitignore", 1), ranges))
 
 
+class PinnedWitnessSchemaTests(unittest.TestCase):
+    """A pinned plan is re-checked at finalize: malformed blocks, it never crashes."""
+
+    class Repo:
+        path = Path("/nowhere")
+
+        def __init__(self, text):
+            self.text = text
+
+        def show(self, commit, path):
+            return self.text
+
+        def changed_files(self, base, head):
+            return []
+
+    def finalize(self, witness):
+        plan = {"pbis": [dict(pbi("a"), acceptance_criteria=[
+            {"id": "AC-1", "text": "ok", "witness": witness_for("a")},
+            {"id": "AC-2", "text": "broken", "witness": witness}])]}
+        text = phase3.plan.plan_text(plan)
+        pinned = {"commit": "c0", "path": "docs/plans/X.plan.json",
+                  "sha256": phase3.plan.digest(text)}
+        ran = []
+        finalizer = fin.Finalizer(run=lambda *a, **k: ran.append(a), clock=lambda: 0.0)
+        outcome, records = finalizer.witnesses(self.Repo(text), pinned, "a", "F", "M")
+        return outcome, ran
+
+    def test_a_command_without_a_timeout_is_malformed_before_anything_runs(self):
+        outcome, ran = self.finalize({"command": "pytest"})
+        self.assertEqual(outcome.kind, fin.MALFORMED)
+        self.assertIn("AC-2", outcome.detail)
+        self.assertEqual(ran, [])
+
+    def test_every_other_broken_rung_is_malformed_too(self):
+        for witness in ({"command": "x", "timeout": "30"}, {"command": "x", "timeout": 0},
+                        {"command": "", "timeout": 5}, {"evidence": ""}, {"manual": "a",
+                        "evidence": "b"}, "pytest", {"command": "x", "timeout": True}):
+            with self.subTest(witness=witness):
+                outcome, ran = self.finalize(witness)
+                self.assertEqual(outcome.kind, fin.MALFORMED)
+                self.assertEqual(ran, [])
+
+
 class StatesTests(unittest.TestCase):
 
     def test_the_catalog_move_is_called_with_allow_idp_and_json(self):
