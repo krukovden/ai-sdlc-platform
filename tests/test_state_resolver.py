@@ -149,6 +149,14 @@ class RouteTests(ScriptTestCase):
         self.assertEqual(result["kind"], "pbi")
         self.assertEqual(result["phase"], "pbi")
 
+    def test_a_ready_pbi_points_to_its_owning_features_development_command(self):
+        result = state.resolve(
+            StubBoard(identifier="IDE-89", status="Todo", status_type="unstarted",
+                      parent="IDE-88", labels=[]),
+            {}, "IDE-89")
+        self.assertEqual(result["phase"], "pbi")
+        self.assertEqual(result["next"], "/idp-develop IDE-88")
+
 
 class PhaseMapTests(ScriptTestCase):
     """A Feature's phases are the fixed tags; the profile renames a PBI's states."""

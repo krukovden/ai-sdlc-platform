@@ -227,10 +227,19 @@ def detect_test_command(root):
                                                                     ast.Module):
                         layout["pytest"] = True
                 elif isinstance(node, ast.ClassDef):
+                    has_test_methods = any(
+                        isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and child.name.startswith("test_")
+                        for child in node.body
+                    )
+                    unittest_case = False
                     for base in node.bases:
                         text = ast.unparse(base) if hasattr(ast, "unparse") else ""
                         if text.endswith("TestCase") or text == "TestCase":
                             layout["unittest"] = True
+                            unittest_case = True
+                    if has_test_methods and node.name.startswith("Test") and not unittest_case:
+                        layout["pytest"] = True
             if layout["pytest"] and layout["unittest"]:
                 return "python3 -m pytest"
         if layout["pytest"]:

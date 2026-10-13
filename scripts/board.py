@@ -475,7 +475,9 @@ def current_feature_id(board, profile, identifier=None, cwd=None):
         if not node_branch:
             node_branch = (board.get_issue(node["identifier"]).get("branch") or "").strip()
         if node_branch == branch:
-            matches.append(node["identifier"])
+            candidate = _feature_identifier(board, node)
+            if candidate and candidate not in matches:
+                matches.append(candidate)
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -483,6 +485,20 @@ def current_feature_id(board, profile, identifier=None, cwd=None):
              fix="pass the Feature id explicitly")
     fail(EXIT.INVALID, f"branch '{branch}' does not match any Feature in this project",
          fix="pass the Feature id explicitly, or switch to a Feature branch")
+
+
+def _feature_identifier(board, node):
+    kind = str(node.get("kind") or "").strip().casefold()
+    parent = node.get("parent")
+    if not kind or (kind == "pbi" and not parent):
+        issue = board.get_issue(node["identifier"])
+        kind = kind or str(issue.get("kind") or "").strip().casefold()
+        parent = parent or issue.get("parent")
+    if kind == "pbi" and parent:
+        return str(parent)
+    if kind == "feature" or (not kind and not parent):
+        return node["identifier"]
+    return None
 
 
 def _feature_criteria_headings():

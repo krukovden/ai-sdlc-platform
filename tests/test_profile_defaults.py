@@ -145,6 +145,21 @@ class ProfileDefaultsTests(ScriptTestCase):
                 encoding="utf-8")
             self.assertEqual(defaults.detect_test_command(root), "python3 -m pytest")
 
+    def test_prefers_pytest_when_unittest_and_pytest_test_classes_are_mixed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_sample.py").write_text(
+                "import unittest\n\n"
+                "class Sample(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        self.assertTrue(True)\n\n"
+                "class TestFeature:\n"
+                "    def test_broken_feature(self):\n"
+                "        assert False\n",
+                encoding="utf-8")
+            self.assertEqual(defaults.detect_test_command(root), "python3 -m pytest")
+
     def test_derives_from_the_repository_root_when_run_in_a_subdirectory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = repo(Path(tmp) / "repo",

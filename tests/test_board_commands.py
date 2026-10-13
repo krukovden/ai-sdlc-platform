@@ -19,14 +19,17 @@ def git(repo, *args):
 
 
 class StubBoard:
-    def __init__(self, nodes=None, issue=None):
+    def __init__(self, nodes=None, issue=None, issues=None):
         self.nodes = list(nodes or [])
         self.issue = issue or {}
+        self.issues = dict(issues or {})
 
     def list_project(self, project):
         return list(self.nodes)
 
     def get_issue(self, identifier):
+        if identifier in self.issues:
+            return dict(self.issues[identifier])
         return dict(self.issue)
 
     def list_comments(self, identifier):
@@ -67,6 +70,24 @@ class BranchResolutionTests(ScriptTestCase):
                 "System.WorkItemType": "Feature",
             }}, project="Contoso")
             fake = StubBoard(nodes=[node], issue=node)
+            profile = {"schema_version": 1, "board": "azure-devops", "team_key": "IDE",
+                       "workspace": "contoso", "project_id": "Contoso", "_root": str(root)}
+            self.assertEqual(board.current_feature_id(fake, profile), "42")
+
+    def test_current_feature_id_resolves_a_pbi_branch_to_its_feature(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            branch = "feature/43-child-pbi"
+            root = self.repo(Path(tmp) / "repo", branch)
+            handle = azure.Board(None, {"workspace": "contoso", "project_id": "Contoso"})
+            pbi = handle._brief({"id": 43, "fields": {
+                "System.Id": 43,
+                "System.Title": "Child PBI",
+                "System.State": "New",
+                "System.TeamProject": "Contoso",
+                "System.WorkItemType": "User Story",
+                "System.Parent": 42,
+            }}, project="Contoso")
+            fake = StubBoard(nodes=[pbi], issues={"43": pbi})
             profile = {"schema_version": 1, "board": "azure-devops", "team_key": "IDE",
                        "workspace": "contoso", "project_id": "Contoso", "_root": str(root)}
             self.assertEqual(board.current_feature_id(fake, profile), "42")
