@@ -2207,9 +2207,16 @@ def parse_args(argv=None):
                         help="directory for logs, worktrees and report.md "
                              "(default: docker/calculator/out for fake, ./out for ado)")
     experiment_common.add_target_arguments(parser)
-    parser.add_argument("scenarios", nargs="*", choices=SCENARIOS,
+    # No `choices=` here: Python 3.11 checks an empty nargs="*" default against
+    # them and refuses a run that names no scenario.
+    parser.add_argument("scenarios", nargs="*", metavar="{" + ",".join(SCENARIOS) + "}",
                         help="scenario names; default: all in order")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    unknown = [name for name in args.scenarios if name not in SCENARIOS]
+    if unknown:
+        parser.error(f"unknown scenario(s): {', '.join(unknown)} "
+                     f"(choose from {', '.join(SCENARIOS)})")
+    return args
 
 
 def main(argv=None):
