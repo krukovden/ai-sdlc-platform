@@ -775,6 +775,28 @@ class HandoffLayerThreeTests(Phase3TestCase):
         self.assertEqual(world.board.cards["7"]["rev"], rev + 1)
 
 
+class HardenedGitTests(Phase3TestCase):
+    """CI and hardened machines set `safe.bareRepository=explicit`; the suite must not care."""
+
+    HARDENED = {"GIT_CONFIG_PARAMETERS": "'safe.bareRepository=explicit'"}
+
+    def test_the_setting_really_refuses_a_bare_remote(self):
+        world = self.world()
+        with mock.patch.dict(os.environ, self.HARDENED):
+            plain = subprocess.run(["git", "-C", str(world.remote), "rev-parse", "HEAD"],
+                                   capture_output=True, text=True)
+        if plain.returncode == 0:
+            self.skipTest("this git predates safe.bareRepository")
+        self.assertIn("safe.bareRepository", plain.stderr)
+
+    def test_a_phase_three_run_and_its_remote_reads_work_under_it(self):
+        world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
+        with mock.patch.dict(os.environ, self.HARDENED):
+            self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+            self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/a.py"), "VALUE = 1\n")
+            self.assertTrue(git(world.remote, "rev-parse", FEATURE_BRANCH))
+
+
 class CrashResumeTests(Phase3TestCase):
 
     def test_a_crash_after_every_side_effect_resumes_to_the_same_board(self):

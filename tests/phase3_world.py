@@ -126,8 +126,15 @@ def default_plan():
             "pbis": [pbi("a"), pbi("b"), pbi("c", depends_on=["a"])]}
 
 
+# Several tests read the bare remote directly. Git hardened with
+# `safe.bareRepository=explicit` refuses `-C <bare repo>`; a command-line `-c` is
+# protected configuration, so it is honoured, and it is the only place it is set.
+BARE_OK = ("-c", "safe.bareRepository=all")
+
+
 def git(path, *args, check=True):
-    answer = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True,
+    answer = subprocess.run(["git", *BARE_OK, "-C", str(path), *args], capture_output=True,
+                            text=True,
                             stdin=subprocess.DEVNULL)
     if check and answer.returncode != 0:
         raise AssertionError(f"git {' '.join(args)}: {answer.stderr}")
@@ -281,7 +288,8 @@ class World:
         return {i["key"]: i for i in shape.work_items(self.board, FEATURE)}
 
     def remote_file(self, branch, path):
-        answer = subprocess.run(["git", "-C", str(self.remote), "show", f"{branch}:{path}"],
+        answer = subprocess.run(["git", *BARE_OK, "-C", str(self.remote), "show",
+                                 f"{branch}:{path}"],
                                 capture_output=True, text=True)
         return answer.stdout if answer.returncode == 0 else None
 
