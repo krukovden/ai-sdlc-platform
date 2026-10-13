@@ -1907,8 +1907,8 @@ class GitHubMergerTests(unittest.TestCase):
         opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
         self.assertEqual(opened, {"id": 12, "url": "https://github.com/o/r/pull/12"})
         self.assertEqual(calls, [[
-            "gh", "pr", "list", "--head", "feature/IDE-88", "--base", "main", "--state",
-            "open", "--json", "number,url",
+            "gh", "pr", "list", "--repo", "o/r", "--head", "feature/IDE-88", "--base",
+            "main", "--state", "open", "--json", "number,url",
         ]])
 
     def test_open_creates_a_pull_request_when_none_exists(self):
@@ -1929,28 +1929,108 @@ class GitHubMergerTests(unittest.TestCase):
         opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
         self.assertEqual(opened, {"id": 13, "url": "https://github.com/o/r/pull/13"})
         self.assertEqual(calls[1], [
-            "gh", "pr", "create", "--head", "feature/IDE-88", "--base", "main",
-            "--title", "T", "--body", "B",
+            "gh", "pr", "create", "--repo", "o/r", "--head", "feature/IDE-88",
+            "--base", "main", "--title", "T", "--body", "B",
         ])
 
     def test_open_fails_safe_when_gh_cannot_open_or_list_a_pull_request(self):
-        for failure in (
-                lambda _argv: subprocess.CompletedProcess(["gh"], 1, "", "auth failed"),
-                lambda _argv: (_ for _ in ()).throw(OSError("no gh"))):
-            with self.subTest(failure=getattr(failure, "__name__", "oserror")):
+        merger = phase3.merge.GitHubMerger(
+            StubGit(url="git@github.com:o/r.git"),
+            run=lambda _argv: (_ for _ in ()).throw(OSError("no gh")))
+        opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+        self.assertIsNone(opened["url"])
+        self.assertIn("feature_pr", opened["fix"])
+
+    def test_open_fails_safe_on_nonzero_status_at_every_cli_stage(self):
+        scenarios = {
+            "list": [subprocess.CompletedProcess(["gh"], 1, "", "auth failed")],
+            "create": [
+                subprocess.CompletedProcess(["gh"], 0, "[]", ""),
+                subprocess.CompletedProcess(["gh"], 1, "", "create failed"),
+            ],
+            "re-list": [
+                subprocess.CompletedProcess(["gh"], 0, "[]", ""),
+                subprocess.CompletedProcess(["gh"], 0, "https://github.com/o/r/pull/13\n", ""),
+                subprocess.CompletedProcess(["gh"], 1, "", "refresh failed"),
+            ],
+        }
+        for stage, replies in scenarios.items():
+            with self.subTest(stage=stage):
+                calls = []
+                answers = iter(replies)
                 merger = phase3.merge.GitHubMerger(
-                    StubGit(url="git@github.com:o/r.git"), run=failure)
+                    StubGit(url="git@github.com:o/r.git"),
+                    run=lambda argv: calls.append(argv) or next(answers))
                 opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
                 self.assertIsNone(opened["url"])
                 self.assertIn("feature_pr", opened["fix"])
+                self.assertGreaterEqual(len(calls), 1)
 
-    def test_selection_uses_azure_repos_before_github_and_github_before_plain_git(self):
+    def test_open_fails_safe_on_timeout_at_every_cli_stage(self):
+        def timeout(stage):
+            return subprocess.TimeoutExpired(["gh", "pr", stage], phase3.merge.GH_TIMEOUT)
+
+        scenarios = {
+            "list": [timeout("list")],
+            "create": [subprocess.CompletedProcess(["gh"], 0, "[]", ""), timeout("create")],
+            "re-list": [
+                subprocess.CompletedProcess(["gh"], 0, "[]", ""),
+                subprocess.CompletedProcess(["gh"], 0, "https://github.com/o/r/pull/13\n", ""),
+                timeout("list"),
+            ],
+        }
+        for stage, replies in scenarios.items():
+            with self.subTest(stage=stage):
+                answers = iter(replies)
+
+                def gh(_argv):
+                    answer = next(answers)
+                    if isinstance(answer, Exception):
+                        raise answer
+                    return answer
+
+                merger = phase3.merge.GitHubMerger(StubGit(url="git@github.com:o/r.git"),
+                                                   run=gh)
+                opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+                self.assertIsNone(opened["url"])
+                self.assertIn("timed out", opened["fix"])
+
+    def test_open_binds_gh_to_the_selected_repository(self):
+        def gh(argv):
+            repo = argv[argv.index("--repo") + 1] if "--repo" in argv else None
+            url = "https://github.com/o/r/pull/12" if repo == "o/r" \
+                else "https://github.com/other/unrelated/pull/99"
+            return subprocess.CompletedProcess(
+                argv, 0, f'[{{"number": 12, "url": "{url}"}}]', "")
+
+        merger = phase3.merge.GitHubMerger(
+            StubGit(url="ssh://git@github.com/o/r.git"), run=gh)
+        opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+        self.assertEqual(opened["url"], "https://github.com/o/r/pull/12")
+
+    def test_pbi_open_stays_git_level_even_under_the_github_merger(self):
+        calls = []
+        merger = phase3.merge.GitHubMerger(
+            StubGit(url="git@github.com:o/r.git"),
+            run=lambda argv: calls.append(argv) or subprocess.CompletedProcess(argv, 0, "[]", ""))
+        opened = merger.open("pbi/5-x/g1", FEATURE_BRANCH, "X", "d", "5")
+        self.assertEqual(opened["id"], "git:pbi/5-x/g1")
+        self.assertIsNone(opened["url"])
+        self.assertEqual(calls, [])
+
+    def test_selection_prefers_the_repository_provider_and_falls_back_to_git(self):
         class AzureBoard:
             def create_pull_request(self, *args):
                 return None
 
         merger = phase3.merge.select(AzureBoard(), {"board": "azure-devops"},
                                      StubGit(url="git@github.com:o/r.git"), "repo")
+        self.assertIsInstance(merger, phase3.merge.GitHubMerger)
+        merger = phase3.merge.select(AzureBoard(), {"board": "azure-devops"},
+                                     StubGit(url="https://example.invalid/repo.git"), "repo")
+        self.assertIsInstance(merger, phase3.merge.GitMerger)
+        merger = phase3.merge.select(AzureBoard(), {"board": "azure-devops"},
+                                     StubGit(url="https://dev.azure.com/o/p/_git/r"), "repo")
         self.assertIsInstance(merger, phase3.merge.AzureReposMerger)
         for url in ("https://github.com/o/r.git", "git@github.com:o/r.git",
                     "ssh://git@github.com/o/r.git"):
@@ -2024,9 +2104,10 @@ class AzureReposMergerTests(unittest.TestCase):
                 pass
 
         profile = {"board": "azure-devops"}
-        self.assertFalse(phase3.merge.select(Board(), profile, StubGit(), "r").unproven)
+        git = StubGit(url="https://dev.azure.com/o/p/_git/r")
+        self.assertFalse(phase3.merge.select(Board(), profile, git, "r").unproven)
         profile["development"] = {"azure_complete_unproven": True}
-        self.assertTrue(phase3.merge.select(Board(), profile, StubGit(), "r").unproven)
+        self.assertTrue(phase3.merge.select(Board(), profile, git, "r").unproven)
 
     def test_a_protected_target_is_refused_before_any_board_call(self):
         calls = []

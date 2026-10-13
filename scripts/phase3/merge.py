@@ -56,6 +56,7 @@ UNPROVEN_KIND = "unproven"
 OPT_IN = "development.azure_complete_unproven"
 EXPERIMENT = "experiment 8 (docs/experiments/README.md)"
 AZURE_COMPLETE_RETRIES = 3
+GH_TIMEOUT = 60
 
 
 class MergeRefused(Exception):
@@ -231,6 +232,46 @@ def github_remote(url):
     return (parts.hostname or "").casefold() == "github.com"
 
 
+def azure_remote(url):
+    hosts = {
+        ".".join(("ssh", "dev", "azure", "com")),
+        ".".join(("vs-ssh", "visualstudio", "com")),
+    }
+    https = ".".join(("dev", "azure", "com"))
+    text = str(url or "").strip()
+    if not text:
+        return False
+    if "://" not in text and "@" in text:
+        host = text.split("@", 1)[1].split(":", 1)[0].split("/", 1)[0].casefold()
+        return host in hosts
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").casefold()
+    return host == https or host.endswith("." + "visualstudio.com")
+
+
+def github_repository(url):
+    text = str(url or "").strip().rstrip("/")
+    if not github_remote(text):
+        return None
+    if "://" not in text and "@" in text:
+        path = text.split(":", 1)[1] if ":" in text else ""
+    else:
+        try:
+            path = urllib.parse.urlsplit(text).path
+        except ValueError:
+            return None
+    parts = [piece for piece in path.lstrip("/").split("/") if piece]
+    if len(parts) < 2:
+        return None
+    owner, repository = parts[-2], parts[-1]
+    if repository.endswith(".git"):
+        repository = repository[:-4]
+    return f"{owner}/{repository}" if owner and repository else None
+
+
 class GitHubMerger(GitMerger):
     """Git-level merges plus feature pull requests opened with `gh`."""
 
@@ -239,10 +280,15 @@ class GitHubMerger(GitMerger):
     def __init__(self, git, protected=(), run=None):
         super().__init__(git, protected=protected)
         self.run = run or self._run_gh
+        try:
+            remote_url = getattr(git, "url", lambda: None)()
+        except GitError:
+            remote_url = None
+        self.repository = github_repository(remote_url)
 
     def _run_gh(self, argv):
         return subprocess.run(argv, capture_output=True, text=True, cwd=str(self.git.path),
-                              stdin=subprocess.DEVNULL, timeout=60)
+                              stdin=subprocess.DEVNULL, timeout=GH_TIMEOUT)
 
     @staticmethod
     def _read_list(answer):
@@ -259,48 +305,62 @@ class GitHubMerger(GitMerger):
                 return {"id": found["number"], "url": found["url"]}
         return {}
 
-    def _failed(self, branch):
+    def _failed(self, branch, detail=None):
+        extra = f" ({detail})" if detail else ""
         return {
             "id": f"github:{branch}",
             "url": None,
             "fix": "make the GitHub CLI work in this clone: install `gh`, authenticate it, "
-                   "and make `gh pr list --head <branch> --base <target> --state open "
-                   "--json number,url` succeed on this github.com remote; or set "
-                   "\"feature_pr\": \"branch-only\" under \"development\" in "
+                   f"and make `gh pr list --repo <owner/repo> --head <branch> --base <target> "
+                   f"--state open --json number,url` succeed on this github.com remote{extra}; "
+                   "or set \"feature_pr\": \"branch-only\" under \"development\" in "
                    ".idp/profile.json when this repository has no PR workflow",
         }
 
-    def open(self, branch, target, title, description, work_item):
+    def _gh(self, *args):
         try:
-            listed = self.run([
-                "gh", "pr", "list", "--head", branch, "--base", target, "--state", "open",
-                "--json", "number,url",
-            ])
+            return self.run(["gh", *args]), None
         except OSError:
-            return self._failed(branch)
+            return None, "the GitHub CLI is not installed or could not start"
+        except subprocess.TimeoutExpired:
+            return None, f"`gh {' '.join(args[:2])}` timed out after {GH_TIMEOUT} seconds"
+
+    def _list(self, branch, target):
+        listed, error = self._gh("pr", "list", "--repo", self.repository,
+                                 "--head", branch, "--base", target, "--state", "open",
+                                 "--json", "number,url")
+        if listed is None:
+            return None, error
         found = self._read_list(listed)
         if found is None:
-            return self._failed(branch)
+            return None, "the GitHub CLI did not return valid PR JSON"
+        return found, None
+
+    def open(self, branch, target, title, description, work_item):
+        if branch_name(branch).startswith("pbi/"):
+            return super().open(branch, target, title, description, work_item)
+        if not self.repository:
+            return self._failed(
+                branch,
+                "the selected github.com remote does not identify an owner/repository",
+            )
+        found, error = self._list(branch, target)
+        if found is None:
+            return self._failed(branch, error)
         if found:
             return found
-        try:
-            created = self.run([
-                "gh", "pr", "create", "--head", branch, "--base", target,
-                "--title", title, "--body", description,
-            ])
-        except OSError:
-            return self._failed(branch)
+        created, error = self._gh("pr", "create", "--repo", self.repository,
+                                  "--head", branch, "--base", target,
+                                  "--title", title, "--body", description)
+        if created is None:
+            return self._failed(branch, error)
         if created.returncode != 0:
-            return self._failed(branch)
-        try:
-            listed = self.run([
-                "gh", "pr", "list", "--head", branch, "--base", target, "--state", "open",
-                "--json", "number,url",
-            ])
-        except OSError:
-            return self._failed(branch)
-        found = self._read_list(listed)
-        return found if found else self._failed(branch)
+            return self._failed(branch, "the GitHub CLI could not create the pull request")
+        found, error = self._list(branch, target)
+        if found is None:
+            return self._failed(branch, error)
+        return found if found else self._failed(
+            branch, "the pull request was not visible in GitHub after creation")
 
 
 class AzureReposMerger(Merger):
@@ -370,17 +430,19 @@ class AzureReposMerger(Merger):
 
 
 def select(board, profile, git, repository):
-    """Azure Repos first, GitHub on github.com remotes, git-level merges otherwise."""
+    """The repository remote chooses the PR provider; the board only gates Azure calls."""
     profile = profile or {}
     protected = profile.get("protected_branches") or ()
-    if profile.get("board") == "azure-devops" and hasattr(board, "create_pull_request"):
-        unproven = (profile.get("development") or {}).get("azure_complete_unproven")
-        return AzureReposMerger(board, git, repository, protected=protected,
-                                unproven=unproven is True)
     try:
         url = git.url()
     except (AttributeError, GitError):
         url = None
     if github_remote(url):
         return GitHubMerger(git, protected=protected)
+    if profile.get("board") == "azure-devops" and hasattr(board, "create_pull_request"):
+        if not azure_remote(url):
+            return GitMerger(git, protected=protected)
+        unproven = (profile.get("development") or {}).get("azure_complete_unproven")
+        return AzureReposMerger(board, git, repository, protected=protected,
+                                unproven=unproven is True)
     return GitMerger(git, protected=protected)

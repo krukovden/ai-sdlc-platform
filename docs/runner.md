@@ -488,6 +488,13 @@ Two operational limits matter even before those experiments run:
   PR but omits the actual merge commit SHA, the runner now refuses to guess
   from target metadata or branch tips. It leaves recovery blocked on that PR
   instead of certifying an unprovable landing.
+- **GitHub feature PR opening is idempotent, not atomic.** The runner binds `gh`
+  to the selected remote repository with `--repo`, lists an open PR for the
+  exact branch/target pair, creates one only when none is listed, then lists
+  again. GitHub exposes no single compare-and-swap "open if absent" call here,
+  so a concurrent creator can still win the gap between those steps. The runner
+  narrows that window as far as the provider allows and blocks on any answer
+  that does not produce a visible PR URL.
 - **Copilot hook registration is manual.** This repository ships a hook file, not a
   Copilot plugin hook installer. Without that manual install, only the runner-side
   handoff guarantee exists for Copilot sessions.

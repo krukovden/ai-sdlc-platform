@@ -1021,6 +1021,21 @@ class Integration:
     def feature_pr_mode(self):
         return str((self.profile.get("development") or {}).get("feature_pr") or AUTO_PR)
 
+    def feature_pr_key(self, target):
+        return f"{FEATURE_PR}:{self.feature}:{self.feature_pr_mode()}:{self.branch}:{target}"
+
+    def feature_pr_event(self, target):
+        events = lease.events(self.comments(), FEATURE_PR, branch=self.branch, target=target)
+        mode = self.feature_pr_mode()
+        for found in reversed(events):
+            if mode == BRANCH_ONLY:
+                if found.get("mode") == BRANCH_ONLY:
+                    return found
+                continue
+            if found.get("url") and found.get("mode") in (None, "pull-request"):
+                return found
+        return None
+
     @staticmethod
     def hand_off_text(pr, branch, target):
         pr = pr or {}
@@ -1044,11 +1059,11 @@ class Integration:
             return self.rerun(candidate, moved)
         head = candidate
         main, _ = self.main_sha()
-        pr = self.event(FEATURE_PR)
+        pr = self.feature_pr_event(main)
         if pr is None:
             if self.feature_pr_mode() == BRANCH_ONLY:
                 lease.post_event(
-                    self.board, self.feature, FEATURE_PR, f"{FEATURE_PR}:{self.feature}",
+                    self.board, self.feature, FEATURE_PR, self.feature_pr_key(main),
                     text=(f"No pull request was opened for `{self.branch}` → `{main}`. "
                           "QA tests the feature branch through the QA Testing PBI, then "
                           "the human merges that branch by hand after QA."),
@@ -1068,32 +1083,13 @@ class Integration:
                         f"opened: the human and the QA pipeline need a real feature PR. "
                         f"FIX: {fix}")
                 lease.post_event(
-                    self.board, self.feature, FEATURE_PR, f"{FEATURE_PR}:{self.feature}",
+                    self.board, self.feature, FEATURE_PR, self.feature_pr_key(main),
                     text=(f"Pull request `{self.branch}` → `{main}` opened for the AI review "
                           f"pipeline and the full suite: {opened.get('url') or opened['id']}. "
                           "The runner never merges it; the human does, after QA."),
                     id=str(opened["id"]), url=opened.get("url"), mode="pull-request",
                     branch=self.branch, target=main)
-            pr = self.event(FEATURE_PR)
-        elif not pr.get("url"):
-            title = self.board.get_issue(self.feature).get("title") or self.feature
-            opened = merger.open(self.branch, main, title,
-                                 f"{mention_of(self.feature)} — phase 3 is done; the human "
-                                 "tests it through the QA Testing PBI and merges this.",
-                                 self.feature)
-            if not opened.get("url"):
-                return dev.block_feature(
-                    f"the cached feature pull request `{pr.get('id')}` has no URL and this "
-                    "merger still cannot create a real feature PR for the human or the QA "
-                    "pipeline. FIX: configure a PR-capable provider, then re-run")
-            lease.post_event(
-                self.board, self.feature, FEATURE_PR,
-                f"{FEATURE_PR}:{self.feature}:{opened.get('id')}",
-                text=(f"Pull request `{self.branch}` → `{main}` reopened in place of the "
-                      f"legacy synthetic event: {opened.get('url') or opened['id']}. "
-                      "The runner never merges it; the human does, after QA."),
-                id=str(opened["id"]), url=opened.get("url"), supersedes=pr.get("id"))
-            pr = self.event(FEATURE_PR)
+            pr = self.feature_pr_event(main)
         qa = next((i for i in shape.work_items(self.board, self.feature, dev.plan)
                    if shape.is_qa(i)), None)
         if qa is None:

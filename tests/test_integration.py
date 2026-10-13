@@ -12,6 +12,7 @@ import io
 import itertools
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -200,6 +201,44 @@ class FeaturePullRequestTests(IntegrationTestCase):
         self.assertEqual(self.qa(world)["status"], "Active")
         self.assertEqual(self.feature_tags(world), [tags.QA])
         self.assertTrue(world.events(FEATURE, integration.HANDED))
+
+    def test_removing_branch_only_requires_a_real_pr_on_the_next_development_cycle(self):
+        profile = dict(PROFILE, development=dict(PROFILE["development"], feature_pr="branch-only"))
+        world = self.world(plan={"pbis": [pbi("a")]}, profile=profile)
+        merger = phase3.merge.GitMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        world.profile = PROFILE
+        world.board.profile = PROFILE
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.BLOCKED)
+        latest = world.events(FEATURE, integration.FEATURE_PR)[-1]
+        self.assertEqual(latest["mode"], "branch-only")
+        self.assertEqual(len(world.events(FEATURE, integration.HANDED)), 1)
+        self.assertEqual(len(world.events(FEATURE, integration.FEATURE_PR)), 1)
+        reason = world.events(FEATURE, lease.BLOCK)[-1]["reason"]
+        self.assertIn("need a real feature PR", reason)
+        self.assertEqual(self.feature_tags(world), [tags.DEVELOPMENT, tags.BLOCKED])
+
+    def test_the_github_merger_opens_only_the_feature_pull_request_in_a_full_run(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        calls = []
+
+        def gh(argv):
+            calls.append(list(argv))
+            branch = argv[argv.index("--head") + 1]
+            if argv[2] == "list":
+                payload = [] if branch == FEATURE_BRANCH and calls.count(list(argv)) == 1 else [
+                    {"number": 12, "url": f"https://github.com/o/r/pull/{branch.replace('/', '-')}"}
+                ]
+                return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                argv, 0, f"https://github.com/o/r/pull/{branch.replace('/', '-')}\n", "")
+
+        merger = phase3.merge.GitHubMerger(phase3.gitops.Git(world.repo), run=gh)
+        merger.repository = "o/r"
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        heads = [argv[argv.index("--head") + 1] for argv in calls if "--head" in argv]
+        self.assertEqual(sorted(set(heads)), [FEATURE_BRANCH])
 
 
 # ---------------------------------------------------------------------------
