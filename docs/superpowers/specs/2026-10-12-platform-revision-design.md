@@ -1,7 +1,7 @@
 # Platform revision — one owner per phase, a board you can claim on, a night you can leave
 
-**Issues:** none yet. This revision needs a feature card and a design card before any of it is implemented (see *Before implementation*).
-**Date:** 12 October 2026 · **Status:** agreed with the Product Owner in conversation; the written spec is awaiting review.
+**Issues:** [IDE-147](https://linear.app/krukov-idea-hub/issue/IDE-147) (feature), [IDE-148](https://linear.app/krukov-idea-hub/issue/IDE-148) (design, this ADR).
+**Date:** 12 October 2026 · **Status:** approved by the Product Owner on 12 October 2026 (comment on IDE-148).
 
 ## Why a revision
 
