@@ -340,23 +340,28 @@ def _claim_key(board, identifier, run, phase, result):
         candidate = f"{base}:r{result.get('rev')}"
         if any(event.get("key") == candidate for event in prior):
             return candidate, n
-        if _missing_claim_for_current_hold(board, identifier, prior[-1]):
+        if _missing_claim_for_current_hold(board, identifier, run, prior[-1]):
             return candidate, n
         return prior[-1]["key"], n
     return base, n
 
 
-def _missing_claim_for_current_hold(board, identifier, latest):
-    """Whether the owner tag moved after the latest claim comment of this hold.
+def _missing_claim_for_current_hold(board, identifier, run, latest):
+    """Whether a later pause proves this unchanged owner is a resumed hold.
 
-    A crash can land after the owner-tag write and before the claim comment.
-    Retrying that hold is `unchanged`, but the board's last card change is now
-    newer than the previous claim comment, so the current acquisition still
-    needs its own claim event.
+    A crash can land after a resumed owner's tag write and before its claim
+    comment. The durable fact that distinguishes that from an ordinary retry is
+    the pause event of the earlier hold. Unrelated card edits must not mint a
+    replacement claim or replace the original claim facts.
     """
-    changed = parse_time(board.read_card(identifier).get("changed_at"))
-    commented = parse_time(latest.get("created_at"))
-    return changed is not None and commented is not None and changed > commented
+    found_latest = False
+    for event in events(board.list_comments(identifier)):
+        if event.get("key") == latest.get("key"):
+            found_latest = True
+            continue
+        if found_latest and event.get("kind") == "pause" and event.get("run") == run:
+            return True
+    return False
 
 
 def generation(board, identifier):
