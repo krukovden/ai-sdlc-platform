@@ -101,13 +101,14 @@ test('the shipped package carries the hooks directory into the payload', async t
   assert.ok(fs.existsSync(path.join(ctx.root, 'hooks/hooks.json')), 'npm pack includes hooks/hooks.json');
   await run(['install', '--target', 'claude'], ctx);
   const payload = receiptOf(ctx).payload;
-  for (const file of ['hooks/hooks.json', 'hooks/platform-freshness.json']) assert.ok(fs.existsSync(path.join(payload, file)), file);
+  for (const file of ['hooks/hooks.json', 'hooks/platform-freshness.json', 'hooks/cliff-handoff.json', 'hooks/context-watch.json', 'hooks/copilot-hooks.json', 'scripts/hooks/cliff_handoff.py', 'scripts/hooks/context_watch.py', 'scripts/hooks/statusline.py']) assert.ok(fs.existsSync(path.join(payload, file)), file);
 });
 
 test('Claude gets a real SessionStart hook and Copilot gets no second one', async t => {
   const ctx = fixture(t);
   const hooks = json(path.join(ctx.root, 'hooks/hooks.json')).hooks;
-  assert.deepEqual(Object.keys(hooks), ['SessionStart']);
+  // The handoff layers add PostToolUse and StopFailure; SessionStart stays the one freshness hook.
+  assert.deepEqual(Object.keys(hooks), ['SessionStart', 'PostToolUse', 'StopFailure']);
   const commands = hooks.SessionStart.flatMap(group => group.hooks);
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'command');
@@ -115,6 +116,10 @@ test('Claude gets a real SessionStart hook and Copilot gets no second one', asyn
   assert.equal(json(path.join(ctx.root, '.claude-plugin/plugin.json')).hooks, './hooks/hooks.json');
   for (const copilot of ['.copilot-plugin/hooks.json', 'plugin.json']) assert.equal(fs.existsSync(path.join(ctx.root, copilot)), false, `${copilot} would register a Copilot hook`);
   assert.deepEqual(json(path.join(ctx.root, 'hooks/platform-freshness.json')).platforms, ['claude']);
+  // Copilot's handoff hooks never include a SessionStart hook, so it never gets a second one.
+  const copilotHooks = json(path.join(ctx.root, 'hooks/copilot-hooks.json'));
+  assert.equal(copilotHooks.version, 1);
+  assert.deepEqual(Object.keys(copilotHooks.hooks), ['errorOccurred', 'sessionEnd']);
   // The registered command, as a plugin manager would run it: one reminder line on stdout.
   const remote = path.join(ctx.temp, 'remote');
   fs.mkdirSync(remote);

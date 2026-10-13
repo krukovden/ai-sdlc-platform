@@ -16,7 +16,8 @@ What it does, in order:
    out. Commits `wip(handoff): <reason>` with the work item mention and pushes.
 2. Writes a mechanical `handoff.md` — the branch, the card, the last commit, the
    files left uncommitted, the reason, the model's last message if there was
-   one — commits and pushes it.
+   one — commits and pushes it. A handoff.md the model wrote itself (layer 1) is
+   kept, with the mechanical facts under it.
 3. With `--pause`, swaps `idp:owner:<run>` for `idp:paused:<run>` on the card in
    one fenced write, so another machine can take it at once. That needs a board
    credential, so only the runner does it; a hook inside a model session holds
@@ -60,6 +61,8 @@ EXIT = _sibling("exit_codes", "idp_exit_codes")
 tags = _sibling("tags", "idp_tags")
 
 HANDOFF_FILE = "handoff.md"
+MECHANICAL = "<!-- idp:mechanical-handoff -->"
+SCRIPT_HEADER = "# Handoff\n\nWritten by a script"
 MAX_BYTES = 5 * 1024 * 1024
 PROTECTED = ("main", "master")
 BRANCH_PREFIX = "pbi/"
@@ -158,6 +161,21 @@ def render(branch, card, reason, last_commit, left_out, last_message):
     return "\n".join(lines)
 
 
+def compose(existing, text):
+    """The handoff.md to write: ours, under what the model wrote if it wrote one.
+
+    Layer 1 is the model writing handoff.md while it still can, and that is the
+    richer record; a script that overwrote it would destroy the best evidence
+    of where the session stopped. So a model's file is kept and the mechanical
+    facts go under a marker — replaced there on a second run, never appended twice.
+    """
+    if not existing or existing.startswith(SCRIPT_HEADER):
+        return text
+    model = existing.split(MECHANICAL, 1)[0].rstrip()
+    ours = text.replace("# Handoff", "## Mechanical handoff", 1)
+    return f"{model}\n\n{MECHANICAL}\n\n{ours}"
+
+
 def handoff(worktree, reason, card, mention=None, last_message=None, remote="origin",
             feature_branch=None):
     """Steps 1 and 2: the work and a mechanical handoff.md, committed and pushed."""
@@ -185,6 +203,7 @@ def handoff(worktree, reason, card, mention=None, last_message=None, remote="ori
     text = render(branch, mention, reason, {"sha": sha, "subject": subject}, left_out,
                   last_message)
     target = worktree / HANDOFF_FILE
+    text = compose(target.read_text(encoding="utf-8") if target.exists() else None, text)
     if not target.exists() or target.read_text(encoding="utf-8") != text:
         target.write_text(text, encoding="utf-8")
     git(worktree, "add", "--", HANDOFF_FILE)

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "python3 \"${IDP_PLATFORM_ROOT}/scripts/hooks/cliff_handoff.py\" --host copilot --event errorOccurred",
+        "timeoutSec": 120
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "python3 \"${IDP_PLATFORM_ROOT}/scripts/hooks/cliff_handoff.py\" --host copilot --event sessionEnd",
+        "timeoutSec": 120
+      }
+    ]
+  }
+}
