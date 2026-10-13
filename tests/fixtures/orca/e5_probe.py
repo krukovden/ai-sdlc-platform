@@ -29,6 +29,7 @@ EXISTING = os.environ.get("E5_PLACEMENT")
 ONLY_A = bool(os.environ.get("E5_ONLY_A"))
 BASE = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 CHECK_MS = 240000
+STOPPED = 1   # the probe's own stop-rule exit; not one of the platform's codes
 
 
 def PLACEMENT(name):
@@ -54,7 +55,7 @@ def orca(*argv, timeout=300):
 def need(label, code, doc):
     if code != 0 or doc is None:
         print(f"STOP at {label}: exit {code}, json={doc is not None}")
-        sys.exit(1)
+        sys.exit(STOPPED)
     return doc.get("result", doc)
 
 
@@ -121,7 +122,7 @@ def main():
                     print("worker_done", dispatch, payload.get("outcome"))
                     return payload
         print("STOP: no worker_done for", dispatch)
-        sys.exit(1)
+        sys.exit(STOPPED)
 
     # --deps is honoured: B cannot start while A has not settled (no worker is made)
     early = orca("orchestration", "worker-start", "--run", run, "--task", b_id,
