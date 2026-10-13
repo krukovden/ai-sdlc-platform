@@ -22,6 +22,7 @@ except its own profile.
 """
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -29,7 +30,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent / "board.py"
 DEFAULT_TARGET = Path("~/.local/bin/idp").expanduser()
 
-VERSION = "0.1.0"
+VERSION = json.loads((SOURCE.parent.parent / "package.json").read_text())["version"]
 STANDARD = "1.0"          # the authoring standard this build implements (IDE-78)
 
 

@@ -1,0 +1,13 @@
+{
+  "name": "ai-sdlc-platform",
+  "source": "https://github.com/krukovden/ai-sdlc-platform",
+  "payload": ["scripts", "registry", "schemas", "templates", "lint", "cli", "bin", "package.json", "catalog.json"],
+  "skills": [
+    {"name": "feature-discovery", "path": "skills/feature-discovery"},
+    {"name": "design", "path": "skills/design"},
+    {"name": "planning", "path": "skills/planning"},
+    {"name": "establish-project", "path": "skills/establish-project"},
+    {"name": "platform-freshness", "path": "skills/platform-freshness"}
+  ],
+  "agents": []
+}

@@ -1,0 +1,32 @@
+{
+  "name": "idp-platform",
+  "version": "0.1.0",
+  "description": "AI SDLC Platform skills and shared Python tools",
+  "bin": {
+    "idp-platform": "bin/idp-platform.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "version:sync": "node cli/version.js"
+  },
+  "files": [
+    "bin",
+    "cli",
+    "catalog.json",
+    "skills",
+    "scripts",
+    "registry",
+    "schemas",
+    "templates",
+    "lint",
+    "hooks",
+    ".claude-plugin",
+    ".github/plugin",
+    "!**/__pycache__/**",
+    "!**/*.pyc"
+  ],
+  "license": "UNLICENSED"
+}

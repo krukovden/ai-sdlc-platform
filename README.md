@@ -9,6 +9,20 @@ Implementation repository for the AI SDLC Platform — a reusable AI platform th
 - **Working in this repository:** see [`CLAUDE.md`](CLAUDE.md) for conventions, how to load project state, and environment traps.
 - **Offline snapshot of the work:** [`docs/project-state.md`](docs/project-state.md), regenerated with `python3 scripts/board.py sync`.
 
+## Install
+
+Requires Node.js 20+, Python 3 and git. Install the skills for Claude Code, GitHub Copilot CLI and Orca's shared skills directory:
+
+```sh
+npx git+https://github.com/krukovden/ai-sdlc-platform install --target all --global
+```
+
+Use `--target claude|copilot|orca` for one host, or `--local` for this project. The same command supports `update`, `check`, `status`, `uninstall` and `list`. Updates show changes and ask before overwriting local edits; `--keep-local` preserves them and `--overwrite` explicitly replaces them. `--yes` alone never discards edits.
+
+Alternatively, add the marketplace with `/plugin marketplace add https://github.com/krukovden/ai-sdlc-platform` in Claude Code or `copilot plugin marketplace add https://github.com/krukovden/ai-sdlc-platform`, then install `ai-sdlc-platform@ai-sdlc-platform` through that plugin manager.
+
+[Installation guide](docs/install.md) covers payloads, receipts, release checks, plugin updates, removal, and the separate `python3 scripts/install.py` development-checkout launcher.
+
 ## The chain
 
 **Feature → ADR → PBI.** The Product Owner creates the feature; the architect turns it into an ADR; the human approves it and the ADR is attached to the feature as a file; the planner breaks the approved ADR into PBIs; agents implement them in parallel, coordinating through the board and never with each other.
@@ -29,7 +43,7 @@ python3 scripts/install.py --dry-run                      # what installing woul
 python3 -m unittest discover tests                        # 276 tests, none touch the network
 ```
 
-Installing is one symlink at this checkout, never a copy: `git pull` here updates every project at once. Each project keeps only its own `.idp/profile.json`.
+The development installer links `idp` to this checkout; `git pull` updates that launcher. The packaged installer above uses a versioned payload and tracked updates. Each product keeps its own `.idp/profile.json`.
 
 `board.py` is the front door and knows no tracker by name; `sync_linear_state.py` is the Linear adapter. A profile that says `"board": "azure-devops"` looks for `scripts/sync_azure_devops_state.py` and refuses with a clear reason if it is missing. Adding a tracker means writing one adapter.
 

@@ -1,0 +1,9 @@
+{
+  "name": "platform-freshness",
+  "description": "Invoke the portable freshness skill once per session; compose with an existing context hook rather than registering a second Copilot hook.",
+  "event": "SessionStart",
+  "script": "skills/platform-freshness/check.js",
+  "runtime": "node",
+  "automaticRegistration": false,
+  "intervalDays": 7
+}
