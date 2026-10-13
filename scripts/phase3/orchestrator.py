@@ -1217,7 +1217,7 @@ class Development:
                          f"{ATTEMPT}:{phase}:{self.feature}:{n}",
                          text=f"{phase.capitalize()} attempt {n} of {MAX_ATTEMPTS} did not "
                               f"finish: {reason}",
-                         phase=phase, n=n, cause=cause, run=self.run_id)
+                         phase=phase, n=n, cause=cause, outcome=cause, run=self.run_id)
 
     def block_feature(self, reason):
         reason = flat(reason)

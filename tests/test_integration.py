@@ -272,6 +272,23 @@ class RoundTests(IntegrationTestCase):
         self.assertEqual([a["n"] for a in attempts], [1, 2, 3])
         self.assertIn("runnable witness", attempts[0]["text"])
 
+    def test_a_witness_that_is_not_an_object_is_refused_not_a_crash(self):
+        """A string, a nonempty list or a number is malformed, and consumes an attempt."""
+        shapes = ("grep helper src/a.py", ["grep", "helper"], 60)
+        for witness in shapes:
+            with self.subTest(witness=type(witness).__name__):
+                world = self.world()
+                world.integration = [[{
+                    "kind": "duplicate", "title": "Duplicate helper",
+                    "detail": "src/a.py:1", "paths": ["src/a.py"],
+                    "criteria": [{"text": "one helper", "witness": witness}],
+                }]]
+                self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+                attempts = with_text(world, "attempt", phase="integration-r1")
+                self.assertEqual(len(attempts), 3)
+                self.assertTrue(all(a.get("outcome") == "malformed" for a in attempts))
+                self.assertIn("criteria[1].witness", attempts[0]["text"])
+
 
 class FindingsReaderTests(unittest.TestCase):
 
@@ -294,6 +311,15 @@ class FindingsReaderTests(unittest.TestCase):
         with self.assertRaises(integration.IntegrationError):
             self.read({"findings": []})
         self.assertEqual(self.read({"summary": "fine", "findings": []})["findings"], [])
+
+    def test_a_witness_of_the_wrong_shape_is_malformed(self):
+        for witness in ("grep helper src/a.py", ["grep", "helper"], 60, {"command": "ok"}):
+            with self.subTest(witness=witness):
+                with self.assertRaises(integration.IntegrationError) as caught:
+                    self.read({"summary": "s", "findings": [integration_finding(
+                        witness=witness)]})
+                self.assertEqual(caught.exception.outcome, "malformed")
+                self.assertIn("criteria[1]", str(caught.exception))
 
     def test_overlapping_fixes_are_ordered_like_planning_orders_its_own(self):
         planning = phase3.common.planning_module()

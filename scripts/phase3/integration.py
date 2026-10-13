@@ -140,7 +140,17 @@ If the bug cannot be understood without a human, `report --code 2 --reason "<the
 
 
 class IntegrationError(Exception):
-    """A session's answer that cannot be used."""
+    """A session's answer that cannot be used.
+
+    `outcome` is what the attempt comment records. A witness that is not an
+    object is `malformed` and still consumes an attempt; it must not escape as
+    an AttributeError, which would skip the budget and crash a resume on the
+    same cached file.
+    """
+
+    def __init__(self, message, outcome="answer"):
+        super().__init__(message)
+        self.outcome = outcome
 
 
 def digest(value):
@@ -175,13 +185,25 @@ def read_fix(raw, what):
                                "not a pass")
     fix["criteria"] = []
     for n, criterion in enumerate(criteria, 1):
-        witness = (criterion or {}).get("witness") if isinstance(criterion, dict) else None
-        command = (witness or {}).get("command")
-        timeout = (witness or {}).get("timeout")
+        if not isinstance(criterion, dict):
+            raise IntegrationError(f"{what}.criteria[{n}] is not an object",
+                                   outcome="malformed")
+        witness = criterion.get("witness")
+        # A string, a list or a number is truthy and has no `.get`. That used to
+        # raise AttributeError, skip the attempt budget, and leave the file as a
+        # cache so the next resume crashed the same way.
+        if not isinstance(witness, dict):
+            raise IntegrationError(
+                f"{what}.criteria[{n}].witness is not an object; a witness is "
+                "command and timeout",
+                outcome="malformed")
+        command = witness.get("command")
+        timeout = witness.get("timeout")
         if not isinstance(command, str) or not command.strip() or \
                 isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
             raise IntegrationError(f"{what}.criteria[{n}] has no runnable witness "
-                                   "({command, timeout})")
+                                   "({command, timeout})",
+                                   outcome="malformed")
         fix["criteria"].append({"text": _text(criterion.get("text"),
                                               f"{what}.criteria[{n}].text"),
                                 "witness": {"command": command.strip(), "timeout": timeout}})
@@ -414,7 +436,7 @@ class Integration:
                     return EXIT.DONE, read()
                 except IntegrationError as exc:
                     feedback = str(exc)
-                    dev.feature_attempt(phase, n + 1, "answer", feedback)
+                    dev.feature_attempt(phase, n + 1, exc.outcome, feedback)
                     continue
             if code == EXIT.BLOCKED:
                 return dev.block_feature(last.get("reason") or f"{phase} asked for a "
@@ -431,6 +453,26 @@ class Integration:
             feedback = last.get("reason") or cause
             dev.feature_attempt(phase, n + 1, cause, feedback)
         return dev.block_feature(f"{phase} made no progress"), None
+
+    def note_malformed(self, phase, exc):
+        """A cached answer that cannot be read still costs one attempt this cycle.
+
+        Counted before the file is removed, so a crash after the comment and a
+        resume do not count it twice and do not crash on the same file again.
+        """
+        text = str(exc)
+        window = []
+        for comment in self.comments():
+            data = lease.read_event(comment.get("body"))
+            if not data:
+                continue
+            if data.get("kind") in (lease.BLOCK, HANDED):
+                window = []
+            elif data.get("kind") == "attempt" and data.get("phase") == phase:
+                window.append(comment.get("body") or "")
+        if any(text in body for body in window):
+            return
+        self.dev.feature_attempt(phase, self.attempts(phase) + 1, exc.outcome, text)
 
     def worktree(self, name, head):
         wt = self.git.worktree(self.dev.home / f"{self.feature}-{name}-{head[:12]}", sha=head)
@@ -668,15 +710,24 @@ class Integration:
                 if feedback else "")
 
         def read():
-            answer = read_findings(answer_path)
+            try:
+                answer = read_findings(answer_path)
+            except IntegrationError:
+                # Judged and refused: not a cache for the next attempt or the next
+                # cycle. A crash before this read is what leaves the file behind.
+                answer_path.unlink(missing_ok=True)
+                raise
             wt.reset_to(head)
             return answer
 
         if answer_path.exists():
             try:
                 return read()                     # a cache a crash left behind
-            except IntegrationError:
-                answer_path.unlink()
+            except IntegrationError as exc:
+                # Validate before another session overwrites the file. A malformed
+                # witness here used to be deleted and ignored, or crash the resume.
+                self.note_malformed(f"integration-r{n}", exc)
+                answer_path.unlink(missing_ok=True)
         code, answer = self.session("integration", f"integration-r{n}", wt.path, prompt,
                                     context, read)
         return answer if code == EXIT.DONE else code
