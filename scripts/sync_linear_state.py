@@ -523,9 +523,44 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                  fix="retry; if it keeps failing, check the key may comment on this team")
         return result["comment"]["url"]
 
+    def list_attachments(self, identifier):
+        """The documents hanging from one issue: id, title, slugId, url, content."""
+        q = """
+        query IssueDocuments($id: String!) {
+          issue(id: $id) { id documents(first: 50) { nodes { id title slugId url content } } }
+        }
+        """
+        issue = query(self.token, q, {"id": identifier})["issue"]
+        if not issue:
+            fail(EXIT.INVALID, f"no issue {identifier}",
+                 fix="check the identifier; `board.py list` shows what exists")
+        return issue["documents"]["nodes"]
+
     def attach_document(self, title, content, identifier=None, project_id=None):
         payload = {"title": title, "content": content}
         if identifier:
+            # A document with this title on this issue is **replaced**, not
+            # joined by a second one (IDE-147): two ADRs side by side leave
+            # nothing to say which one was approved. Identical content is left
+            # alone, so attaching twice changes nothing.
+            same = [d for d in self.list_attachments(identifier) if d["title"] == title]
+            if same:
+                keep, extra = same[0], same[1:]
+                for duplicate in extra:
+                    query(self.token, """
+                    mutation Drop($id: String!) { documentDelete(id: $id) { success } }
+                    """, {"id": duplicate["id"]})
+                if keep.get("content") == content:
+                    return {"url": keep["url"], "slugId": keep["slugId"], "changed": bool(extra)}
+                result = query(self.token, """
+                mutation Replace($id: String!, $input: DocumentUpdateInput!) {
+                  documentUpdate(id: $id, input: $input) { success document { url slugId } }
+                }
+                """, {"id": keep["id"], "input": {"content": content}})["documentUpdate"]
+                if not result["success"]:
+                    fail(EXIT.INVALID, f"Linear refused to replace '{title}'",
+                         fix="retry; if it keeps failing, check the key may edit documents")
+                return dict(result["document"], changed=True)
             payload["issueId"] = self.get_issue(identifier)["id"]
         elif project_id:
             payload["projectId"] = project_id

@@ -139,5 +139,78 @@ class DocCommandTests(ScriptTestCase):
         self.assertIn("--title and --file", message)
 
 
+
+class IssueDocuments:
+    """One issue's documents, and the three mutations attaching may send."""
+
+    def __init__(self, documents=()):
+        self.documents = [dict(d) for d in documents]
+        self.mutations = []
+
+    def __call__(self, token, document, variables=None):
+        if "IssueDocuments" in document:
+            return {"issue": {"id": "uuid-IDE-1", "documents": {"nodes": [
+                dict(d) for d in self.documents]}}}
+        if "documentUpdate" in document:
+            self.mutations.append(("update", variables["id"]))
+            for d in self.documents:
+                if d["id"] == variables["id"]:
+                    d["content"] = variables["input"]["content"]
+                    return {"documentUpdate": {"success": True, "document": {
+                        "url": d["url"], "slugId": d["slugId"]}}}
+        if "documentDelete" in document:
+            self.mutations.append(("delete", variables["id"]))
+            self.documents = [d for d in self.documents if d["id"] != variables["id"]]
+            return {"documentDelete": {"success": True}}
+        if "documentCreate" in document:
+            self.mutations.append(("create", variables["input"]["title"]))
+            return {"documentCreate": {"success": True, "document": {
+                "url": "https://linear.app/d/new", "slugId": "new"}}}
+        if "query Issue" in document:
+            return {"issue": {"id": "uuid-IDE-1", "identifier": "IDE-1"}}
+        raise AssertionError(f"unexpected GraphQL document: {document!r}")
+
+
+def adr(identifier, content, slug):
+    return {"id": f"doc-{slug}", "title": "IDE-1 · 00 · ADR — how we build it",
+            "slugId": slug, "url": f"https://linear.app/d/{slug}", "content": content}
+
+
+class ReplaceOnAttachTests(ScriptTestCase):
+    """A redesign replaces the ADR on the issue; it never leaves two (IDE-147)."""
+
+    TITLE = "IDE-1 · 00 · ADR — how we build it"
+
+    def attach(self, fake, content):
+        with mock.patch.object(linear, "query", fake), \
+                mock.patch.object(linear.Board, "get_issue",
+                                  lambda self, i: {"id": "uuid-IDE-1"}):
+            return make_board().attach_document(self.TITLE, content, identifier="IDE-1")
+
+    def test_a_namesake_is_updated_in_place(self):
+        fake = IssueDocuments([adr("IDE-1", "old", "s1")])
+        answer = self.attach(fake, "new")
+        self.assertEqual(fake.mutations, [("update", "doc-s1")])
+        self.assertEqual(answer["slugId"], "s1")
+        self.assertEqual(fake.documents[0]["content"], "new")
+
+    def test_identical_content_writes_nothing(self):
+        fake = IssueDocuments([adr("IDE-1", "same", "s1")])
+        answer = self.attach(fake, "same")
+        self.assertEqual(fake.mutations, [])
+        self.assertFalse(answer["changed"])
+
+    def test_duplicates_left_by_the_old_append_are_removed(self):
+        fake = IssueDocuments([adr("IDE-1", "a", "s1"), adr("IDE-1", "b", "s2")])
+        self.attach(fake, "c")
+        self.assertEqual(fake.mutations, [("delete", "doc-s2"), ("update", "doc-s1")])
+        self.assertEqual(len(fake.documents), 1)
+
+    def test_no_namesake_creates_one(self):
+        fake = IssueDocuments()
+        self.attach(fake, "first")
+        self.assertEqual(fake.mutations, [("create", self.TITLE)])
+
+
 if __name__ == "__main__":
     unittest.main()

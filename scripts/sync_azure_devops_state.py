@@ -1181,41 +1181,80 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         project = self._project(project_id)
         name = attachment_name(title)
 
-        # Straight over REST, and no temporary file: `az devops invoke` parses
-        # `--in-file` as JSON before sending it, so Markdown never survived the
-        # trip (IDE-137). The body below is bytes and reaches the service as it
-        # was written.
-        uploaded = self._rest("wit/attachments", method="POST",
-                              body=content.encode("utf-8"),
-                              content_type="application/octet-stream",
-                              query={"fileName": name}, project=project) or {}
-        attachment_url = uploaded.get("url")
-        if not attachment_url:
-            fail(EXIT.UNAVAILABLE, f"Azure DevOps accepted no attachment for '{title}'",
-                 fix="retry the upload; if it keeps failing, check the attachment size and the token's Work Items (Read & Write) scope")
+        # **A document with this title replaces the one already there** (IDE-147).
+        # This used to append a relation every time, which left two ADRs side by
+        # side after a redesign and nothing to say which one was approved. The
+        # removal of the old relation and the link of the new one are one patch,
+        # fenced on the revision they were decided on; identical bytes already
+        # attached are not uploaded again, so attaching twice changes nothing.
+        for _ in range(ATTACH_ATTEMPTS):
+            item = self._show(work_item_id, expand="relations")
+            rev = item.get("rev")
+            same = [(index, relation)
+                    for index, relation in enumerate(item.get("relations") or [])
+                    if (relation.get("rel") or "") == "AttachedFile"
+                    and _relation_title(relation) == title]
+            if len(same) == 1:
+                slug = (same[0][1].get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+                existing = self._rest(f"wit/attachments/{urllib.parse.quote(slug)}",
+                                      query={"download": "true"}, project=project,
+                                      parse_json=False)
+                if existing == content:
+                    return {"url": same[0][1].get("url"), "title": title,
+                            "slugId": slug, "changed": False}
 
-        patch = json.dumps([{
-            "op": "add",
-            "path": "/relations/-",
-            "value": {
-                "rel": "AttachedFile",
-                "url": attachment_url,
-                "attributes": {"comment": title},
-            },
-        }]).encode("utf-8")
-        # This one would have survived the CLI — it really is JSON — but keeping
-        # the three attachment calls on one door beats remembering which is the
-        # exception.
-        self._rest(f"wit/workitems/{work_item_id}", method="PATCH", body=patch,
-                   content_type="application/json-patch+json", project=project)
+            # Straight over REST, and no temporary file: `az devops invoke`
+            # parses `--in-file` as JSON before sending it, so Markdown never
+            # survived the trip (IDE-137). The body below is bytes and reaches
+            # the service as it was written.
+            uploaded = self._rest("wit/attachments", method="POST",
+                                  body=content.encode("utf-8"),
+                                  content_type="application/octet-stream",
+                                  query={"fileName": name}, project=project) or {}
+            attachment_url = uploaded.get("url")
+            if not attachment_url:
+                fail(EXIT.UNAVAILABLE, f"Azure DevOps accepted no attachment for '{title}'",
+                     fix="retry the upload; if it keeps failing, check the attachment size and the token's Work Items (Read & Write) scope")
 
-        # `{url, slugId}`, because that is what the Linear adapter answers and
-        # what `board.py doc` and `board.py memory record` index into. Returning
-        # a bare string here made both of them fail on the line after the upload
-        # they had just been fixed to perform.
-        return {"url": attachment_url, "title": title,
-                "slugId": str(uploaded.get("id")
-                              or attachment_url.rstrip("/").rsplit("/", 1)[-1])}
+            operations = [{"op": "test", "path": "/rev", "value": rev}] if rev else []
+            # Highest index first, so every removal leaves the indices still to
+            # be removed where they were.
+            operations += [{"op": "remove", "path": f"/relations/{index}"}
+                           for index, _ in sorted(same, key=lambda pair: -pair[0])]
+            operations.append({
+                "op": "add",
+                "path": "/relations/-",
+                "value": {
+                    "rel": "AttachedFile",
+                    "url": attachment_url,
+                    "attributes": {"comment": title},
+                },
+            })
+            # This one would have survived the CLI — it really is JSON — but
+            # keeping the three attachment calls on one door beats remembering
+            # which is the exception.
+            answer = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
+                                body=json.dumps(operations).encode("utf-8"),
+                                content_type="application/json-patch+json",
+                                project=project, conflict=True)
+            if answer is CONFLICT:
+                continue          # the card moved under us: read it again
+
+            # `{url, slugId}`, because that is what the Linear adapter answers
+            # and what `board.py doc` and `board.py memory record` index into.
+            # Returning a bare string here made both of them fail on the line
+            # after the upload they had just been fixed to perform.
+            return {"url": attachment_url, "title": title, "changed": True,
+                    "replaced": len(same),
+                    "slugId": str(uploaded.get("id")
+                                  or attachment_url.rstrip("/").rsplit("/", 1)[-1])}
+        fail(EXIT.UNAVAILABLE, f"work item {work_item_id} kept changing while '{title}' was "
+                               f"being attached; gave up after {ATTACH_ATTEMPTS} reads",
+             fix="retry once nobody else is editing the work item")
+
+    def list_attachments(self, identifier):
+        """The documents attached to one work item: slugId, title, url."""
+        return self._attachments_of(identifier)
 
     def _attachments_of(self, identifier):
         item = self._show(identifier, expand="relations")
@@ -1553,6 +1592,14 @@ def _wiki_parts(address, title=None):
         fail(EXIT.INVALID, f"the wiki address {address!r} names a wiki but no page",
              fix="add the page path after the wiki name: <wiki>/<page path>")
     return identifier, "/" + path.strip("/")
+
+
+ATTACH_ATTEMPTS = 3
+
+
+def _relation_title(relation):
+    attributes = relation.get("attributes") or {}
+    return document_title(attributes.get("comment") or attributes.get("name") or "")
 
 
 def attachment_name(title):
