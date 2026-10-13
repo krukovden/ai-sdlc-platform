@@ -153,6 +153,10 @@ class HappyPathTests(ScriptTestCase):
         self.assertNotIn("--setup", start)            # Orca refuses it for an existing worktree
         self.assertIn("--run", start)
         self.assertEqual(harness.verbs()[-1], "worker-release")
+        marker = json.loads((harness.worktree / ".idp" / "runner-session.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual(marker["card"], "IDE-1")
+        self.assertEqual(marker["pid"], os.getpid())
 
     def test_every_call_names_the_run_and_every_delivery_is_acknowledged(self):
         harness = Harness(self, agents={"claude": {"then": "done:succeeded", "after": 2,

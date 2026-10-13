@@ -15,9 +15,10 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from support import SCRIPTS_DIR, ScriptTestCase, load_package
+from support import SCRIPTS_DIR, ScriptTestCase, chdir, load_package, load_script, write_profile
 
 executors = load_package(SCRIPTS_DIR / "executors", "idp_executors")
 EXIT = executors.EXIT
@@ -258,6 +259,21 @@ class EnvironmentTests(ScriptTestCase):
                          executors.environment.provider_env(self.SOURCE, "codex"))
 
 
+class BoardAccessGuardTests(ScriptTestCase):
+
+    def test_idp_no_board_refuses_before_it_touches_the_token_file(self):
+        board = load_script("board")
+        with tempfile.TemporaryDirectory() as tmp:
+            token = Path(tmp) / "sentinel-token"
+            token.write_text("secret\n", encoding="utf-8")
+            token.chmod(0o644)
+            write_profile(tmp, schema_version=board.PROFILE_VERSION, token_path=str(token))
+            with chdir(tmp), mock.patch.dict(os.environ, {"IDP_NO_BOARD": "1"}, clear=False):
+                err = self.assert_exits(EXIT.INVALID, board.open_board)
+        self.assertIn("IDP_NO_BOARD", err)
+        self.assertIn("FIX:", err)
+
+
 FAKE_AGENT = textwrap.dedent('''\
     #!{python}
     """A stand-in model. What it does is read from a script file next to it."""
@@ -267,6 +283,11 @@ FAKE_AGENT = textwrap.dedent('''\
     script = json.loads((here / "script.json").read_text())
     (here / "seen-env.json").write_text(json.dumps(dict(os.environ)))
     (here / "seen-argv.json").write_text(json.dumps(sys.argv))
+    if "AZURE_CONFIG_DIR" in os.environ:
+        path = Path(os.environ["AZURE_CONFIG_DIR"])
+        (here / "azure-config.json").write_text(json.dumps({{
+            "path": str(path), "entries": sorted(p.name for p in path.iterdir())
+        }}))
     for line in script.get("print", []):
         print(json.dumps(line), flush=True)
     if script.get("report") is not None:
@@ -318,8 +339,20 @@ class SubprocessBackendTests(ScriptTestCase):
         self.assertNotIn("AZURE_DEVOPS_EXT_PAT", env)
         self.assertEqual(env["ANTHROPIC_API_KEY"], "k")
         self.assertEqual(env["IDP_CARD"], "IDE-12")
+        self.assertEqual(env["IDP_NO_BOARD"], "1")
         self.assertEqual(self.executor.last.agent, "claude")
         self.assertEqual(self.executor.last.model, "opus")
+        marker = json.loads((self.worktree / ".idp" / "runner-session.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual(marker["card"], "IDE-12")
+        self.assertEqual(marker["pid"], os.getpid())
+
+    def test_the_session_gets_an_empty_azure_config_dir(self):
+        self.script(report=EXIT.DONE)
+        self.run_design()
+        recorded = self.seen("azure-config.json")
+        self.assertEqual(recorded["entries"], [])
+        self.assertTrue(recorded["path"])
 
     def test_claude_is_launched_streaming_json_with_its_model(self):
         self.script(report=EXIT.DONE)

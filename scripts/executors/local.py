@@ -15,8 +15,10 @@ code alone.
 import json
 import os
 import subprocess
+import tempfile
 
-from . import EXIT, Executor, agents, clear_result, environment, read_result, result_path
+from . import (EXIT, Executor, agents, clear_result, environment, read_result, result_path,
+               write_runner_session)
 
 LIMITS = ("rate_limit", "overloaded")
 
@@ -86,36 +88,38 @@ class SubprocessExecutor(Executor):
             # Every eligible agent is at its `parallel` cap. Phase 2 never gets
             # here; the phase-3 orchestrator waits for a slot instead of asking.
             raise RuntimeError(f"no free slot for role '{role}'; wait for a worker")
+        write_runner_session(worktree, card, self.environ)
         clear_result(worktree)
-        extra = {"IDP_ROLE": role, "IDP_CARD": card, "IDP_WORKTREE": str(worktree),
-                 "IDP_RESULT": str(result_path(worktree))}
-        extra.update(context or {})
-        env = environment.session_env(self.environ, choice.agent, extra=extra)
-
         logs = os.path.join(str(worktree), ".idp", "logs")
         os.makedirs(logs, exist_ok=True)
-        limit = last = None
-        with open(os.path.join(logs, f"{role}.log"), "a", encoding="utf-8") as log:
-            try:
-                process = self.popen(agents.launch_argv(choice, prompt), cwd=str(worktree),
-                                     env=env, stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     text=True)
-            except OSError as exc:
-                log.write(f"could not start {choice}: {exc}\n")
-                return self.finish(role, card, choice, None, crashed=True,
-                                   returncode=None)
-            with process.stdout:
-                for line in process.stdout:
-                    log.write(line)
-                    limit = limit_event(line) or limit
-                    last = final_message(line) or last
-            try:
-                returncode = process.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                returncode = process.wait()
-                log.write(f"killed after {self.timeout} seconds\n")
+        with tempfile.TemporaryDirectory(prefix="idp-az-") as az_config:
+            extra = {"IDP_ROLE": role, "IDP_CARD": card, "IDP_WORKTREE": str(worktree),
+                     "IDP_RESULT": str(result_path(worktree)), "IDP_NO_BOARD": "1",
+                     "AZURE_CONFIG_DIR": az_config}
+            extra.update(context or {})
+            env = environment.session_env(self.environ, choice.agent, extra=extra)
+            limit = last = None
+            with open(os.path.join(logs, f"{role}.log"), "a", encoding="utf-8") as log:
+                try:
+                    process = self.popen(agents.launch_argv(choice, prompt), cwd=str(worktree),
+                                         env=env, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         text=True)
+                except OSError as exc:
+                    log.write(f"could not start {choice}: {exc}\n")
+                    return self.finish(role, card, choice, None, crashed=True,
+                                       returncode=None)
+                with process.stdout:
+                    for line in process.stdout:
+                        log.write(line)
+                        limit = limit_event(line) or limit
+                        last = final_message(line) or last
+                try:
+                    returncode = process.wait(timeout=self.timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    returncode = process.wait()
+                    log.write(f"killed after {self.timeout} seconds\n")
 
         result = read_result(worktree)
         return self.finish(role, card, choice, result, crashed=result is None,

@@ -84,7 +84,8 @@ import time
 from pathlib import Path
 from collections import namedtuple
 
-from . import EXIT, Executor, Session, clear_result, environment, read_result, result_path
+from . import (EXIT, Executor, Session, clear_result, environment, read_result, result_path,
+               write_runner_session)
 from .local import SubprocessExecutor
 
 CLI_TIMEOUT = 60              # seconds one `orca` call may take, `worker-start` apart
@@ -277,6 +278,7 @@ class OrcaExecutor(Executor):
         if choice is None:
             raise RuntimeError(f"no free slot for role '{role}'; wait for a worker")
         clear_result(worktree)
+        write_runner_session(worktree, card, self.environ)
         try:
             reason = self.cannot_use_orca(choice, worktree)
             if reason:

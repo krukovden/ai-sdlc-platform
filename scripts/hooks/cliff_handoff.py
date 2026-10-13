@@ -117,7 +117,17 @@ def card_of(worktree, environ):
         return environ["IDP_CARD"]
     branch = handoff.current_branch(worktree)
     match = PBI_BRANCH.match(branch)
-    return match.group("card") if match else None
+    if match:
+        return match.group("card")
+    marker = worktree / ".idp" / "runner-session.json"
+    if not marker.exists():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    card = data.get("card")
+    return str(card) if card else None
 
 
 def mention(card):
@@ -165,12 +175,14 @@ def run(host, event, payload, environ=None, open_board=None):
                 f"the branch is '{handoff.current_branch(worktree)}', not a pbi/* branch, "
                 "and IDP_CARD is not set. Nothing was committed.",
                 "the cliff handoff acts only in a PBI's worktree")
-        # Under the runner (IDP_CARD set) the session knows neither the run nor a
-        # credential: the request leaves `run` empty and the reader takes the
-        # owner from the board. Interactive sessions claim as this user and machine.
-        under_runner = bool(environ.get("IDP_CARD"))
-        run_id = environ.get("IDP_RUN_ID") or (None if under_runner
-                                                else handoff.tags.current_run_id())
+        # Under the runner (IDP_CARD or the runner marker set) the session knows
+        # neither the run nor a credential: the request leaves `run` empty and
+        # the reader takes the owner from the board. Interactive sessions claim
+        # as this user and machine.
+        under_runner = bool(environ.get("IDP_CARD")
+                            or (worktree / ".idp" / "runner-session.json").exists())
+        run_id = None if under_runner else (environ.get("IDP_RUN_ID")
+                                            or handoff.tags.current_run_id())
         request = {"card": str(card), "branch": handoff.current_branch(worktree),
                    "run": run_id, "reason": re.sub(r"[{}]", "", reason)}
         done = handoff.handoff(worktree, reason, card, mention=mention(card),
