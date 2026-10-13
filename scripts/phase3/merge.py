@@ -232,6 +232,14 @@ def github_remote(url):
     return (parts.hostname or "").casefold() == "github.com"
 
 
+def _scp_host_and_path(url):
+    text = str(url or "").strip()
+    if "://" in text or "@" not in text:
+        return None, None
+    host, _, path = text.split("@", 1)[1].partition(":")
+    return host.casefold(), path
+
+
 def azure_remote(url):
     hosts = {
         ".".join(("ssh", "dev", "azure", "com")),
@@ -241,35 +249,39 @@ def azure_remote(url):
     text = str(url or "").strip()
     if not text:
         return False
-    if "://" not in text and "@" in text:
-        host = text.split("@", 1)[1].split(":", 1)[0].split("/", 1)[0].casefold()
+    host, _ = _scp_host_and_path(text)
+    if host is not None:
         return host in hosts
     try:
         parts = urllib.parse.urlsplit(text)
     except ValueError:
         return False
     host = (parts.hostname or "").casefold()
-    return host == https or host.endswith("." + "visualstudio.com")
+    return host in hosts or host == https or host.endswith("." + "visualstudio.com")
 
 
 def github_repository(url):
     text = str(url or "").strip().rstrip("/")
     if not github_remote(text):
         return None
-    if "://" not in text and "@" in text:
-        path = text.split(":", 1)[1] if ":" in text else ""
+    host, path = _scp_host_and_path(text)
+    if host is not None:
+        if host != "github.com":
+            return None
     else:
         try:
-            path = urllib.parse.urlsplit(text).path
+            parts = urllib.parse.urlsplit(text)
         except ValueError:
             return None
+        host = (parts.hostname or "").casefold()
+        path = parts.path
     parts = [piece for piece in path.lstrip("/").split("/") if piece]
     if len(parts) < 2:
         return None
     owner, repository = parts[-2], parts[-1]
     if repository.endswith(".git"):
         repository = repository[:-4]
-    return f"{owner}/{repository}" if owner and repository else None
+    return f"{host}/{owner}/{repository}" if host and owner and repository else None
 
 
 class GitHubMerger(GitMerger):
@@ -311,7 +323,7 @@ class GitHubMerger(GitMerger):
             "id": f"github:{branch}",
             "url": None,
             "fix": "make the GitHub CLI work in this clone: install `gh`, authenticate it, "
-                   f"and make `gh pr list --repo <owner/repo> --head <branch> --base <target> "
+                   f"and make `gh pr list --repo <host/owner/repo> --head <branch> --base <target> "
                    f"--state open --json number,url` succeed on this github.com remote{extra}; "
                    "or set \"feature_pr\": \"branch-only\" under \"development\" in "
                    ".idp/profile.json when this repository has no PR workflow",

@@ -1907,8 +1907,8 @@ class GitHubMergerTests(unittest.TestCase):
         opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
         self.assertEqual(opened, {"id": 12, "url": "https://github.com/o/r/pull/12"})
         self.assertEqual(calls, [[
-            "gh", "pr", "list", "--repo", "o/r", "--head", "feature/IDE-88", "--base",
-            "main", "--state", "open", "--json", "number,url",
+            "gh", "pr", "list", "--repo", "github.com/o/r", "--head", "feature/IDE-88",
+            "--base", "main", "--state", "open", "--json", "number,url",
         ]])
 
     def test_open_creates_a_pull_request_when_none_exists(self):
@@ -1929,17 +1929,19 @@ class GitHubMergerTests(unittest.TestCase):
         opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
         self.assertEqual(opened, {"id": 13, "url": "https://github.com/o/r/pull/13"})
         self.assertEqual(calls[1], [
-            "gh", "pr", "create", "--repo", "o/r", "--head", "feature/IDE-88",
-            "--base", "main", "--title", "T", "--body", "B",
+            "gh", "pr", "create", "--repo", "github.com/o/r", "--head",
+            "feature/IDE-88", "--base", "main", "--title", "T", "--body", "B",
         ])
 
     def test_open_fails_safe_when_gh_cannot_open_or_list_a_pull_request(self):
+        calls = []
         merger = phase3.merge.GitHubMerger(
             StubGit(url="git@github.com:o/r.git"),
-            run=lambda _argv: (_ for _ in ()).throw(OSError("no gh")))
+            run=lambda argv: calls.append(argv) or (_ for _ in ()).throw(OSError("no gh")))
         opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
         self.assertIsNone(opened["url"])
         self.assertIn("feature_pr", opened["fix"])
+        self.assertEqual(len(calls), 1)
 
     def test_open_fails_safe_on_nonzero_status_at_every_cli_stage(self):
         scenarios = {
@@ -1998,13 +2000,26 @@ class GitHubMergerTests(unittest.TestCase):
     def test_open_binds_gh_to_the_selected_repository(self):
         def gh(argv):
             repo = argv[argv.index("--repo") + 1] if "--repo" in argv else None
-            url = "https://github.com/o/r/pull/12" if repo == "o/r" \
+            url = "https://github.com/o/r/pull/12" if repo == "github.com/o/r" \
                 else "https://github.com/other/unrelated/pull/99"
             return subprocess.CompletedProcess(
                 argv, 0, f'[{{"number": 12, "url": "{url}"}}]', "")
 
         merger = phase3.merge.GitHubMerger(
             StubGit(url="ssh://git@github.com/o/r.git"), run=gh)
+        opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
+        self.assertEqual(opened["url"], "https://github.com/o/r/pull/12")
+
+    def test_open_binds_gh_to_the_selected_host_even_when_gh_host_points_elsewhere(self):
+        def gh(argv):
+            repo = argv[argv.index("--repo") + 1] if "--repo" in argv else None
+            url = "https://github.com/o/r/pull/12" if repo == "github.com/o/r" \
+                else "https://enterprise.example.invalid/o/r/pull/99"
+            return subprocess.CompletedProcess(
+                argv, 0, f'[{{"number": 12, "url": "{url}"}}]', "")
+
+        merger = phase3.merge.GitHubMerger(
+            StubGit(url="https://github.com/o/r.git"), run=gh)
         opened = merger.open("feature/IDE-88", "main", "T", "B", FEATURE)
         self.assertEqual(opened["url"], "https://github.com/o/r/pull/12")
 
@@ -2032,6 +2047,19 @@ class GitHubMergerTests(unittest.TestCase):
         merger = phase3.merge.select(AzureBoard(), {"board": "azure-devops"},
                                      StubGit(url="https://dev.azure.com/o/p/_git/r"), "repo")
         self.assertIsInstance(merger, phase3.merge.AzureReposMerger)
+        for url in (
+                "git@ssh.dev.azure.com:v3/o/p/r",
+                "ssh://git@ssh.dev.azure.com/v3/o/p/r",
+                "ssh://git@ssh.dev.azure.com:22/v3/o/p/r",
+                "org@vs-ssh.visualstudio.com:v3/o/p/r",
+                "ssh://org@vs-ssh.visualstudio.com/v3/o/p/r",
+                "ssh://org@vs-ssh.visualstudio.com:22/v3/o/p/r",
+                "https://o.visualstudio.com/p/_git/r",
+        ):
+            with self.subTest(url=url):
+                merger = phase3.merge.select(AzureBoard(), {"board": "azure-devops"},
+                                             StubGit(url=url), "repo")
+                self.assertIsInstance(merger, phase3.merge.AzureReposMerger)
         for url in ("https://github.com/o/r.git", "git@github.com:o/r.git",
                     "ssh://git@github.com/o/r.git"):
             with self.subTest(url=url):

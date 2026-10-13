@@ -235,7 +235,7 @@ class FeaturePullRequestTests(IntegrationTestCase):
                 argv, 0, f"https://github.com/o/r/pull/{branch.replace('/', '-')}\n", "")
 
         merger = phase3.merge.GitHubMerger(phase3.gitops.Git(world.repo), run=gh)
-        merger.repository = "o/r"
+        merger.repository = "github.com/o/r"
         self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
         heads = [argv[argv.index("--head") + 1] for argv in calls if "--head" in argv]
         self.assertEqual(sorted(set(heads)), [FEATURE_BRANCH])
