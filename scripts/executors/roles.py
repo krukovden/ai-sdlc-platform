@@ -95,6 +95,10 @@ class Resolver:
             self._launchable[agent] = bool(self.launchable(agent))
         return self._launchable[agent]
 
+    def exhaust(self, choice):
+        """Mark an entry unavailable for the rest of the run: it hit a usage limit."""
+        self._available[as_choice(choice)] = False
+
     def available(self, choice):
         """Launchable, and past the probe. With no probe to ask, an agent whose
         command line is still unverified (agents.UNVERIFIED) is not available."""
