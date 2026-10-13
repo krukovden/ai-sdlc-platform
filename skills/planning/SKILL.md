@@ -1,6 +1,6 @@
 ---
 name: planning
-description: Only when invoked through /idp or /idp-develop: an approved ADR becomes PBIs and one feature branch through the planner's fixed slicing, path declaration and graph validation flow.
+description: "Only when invoked through /idp or /idp-develop: an approved ADR becomes PBIs and one feature branch through the planner's fixed slicing, path declaration and graph validation flow."
 disable-model-invocation: true
 ---
 

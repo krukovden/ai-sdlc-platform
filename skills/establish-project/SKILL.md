@@ -1,6 +1,6 @@
 ---
 name: establish-project
-description: Only when invoked through /idp-establish: a Product Owner's project architecture is verified, traversed, sliced into features and published to the board through the fixed establish flow.
+description: "Only when invoked through /idp-establish: a Product Owner's project architecture is verified, traversed, sliced into features and published to the board through the fixed establish flow."
 disable-model-invocation: true
 ---
 

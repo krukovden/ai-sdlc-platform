@@ -1,6 +1,6 @@
 ---
 name: documenter
-description: Only when invoked through /idp or /idp-develop: run.py starts this end-of-integration documenter to lift the Feature's acceptance criteria into current blueprints and report back.
+description: "Only when invoked through /idp or /idp-develop: run.py starts this end-of-integration documenter to lift the Feature's acceptance criteria into current blueprints and report back."
 disable-model-invocation: true
 ---
 

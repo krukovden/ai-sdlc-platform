@@ -61,10 +61,14 @@ An engineer cannot find what the team already found.
 PROFILE = {"schema_version": 1, "board": "linear", "team_key": "IDE"}
 
 
-def new_board(*labels):
+def feature_body(route="feature"):
+    return FEATURE_BODY.replace("route: feature", f"route: {route}")
+
+
+def new_board(*labels, route="feature"):
     board = FakeBoard(profile=PROFILE)
     board.add_card(FEATURE, tags_=list(labels or [tags.DESIGN]), kind="feature",
-                   title="Feature: offline search", description=FEATURE_BODY)
+                   title="Feature: offline search", description=feature_body(route))
     return board
 
 
@@ -210,6 +214,44 @@ class PhaseSelectionTests(RunnerTestCase):
         self.assertEqual(caught.exception.code, EXIT.REFUSED)
         self.assertIn("not in phase 'development'", caught.exception.message)
         self.assertIn("approve the ADR", caught.exception.fix)
+
+    def test_phase_development_runs_from_a_feature_card(self):
+        board = new_board(tags.DEVELOPMENT)
+        runner = self.runner(board)
+        with mock.patch.object(runner, "phase_development", return_value=EXIT.DONE) as phase:
+            self.assertEqual(runner.run_phase(FEATURE, "development"), EXIT.DONE)
+        phase.assert_called_once_with(FEATURE)
+
+    def test_phase_development_runs_from_a_small_feature_card(self):
+        board = new_board(tags.DEVELOPMENT, route="small-feature")
+        runner = self.runner(board)
+        with mock.patch.object(runner, "phase_development", return_value=EXIT.DONE) as phase:
+            self.assertEqual(runner.run_phase(FEATURE, "development"), EXIT.DONE)
+        phase.assert_called_once_with(FEATURE)
+
+    def test_phase_development_runs_from_a_bug_card(self):
+        board = new_board(tags.DEVELOPMENT, route="bug")
+        runner = self.runner(board)
+        with mock.patch.object(runner, "phase_development", return_value=EXIT.DONE) as phase:
+            self.assertEqual(runner.run_phase(FEATURE, "development"), EXIT.DONE)
+        phase.assert_called_once_with(FEATURE)
+
+    def test_phase_development_runs_when_an_owner_already_holds_the_card(self):
+        board = new_board(tags.DEVELOPMENT, "idp:owner:run-1")
+        runner = self.runner(board)
+        with mock.patch.object(runner, "phase_development", return_value=EXIT.DONE) as phase:
+            self.assertEqual(runner.run_phase(FEATURE, "development"), EXIT.DONE)
+        phase.assert_called_once_with(FEATURE)
+
+    def test_phase_design_refuses_routes_without_design(self):
+        for route in ("small-feature", "bug"):
+            with self.subTest(route=route):
+                board = new_board(tags.DESIGN, route=route)
+                with self.assertRaises(run.RunnerError) as caught:
+                    self.runner(board).run_phase(FEATURE, "design")
+                self.assertEqual(caught.exception.code, EXIT.REFUSED)
+                self.assertIn("has no design review", caught.exception.message)
+                self.assertIn("idp:development", caught.exception.fix)
 
 
 class RedesignTests(RunnerTestCase):

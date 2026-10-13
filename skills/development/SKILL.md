@@ -1,6 +1,6 @@
 ---
 name: development
-description: Only when invoked through /idp or /idp-develop: run.py starts this one-session worker for one PBI to write the code, its tests and the report back to the runner.
+description: "Only when invoked through /idp or /idp-develop: run.py starts this one-session worker for one PBI to write the code, its tests and the report back to the runner."
 disable-model-invocation: true
 ---
 

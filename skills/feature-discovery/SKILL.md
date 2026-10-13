@@ -1,6 +1,6 @@
 ---
 name: feature-discovery
-description: Only when invoked through /idp-discovery: a Product Owner's raw idea becomes an approved Feature through the fixed interview, evidence, review and validation loop.
+description: "Only when invoked through /idp-discovery: a Product Owner's raw idea becomes an approved Feature through the fixed interview, evidence, review and validation loop."
 disable-model-invocation: true
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: design
-description: Only when invoked through /idp-design: an approved Feature card becomes an ADR through the fixed architect, practice, alternatives and critic loop, with a decision registry and a draft ready for human approval.
+description: "Only when invoked through /idp-design: an approved Feature card becomes an ADR through the fixed architect, practice, alternatives and critic loop, with a decision registry and a draft ready for human approval."
 disable-model-invocation: true
 ---
 

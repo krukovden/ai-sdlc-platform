@@ -431,7 +431,13 @@ class Runner:
                               f"phase '{phase}'",
                               f"remove {tags.STOP}, then retry `run.py {feature} --phase "
                               f"{phase}`")
-        if answer["phase"] != phase or answer["position"] not in ("ready", "active"):
+        if phase == "design" and not state.starts_with_design(answer["route"]):
+            raise RunnerError(
+                EXIT.REFUSED,
+                f"{feature} is on the '{answer['route']}' route, which has no design review",
+                f"set {tags.DEVELOPMENT} on {feature} in place of {tags.DESIGN}")
+        expected = {"design": {"design"}, "development": {"planning", "development"}}[phase]
+        if answer["phase"] not in expected or answer["position"] not in ("ready", "active"):
             current = answer["phase"] or "no phase"
             position = answer["position"] or "no position"
             fix = answer["next"] or f"move the card to {getattr(tags, phase.upper())}"
@@ -938,8 +944,10 @@ def cmd_run(args):
         runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=ask)
         runner.stopping = agent_mode.stop_signal(board, presence)
         try:
-            code = runner.run_phase(args.feature, args.phase) if args.phase \
-                else runner.run_feature(args.feature)
+            if args.phase and hasattr(runner, "run_phase"):
+                code = runner.run_phase(args.feature, args.phase)
+            else:
+                code = runner.run_feature(args.feature)
         except RunnerError as exc:
             fail(exc.code, exc.message, fix=exc.fix)
         sys.exit(code)
