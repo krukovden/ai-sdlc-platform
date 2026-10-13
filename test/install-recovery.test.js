@@ -130,7 +130,7 @@ test('Claude gets a real SessionStart hook and Copilot gets no second one', asyn
   const file = path.join(ctx.root, 'catalog.json'), catalog = json(file); catalog.source = remote; fs.writeFileSync(file, JSON.stringify(catalog));
   const command = commands[0].command.replace('${CLAUDE_PLUGIN_ROOT}', ctx.root);
   const stdout = execFileSync('sh', ['-c', command], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'});
-  assert.match(stdout, new RegExp(`^AI SDLC Platform ${CURRENT.replace(/\./g, '\\.')} → 9\\.0\\.0 available\\. Update: .*\n$`));
+  assert.match(stdout, new RegExp(`^AI SDLC Platform ${CURRENT.replace(/\./g, '\\.')} → 9\\.0\\.0 available\\. Update via your host's plugin manager or marketplace\n$`));
 });
 
 test('the freshness reminder names --local only for a project-local installation', async t => {

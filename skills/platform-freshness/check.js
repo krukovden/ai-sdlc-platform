@@ -10,10 +10,11 @@ function check({home = os.homedir(), cwd = process.cwd(), now = Date.now(), getL
   if (!fs.existsSync(path.join(state, 'receipt.json'))) state = path.join(home, '.idp/platform');
   // `update` without --local reads the home receipt, so a project-local installation has to say so.
   const scope = path.resolve(state) === path.resolve(home, '.idp/platform') ? '' : ' --local';
-  let receipt;
+  let receipt, isPlugin = false;
   if (fs.existsSync(path.join(state, 'receipt.json'))) receipt = JSON.parse(fs.readFileSync(path.join(state, 'receipt.json')));
   else {
     // Plugin managers retain the repository layout but do not create CLI receipts.
+    isPlugin = true;
     const root = path.resolve(__dirname, '../..');
     receipt = {version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version,
       source: JSON.parse(fs.readFileSync(path.join(root, 'catalog.json'))).source};
@@ -29,7 +30,10 @@ function check({home = os.homedir(), cwd = process.cwd(), now = Date.now(), getL
   fs.writeFileSync(cache, JSON.stringify({checked: now}));
   try {
     const version = getLatest(receipt.source);
-    if (version && compare(version, receipt.version) > 0) out(`AI SDLC Platform ${receipt.version} → ${version} available. Update: npx git+${receipt.source} update${scope}`);
+    if (version && compare(version, receipt.version) > 0) {
+      const hint = isPlugin ? "Update via your host's plugin manager or marketplace" : `Update: npx git+${receipt.source} update${scope}`;
+      out(`AI SDLC Platform ${receipt.version} → ${version} available. ${hint}`);
+    }
   } catch {}
 }
 if (require.main === module) { try { check(); } catch {} }
