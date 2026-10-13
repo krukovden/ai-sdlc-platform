@@ -6,6 +6,7 @@
     {"name": "feature-discovery", "path": "skills/feature-discovery"},
     {"name": "design", "path": "skills/design"},
     {"name": "planning", "path": "skills/planning"},
+    {"name": "development", "path": "skills/development"},
     {"name": "establish-project", "path": "skills/establish-project"},
     {"name": "platform-freshness", "path": "skills/platform-freshness"}
   ],
