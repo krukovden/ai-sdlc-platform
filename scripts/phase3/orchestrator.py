@@ -427,10 +427,11 @@ class Development:
     def ready(self, item, by_key, status):
         if item["id"] in self.running or item["id"] in self.skip:
             return False
+        # An owner tag of another run does not make a PBI unready: only the
+        # Feature's owner may claim its PBIs, and that is this run, so such a tag
+        # is a stale claim, which `claim` releases, fenced.
         if tags.is_blocked(item["labels"]):
             return False
-        # A PBI held by another run is a stale claim: only the Feature's owner may
-        # claim its PBIs, and that is this run. `claim` releases it, fenced.
         for need in item["depends_on"]:
             other = by_key.get(need)
             if other is None or status[other["id"]] != "done":
@@ -666,14 +667,25 @@ class Development:
 
     # -- outcomes ---------------------------------------------------------------
 
-    def attempts(self, pbi):
-        return len(lease.events(self.comments(pbi), ATTEMPT, pbi=pbi))
+    def attempts(self, pbi, since_block=True):
+        """Counted attempts, from the board. A human lifting a block grants three more."""
+        found = []
+        for comment in self.comments(pbi):
+            data = lease.read_event(comment.get("body"))
+            if not data:
+                continue
+            if data.get("kind") == lease.BLOCK and since_block:
+                found = []
+            elif data.get("kind") == ATTEMPT and data.get("pbi") == pbi:
+                found.append(data)
+        return len(found)
 
     def count(self, item, cause, reason):
         """One more attempt, on the board. The third blocks the PBI."""
         pbi = item["id"]
         n = self.attempts(pbi) + 1
-        lease.post_event(self.board, pbi, ATTEMPT, f"{ATTEMPT}:development:{pbi}:{n}",
+        total = self.attempts(pbi, since_block=False) + 1
+        lease.post_event(self.board, pbi, ATTEMPT, f"{ATTEMPT}:development:{pbi}:{total}",
                          text=f"Attempt {n} of {MAX_ATTEMPTS} did not finish ({cause}): "
                               f"{reason}",
                          phase="development", pbi=pbi, n=n, cause=cause, run=self.run_id)
@@ -785,8 +797,15 @@ class Development:
                                   f"attempt: {outcome.detail}. The PBI waits for the next run.",
                              reason=flat(outcome.detail))
             return False
-        if outcome.kind in (fin.DEFECT, fin.CONFLICT):
+        if outcome.kind == fin.DEFECT:
             self.count(item, outcome.kind, outcome.detail)
+            return False
+        if outcome.kind == fin.CONFLICT:
+            # The conflict-resolution session: the same worker, both sides named.
+            self.count(item, outcome.kind,
+                       f"{outcome.detail}. Merge `origin/{self.feature_branch}` into your "
+                       "branch, resolve every conflict keeping the intent of both sides, run "
+                       "the acceptance commands, commit with the mention and push")
             return False
         if outcome.kind in (fin.WITNESS_TIMEOUT, fin.BUDGET):
             self.block_pbi(pbi, f"{outcome.detail}. Send it back to planning: the witness "
@@ -994,7 +1013,7 @@ class Development:
         lease.post_event(
             self.board, pbi, SUMMARY, f"{SUMMARY}:{pbi}",
             text=(f"Done: {evidence}. Tested merge `{(merged or {}).get('merge', '')[:12]}`; "
-                  f"{self.attempts(pbi)} counted attempt(s); review "
+                  f"{self.attempts(pbi, since_block=False)} counted attempt(s); review "
                   f"{(self.event(pbi, REVIEWED) or {}).get('verdict', 'n/a')}."),
             head=(merged or {}).get("head"))
         self.journal_merged(item)

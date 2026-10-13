@@ -350,6 +350,20 @@ class OutcomeTests(Phase3TestCase):
         self.assertIn(tags.BLOCKED, self.labels(world, "a"))
         self.assertIsNone(tags.owner_of(self.labels(world, "a")))
 
+    def test_a_human_lifting_the_block_grants_three_more_attempts(self):
+        world = self.one()
+        world.behaviors["a"] = [ok("VALUE = 2\n")]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        card = world.items()["a"]["id"]
+        for target in (card, FEATURE):                       # the human's move
+            world.board.cards[target]["tags"] = [t for t in world.board.cards[target]["tags"]
+                                                 if t != tags.BLOCKED]
+            world.board.cards[target]["rev"] += 1
+        world.behaviors["a"] = [ok("VALUE = 2\n"), ok()]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "a"), ["defect"] * 4)
+        self.assertEqual(self.status(world, "a"), "Resolved")
+
     def test_a_witness_timeout_blocks_and_sends_the_pbi_to_planning(self):
         world = self.one(witness={"command": "sleep 5", "timeout": 1})
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
