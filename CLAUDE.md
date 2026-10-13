@@ -188,7 +188,7 @@ These come from the project constitution and are not negotiable inside this repo
 | 1 | Фундамент и контракты | The rules of the game, plus the cross-cutting services: tracker adapter, profile resolution, state resolver, project memory |
 | 2 | Research Skill for PO | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
 | 3 | Технический дизайн и планирование | `/idp-design` turns a feature into an ADR, the human approves it, `/idp-planning` produces PBIs |
-| 4 | Development | `/idp-development`: one agent per PBI in parallel, the chain inside each PBI, the documenter, two levels of pull request |
+| 4 | Development | `run.py` owns phase 3: planning, one worker per PBI in parallel (code and tests), runner finalize, one cross-tool review, integration, the documenter, two levels of pull request (IDE-147) |
 | 5 | Пилот | The whole process run end to end on the pilot project. Not construction — verification |
 | 6 | Establish project | `/idp-establish`: start a whole project rather than a single feature — verify a supplied architecture, slice it into stages and features, block what nobody has thought through |
 
