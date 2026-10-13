@@ -1243,26 +1243,6 @@ class RunnerContextTests(DesignTestCase):
         self.assertIn("run.py report", stderr)
 
 
-class ScopeTests(DesignTestCase):
-
-    def test_the_scope_reaches_the_machine_header(self):
-        self.start()
-        self.run_cli("scope", "medium")
-        self.assertIn("\nscope: medium\n", design.render_adr(self.state()))
-
-    def test_a_scope_outside_the_three_is_refused(self):
-        self.start()
-        stderr = self.expect_exit(design.EXIT.INVALID, "scope", "huge")
-        self.assertIn("FIX:", stderr)
-
-    def test_setting_it_after_integration_rewrites_the_issued_draft(self):
-        self.reach_integration()
-        self.run_cli("integrate")
-        self.run_cli("scope", "small")
-        adr = (design.session_dir(self.identifier) / "adr.md").read_text(encoding="utf-8")
-        self.assertIn("\nscope: small\n", adr)
-
-
 if __name__ == "__main__":
     unittest.main()
 

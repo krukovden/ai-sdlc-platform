@@ -122,16 +122,7 @@ get a storage model. But a **skip without a reason is not a skip, it is a
 forgotten artifact**, and the script refuses it. A contract that found no place
 in the standard set gets its own section and its own row.
 
-## Scope, and running under the runner
-
-Before `integrate`, answer how much this design rewrites:
-
-```bash
-design.py scope small|medium|large
-```
-
-It goes into the ADR's machine header, and `run.py` refuses to hand an ADR to
-review without it (IDE-147).
+## Running under the runner
 
 When `run.py` started this session, it already claimed the card and put it in
 `$IDP_CONTEXT_DIR`; there is no board credential here and none is needed. Do

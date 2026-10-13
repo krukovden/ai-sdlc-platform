@@ -271,9 +271,9 @@ on it, and adr.md — when there is one — the ADR a human sent back for a rede
 
 Drive the process with `python3 {design_py}` and nothing else:
   1. `init {feature} --resume`
-  2. run `next --json` and do what it says, until it answers `await_approval`
-  3. before `integrate`, answer `scope small|medium|large`
-  4. then finish with: python3 {run_py} report --code 0 --reason "ADR ready"
+  2. run `next --json` and do what it says, until it answers `await_approval`;
+     `draft` takes `--scope small|medium|large`, and integrate refuses without it
+  3. then finish with: python3 {run_py} report --code 0 --reason "ADR ready"
 
 If a human has to decide something first, finish with
 `python3 {run_py} report --code 2 --reason "<the question>"`. If your context is
@@ -534,7 +534,7 @@ class Runner:
         scope = state.parse_machine_header(text).get("scope")
         if scope not in SCOPES:
             problems.append(f"the ADR's header has no scope ({'/'.join(SCOPES)}); "
-                            "run `design.py scope`")
+                            "pass `draft --scope`")
         mode = critic_mode(text)
         if mode in (None, "pending"):
             problems.append("the ADR records no critic pass; run the critic before integrate")

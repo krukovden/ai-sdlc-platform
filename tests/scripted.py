@@ -55,9 +55,11 @@ SECTIONS_TEXT = "The local index answers in under 300 ms without the network."
 DECISIONS = [
     {"id": "D-1", "decision": "session state is one JSON file per feature",
      "reversibility": "hard-to-reverse",
-     "why": "it is the storage model; changing it needs a migration"},
+     "why": "it is the storage model; changing it needs a migration",
+     "rejected_option_breaks": "a database would break the offline install"},
     {"id": "D-2", "decision": "the helper is called render_adr",
-     "reversibility": "cheap-to-reverse", "why": "it never leaves the module"},
+     "reversibility": "cheap-to-reverse", "why": "it never leaves the module",
+     "rejected_option_breaks": "nothing outside the module"},
 ]
 
 PRACTICE = {"approaches": [
@@ -79,17 +81,22 @@ def alternative(name):
             "addresses_practice_finding": None}
 
 
-CRITIC = {"verdict": "gaps-found", "gaps": [
-    {"lens": "failure-modes", "slot": None, "gap": "a provider outage is not described",
-     "why_it_matters": "a silent skip", "severity": "high",
-     "suggested_question": None, "class": "risk"}]}
+def critic(design):
+    return {"rubric": {name: "ran clean" for name in design.CRITIC_DIMENSIONS},
+            "verdict": "gaps-found", "gaps": [
+                {"lens": "failure-modes", "slot": None,
+                 "gap": "a provider outage is not described",
+                 "why_it_matters": "a silent skip", "severity": "high",
+                 "suggested_question": None, "class": "risk"}]}
 
 
 class DesignSession:
     """Plays the design model against the real design.py, under the runner's context.
 
-    `scope` None leaves the header without one, to prove finalize refuses that.
-    `variant` changes the prose, so a redesign produces different bytes.
+    It does what the skill tells a model to do: `init --resume`, then whatever
+    `next --json` says, until `await_approval`. `scope` None drafts without a
+    rewrite size, which design.py itself refuses at `integrate`; `variant`
+    changes the prose, so a redesign produces different bytes.
     """
 
     def __init__(self, design, scratch, scope="medium", variant="", code=EXIT.DONE,
@@ -99,14 +106,55 @@ class DesignSession:
         self.runs = 0
 
     def cli(self, *argv):
-        with contextlib.redirect_stdout(io.StringIO()), \
-                contextlib.redirect_stderr(io.StringIO()):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             self.design.main(list(argv))
+        return out.getvalue()
 
     def file(self, name, payload):
         path = self.scratch / name
         path.write_text(json.dumps(payload), encoding="utf-8")
         return str(path)
+
+    def sections(self):
+        headings = self.design.mandatory_headings()
+        criteria = self.design.load_sections().criteria_heading("adr", "en")
+        text = {h: f"{SECTIONS_TEXT} {self.variant}".strip() for h in headings}
+        text[criteria.lstrip("# ").strip()] = (
+            "- **AC-1** — the index answers in under 300 ms without the network\n"
+            "  Evidence: a timing test over the golden queries")
+        return self.file("sections.json", text)
+
+    def state(self, card):
+        return json.loads((self.design.session_dir(card) / "state.json")
+                          .read_text(encoding="utf-8"))
+
+    def step(self, card, action):
+        if action["action"] == "draft_adr" or (self.scope and not self.state(card).get("scope")):
+            scope = ["--scope", self.scope] if self.scope else []
+            self.cli("draft", "--sections-file", self.sections(), *scope)
+            if "decisions" in action.get("missing", []):
+                self.cli("decisions", "--file", self.file("decisions.json", DECISIONS))
+        elif action["action"] == "run_practice":
+            self.cli("practice", "--response-file", self.file("practice.json", PRACTICE))
+        elif action["action"] == "run_alternatives":
+            self.cli("alternatives", "--decision", action["decision"], "--response-file",
+                     self.file("alt.json", [alternative("an adapter"),
+                                            alternative("in place")]))
+        elif action["action"] == "run_critic":
+            self.cli("critic", "--provider", "codex", "--response-file",
+                     self.file("critic.json", critic(self.design)))
+        elif action["action"] == "integrate":
+            session = self.state(card)
+            for objection in session["objections"]:
+                if not objection.get("disposition"):
+                    self.cli("objection", "--id", objection["id"], "--disposition",
+                             "rejected", "--reason", "the alternative covers it")
+            for row in session["considered"]:
+                if row["status"] == "unset":
+                    self.cli("considered", "--artifact", row["artifact"], "--status",
+                             "skipped", "--reason", "the feature does not touch it")
+            self.cli("integrate")
 
     def __call__(self, role, card, worktree, prompt, context):
         self.runs += 1
@@ -117,37 +165,13 @@ class DesignSession:
                               "IDP_CARD": card}), \
                 mock.patch.object(self.design, "now", lambda: self.at):
             self.cli("init", card, "--resume", "--at", self.at)
-            existing = json.loads((self.design.session_dir(card) / "state.json")
-                                  .read_text(encoding="utf-8"))
-            if existing["state"] == "AWAITING_APPROVAL":
-                # A second session on finished work does what the runner's
-                # feedback asked, and only that.
-                if self.scope:
-                    self.cli("scope", self.scope)
-                return self.code
-            headings = self.design.mandatory_headings()
-            criteria = self.design.load_sections().criteria_heading("adr", "en")
-            text = {h: f"{SECTIONS_TEXT} {self.variant}".strip() for h in headings}
-            text[criteria.lstrip("# ").strip()] = (
-                "- **AC-1** — the index answers in under 300 ms without the network\n"
-                "  Evidence: a timing test over the golden queries")
-            self.cli("draft", "--sections-file", self.file("sections.json", text))
-            self.cli("decisions", "--file", self.file("decisions.json", DECISIONS))
-            self.cli("practice", "--response-file", self.file("practice.json", PRACTICE))
-            self.cli("alternatives", "--decision", "D-1", "--response-file",
-                     self.file("alt.json", [alternative("an adapter"),
-                                            alternative("in place")]))
-            self.cli("critic", "--provider", "codex", "--response-file",
-                     self.file("critic.json", CRITIC))
-            session = json.loads((self.design.session_dir(card) / "state.json")
-                                 .read_text(encoding="utf-8"))
-            for objection in session["objections"]:
-                self.cli("objection", "--id", objection["id"], "--disposition", "rejected",
-                         "--reason", "the alternative covers it")
-            for row in session["considered"]:
-                self.cli("considered", "--artifact", row["artifact"], "--status",
-                         "skipped", "--reason", "the feature does not touch it")
-            if self.scope:
-                self.cli("scope", self.scope)
-            self.cli("integrate")
+            try:
+                for _ in range(20):
+                    action = json.loads(self.cli("next", "--json"))
+                    if action["action"] == "await_approval":
+                        break
+                    self.step(card, action)
+            except SystemExit:
+                # design.py refused something; a model would report what it has.
+                pass
         return self.code

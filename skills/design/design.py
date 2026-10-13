@@ -33,7 +33,6 @@ so it is not the record.
     design.py integrate
     design.py validate    [--json]
     design.py render      [--out <f>]
-    design.py scope       small|medium|large
     design.py publish   --id <IDE-nn> --approver <who>
     design.py adr-path
 
@@ -100,11 +99,6 @@ ALTERNATIVES_PER_ROUND = 2
 # answer. A default would answer for them, silently, in the direction that
 # costs nothing today.
 REVERSIBILITY = ["hard-to-reverse", "cheap-to-reverse"]
-
-# IDE-147: the designer's answer to "how much are we rewriting". It goes into
-# the ADR's machine header, and the runner refuses to hand an ADR to review
-# without it.
-SCOPES = ["small", "medium", "large"]
 
 # What the runner pre-fetched for a session that holds no board credential.
 CONTEXT_ENV = "IDP_CONTEXT_DIR"
@@ -625,10 +619,7 @@ def render_adr(state):
         lines.append(f"scope: {state['scope']}")
     if state.get("cid"):
         lines.append(f"cid: {state['cid']}")
-    lines.append(f"parent: {state['identifier']}")
-    if state.get("scope"):
-        lines.append(f"scope: {state['scope']}")
-    lines += ["---", ""]
+    lines += [f"parent: {state['identifier']}", "---", ""]
 
     for heading in headings:
         lines += [f"## {heading}", "", str(sections.get(heading, "")).strip() or "—", ""]
@@ -1543,22 +1534,6 @@ def cmd_publish(args):
           file=sys.stderr)
 
 
-def cmd_scope(args):
-    """How much this design rewrites: small, medium or large (IDE-147)."""
-    state = load_state(args.id)
-    if args.value not in SCOPES:
-        fail(EXIT.INVALID, f"scope is one of {', '.join(SCOPES)}; got {args.value!r}. "
-             "FIX: pass the designer's answer to how much is being rewritten")
-    state["scope"] = args.value
-    journal(args.id, {"event": "scope", "scope": args.value})
-    save_state(state)
-    adr = session_dir(state["identifier"]) / "adr.md"
-    if adr.exists():
-        # The draft already issued carries the header too; keep the two equal.
-        write_atomic(adr, render_adr(state))
-    print(f"scope: {args.value}")
-
-
 def cmd_adr_path(args):
     print(session_dir(args.id) / "adr.md")
 
@@ -1675,11 +1650,6 @@ def _make_parser():
     p.add_argument("--approver", required=True,
                    help="who approved it; the board cannot record this itself")
     p.set_defaults(func=cmd_publish)
-
-    p = sub.add_parser("scope", help="how much this design rewrites")
-    p.add_argument("value", nargs="?", help=", ".join(SCOPES))
-    p.add_argument("--id")
-    p.set_defaults(func=cmd_scope)
 
     p = sub.add_parser("adr-path")
     p.add_argument("--id")

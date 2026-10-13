@@ -244,25 +244,33 @@ class RedesignTests(RunnerTestCase):
 
 class FinalizeTests(RunnerTestCase):
 
-    def test_an_adr_without_scope_is_refused_and_the_fix_is_asked_for(self):
+    def test_a_session_that_issued_no_adr_is_an_attempt_and_the_next_carries_on(self):
+        # design.py refuses to integrate without a scope, so this session ends
+        # with nothing to finalize; the runner counts it and asks again.
         board = new_board()
         code = self.runner(board, self.session(scope=None),
                            self.session(scope="small")).run_feature(FEATURE)
         self.assertEqual(code, EXIT.DONE)
         attempts = lease.events(board.list_comments(FEATURE), run.ATTEMPT)
-        self.assertEqual(len(attempts), 1)
-        said = [c["body"] for c in board.list_comments(FEATURE)
-                if c["id"] == attempts[0]["comment_id"]][0]
-        self.assertIn("no scope", said)
+        self.assertEqual([a["cause"] for a in attempts], ["no-adr"])
         self.assertIn("runner's checks", self.executor.calls[1]["prompt"])
         self.assertIn("\nscope: small\n", adr_documents(board)[0]["content"])
 
+    def test_finalize_refuses_an_adr_without_scope_wherever_it_came_from(self):
+        board = new_board()
+        self.runner(board).run_feature(FEATURE)
+        adr = adr_documents(board)[0]["content"].replace("scope: medium\n", "")
+        problems = self.runner(new_board()).finalize_design(
+            FEATURE, run.memory.feature_file(FEATURE, "adr"), adr)
+        self.assertTrue(any("no scope" in p for p in problems), problems)
+
     def test_three_failed_finalizes_block_the_card_and_keep_its_phase(self):
         board = new_board()
-        code = self.runner(board, self.session(scope=None)).run_feature(FEATURE)
+        with mock.patch.object(run, "critic_mode", lambda text: None):
+            code = self.runner(board).run_feature(FEATURE)
         self.assertEqual(code, EXIT.BLOCKED)
-        self.assertEqual(len(lease.events(board.list_comments(FEATURE), run.ATTEMPT)),
-                         run.MAX_ATTEMPTS)
+        attempts = lease.events(board.list_comments(FEATURE), run.ATTEMPT)
+        self.assertEqual([a["cause"] for a in attempts], ["finalize"] * run.MAX_ATTEMPTS)
         labels = board.cards[FEATURE]["tags"]
         self.assertIn(tags.BLOCKED, labels)
         self.assertIn(tags.DESIGN, labels)
