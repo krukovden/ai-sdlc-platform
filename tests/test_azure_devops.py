@@ -198,7 +198,32 @@ class FakeAz:
             return self.patch_work_item(path, body, conflict)
         if path.startswith("wiki/wikis"):
             return self.wiki(path, method, body, kwargs)
+        if path.startswith("git/repositories/"):
+            return self.pull_requests(path, method, body)
         raise AssertionError(f"unexpected REST call: {method} {url}")
+
+    def pull_requests(self, path, method, body):
+        """Pull requests by id, active ones findable by source and target."""
+        prs = self.__dict__.setdefault("prs", {})
+        route = path.split("?")[0].split("/pullrequests", 1)[1].strip("/")
+        if not route and method == "GET":
+            query = _query_of(path)
+            return {"value": [pr for pr in prs.values() if pr["status"] == "active"
+                              and pr["sourceRefName"] == query["searchCriteria.sourceRefName"]
+                              and pr["targetRefName"] == query["searchCriteria.targetRefName"]]}
+        if not route:
+            payload = json.loads(body.decode("utf-8"))
+            number = len(prs) + 1
+            prs[number] = dict(payload, pullRequestId=number, status="active",
+                               url=f"https://pr/{number}")
+            return prs[number]
+        number = int(route.split("/")[0])
+        if route.endswith("threads"):
+            prs[number].setdefault("threads", []).append(json.loads(body.decode("utf-8")))
+            return {"id": 1}
+        if method == "PATCH":
+            prs[number].update(json.loads(body.decode("utf-8")))
+        return prs[number]
 
     def wiki(self, path, method, body, kwargs):
         """A small in-memory wiki: pages by path, each with a version."""
@@ -1709,6 +1734,37 @@ class FencedTagWriteTests(ScriptTestCase):
         self.assertEqual(comments[0]["created_at"], "2026-10-12T03:00:00.0000000Z")
         self.assertIn("2026", now)
 
+
+
+class PullRequestTests(ScriptTestCase):
+    """The runner's tech lead, IDE-147 3.2: no auto-complete, completion pinned to M."""
+
+    def test_a_pull_request_is_opened_once_with_its_work_item_and_no_auto_complete(self):
+        board, fake = make_board(fake=FakeAz())
+        with stub(fake):
+            first = board.create_pull_request("repo", "pbi/5-x/g1", "feature/IDE-9", "X",
+                                              "#5", ["5"])
+            again = board.create_pull_request("repo", "pbi/5-x/g1", "feature/IDE-9", "X",
+                                              "#5", ["5"])
+        self.assertEqual(first["id"], again["id"])
+        created = fake.rest_matching("POST", "/pullrequests")
+        self.assertEqual(len(created), 1)
+        payload = json.loads(created[0]["body"].decode("utf-8"))
+        self.assertEqual(payload["workItemRefs"], [{"id": "5"}])
+        self.assertNotIn("autoCompleteSetBy", payload)
+        self.assertNotIn("completionOptions", payload)
+
+    def test_completion_pins_the_tested_merge_and_squashes(self):
+        board, fake = make_board(fake=FakeAz())
+        with stub(fake):
+            pr = board.create_pull_request("repo", "pbi/5-x/g1", "feature/IDE-9", "X",
+                                           "#5", ["5"])
+            board.complete_pull_request("repo", pr["id"], "abc123", "X #5")
+            answer = board.get_pull_request("repo", pr["id"])
+        self.assertEqual(answer["status"], "completed")
+        self.assertEqual(answer["lastMergeSourceCommit"], {"commitId": "abc123"})
+        self.assertTrue(answer["completionOptions"]["squashMerge"])
+        self.assertFalse(answer["completionOptions"]["deleteSourceBranch"])
 
 if __name__ == "__main__":
     unittest.main()

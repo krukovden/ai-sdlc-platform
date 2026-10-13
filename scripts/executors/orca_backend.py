@@ -271,8 +271,9 @@ class OrcaExecutor(Executor):
 
     # -- the interface --------------------------------------------------------
 
-    def run_role(self, role, card, worktree, prompt, context=None, author=None):
-        choice = self.resolve(role, author=author)
+    def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                 choice=None):
+        choice = self.chosen(role, author=author, choice=choice)
         if choice is None:
             raise RuntimeError(f"no free slot for role '{role}'; wait for a worker")
         clear_result(worktree)
@@ -286,7 +287,8 @@ class OrcaExecutor(Executor):
                 self.disabled = str(exc)
             elif exc.scope == "agent":
                 self.unlaunchable[exc.agent or choice.agent] = str(exc)
-            return self.through_subprocess(role, card, worktree, prompt, context, author, str(exc))
+            return self.through_subprocess(role, card, worktree, prompt, context, author,
+                                           str(exc), choice=choice)
 
     def mirror_gate(self, card, question, options=None):
         """Show a human gate in the Orca window. A convenience: the board tag is the gate.
@@ -705,11 +707,12 @@ class OrcaExecutor(Executor):
 
     # -- through subprocess --------------------------------------------------------------
 
-    def through_subprocess(self, role, card, worktree, prompt, context, author, reason):
+    def through_subprocess(self, role, card, worktree, prompt, context, author, reason,
+                           choice=None):
         if self._fallback is None:
             self._fallback = self.fallback_factory()
         code = self._fallback.run_role(role, card, worktree, prompt, context=context,
-                                       author=author)
+                                       author=author, choice=choice)
         self.last = Session(self._fallback.last or {}, fallback=reason, via="orca-fallthrough")
         return code
 

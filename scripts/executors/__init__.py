@@ -5,7 +5,13 @@
 one of the runner's own exit codes. Which agent and model fill the role, and how
 the process is launched, is the executor's business:
 
-    executor.run_role(role, card, worktree, prompt, context=None, author=None) -> code
+    executor.run_role(role, card, worktree, prompt, context=None, author=None,
+                      choice=None) -> code
+
+`choice` is a role already resolved by the caller — the phase-3 orchestrator
+resolves `worker` against what is busy, to hold each agent to its `parallel`
+cap, and then starts exactly that. `last` is kept per thread, because the
+orchestrator runs several sessions at once and each must read its own.
 
 **A session does not report through its process exit code.** `claude -p` and
 `copilot -p` exit with their own codes, not the model's verdict. The session
@@ -30,6 +36,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from . import agents, environment, roles
@@ -127,7 +134,17 @@ class Executor:
 
     def __init__(self, resolver):
         self.resolver = resolver
+        self._local = threading.local()
         self.last = None
+
+    @property
+    def last(self):
+        """The session this thread ran last. Sessions in parallel never see each other's."""
+        return getattr(self._local, "last", None)
+
+    @last.setter
+    def last(self, value):
+        self._local.last = value
 
     def resolve(self, role, author=None, busy=None):
         return self.resolver.resolve(role, author=author, busy=busy)
@@ -136,7 +153,34 @@ class Executor:
         """How run.py makes a card's worktree. The default is the plain git one."""
         return plain
 
-    def run_role(self, role, card, worktree, prompt, context=None, author=None):
+    def exhaust(self, choice):
+        """This agent hit its usage limit: nothing more is started on it in this run.
+
+        The next resolution of any role gets the next available entry, which is
+        how a run moves on to another provider without any state moving with it.
+        """
+        if self.resolver is not None:
+            self.resolver.exhaust(choice)
+
+    def chosen(self, role, author=None, choice=None):
+        """The choice a session runs on: the caller's, held to the review rule, or resolved.
+
+        A choice the caller resolved is still checked here, so no backend can
+        be handed a reviewer that may be the author.
+        """
+        if choice is None:
+            return self.resolve(role, author=author)
+        choice = roles.as_choice(choice)
+        if role == "review" and author is not None and \
+                roles.may_be_same(choice, roles.as_choice(author)):
+            raise ResolutionError(f"'{choice}' may be the same agent and model as the "
+                                  f"author '{author}', and the review rule never lets work "
+                                  "review itself",
+                                  "resolve the review role with the author named")
+        return choice
+
+    def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                 choice=None):
         raise NotImplementedError
 
     def finish(self, role, card, choice, result, crashed=False, limit=None,

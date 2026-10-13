@@ -20,12 +20,30 @@ from . import EXIT, Executor, agents, clear_result, environment, read_result, re
 
 LIMITS = ("rate_limit", "overloaded")
 
+# What the agents without a stream print when the account is out of usage. Codex
+# and Copilot say it in prose; the words are matched, case-folded, anywhere in a
+# line. Experiment 4 of IDE-147 records the exact text each tool prints.
+LIMIT_TEXT = (
+    ("you've hit your usage limit", "usage_limit"),
+    ("you have hit your usage limit", "usage_limit"),
+    ("usage limit reached", "usage_limit"),
+    ("rate limit exceeded", "rate_limit"),
+)
+
 
 def limit_event(line):
-    """`rate_limit` or `overloaded` when this stream-json line is a retry on one."""
+    """`rate_limit`, `overloaded` or `usage_limit` when this line says the session hit one.
+
+    Claude's signal is a `system/api_retry` stream-json event carrying
+    `rate_limit` or `overloaded`; the others say it in plain text.
+    """
     try:
         event = json.loads(line)
     except (TypeError, ValueError):
+        folded = str(line or "").casefold()
+        for text, kind in LIMIT_TEXT:
+            if text in folded:
+                return kind
         return None
     if not isinstance(event, dict):
         return None
@@ -58,8 +76,9 @@ class SubprocessExecutor(Executor):
         self.popen = popen
         self.timeout = timeout
 
-    def run_role(self, role, card, worktree, prompt, context=None, author=None):
-        choice = self.resolve(role, author=author)
+    def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                 choice=None):
+        choice = self.chosen(role, author=author, choice=choice)
         if choice is None:
             # Every eligible agent is at its `parallel` cap. Phase 2 never gets
             # here; the phase-3 orchestrator waits for a slot instead of asking.

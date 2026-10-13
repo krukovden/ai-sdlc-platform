@@ -411,9 +411,22 @@ class GateTests(RunnerTestCase):
             board.cards[FEATURE]["rev"] += 1
 
         runner = self.runner(board, ask=approve)
+        started = []
+
+        class Development:
+            def __init__(self, owner):
+                self.owner = owner
+
+            def run(self, feature):
+                started.append(feature)
+                ok, message, _ = self.owner.check_adr(self.owner.board, feature)
+                self.owner.say(message)
+                return EXIT.DONE
+
+        runner.development = Development
         self.assertEqual(runner.run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(started, [FEATURE])                # phase 3 takes over
         self.assertIn("as approved", runner.out.getvalue())
-        self.assertIn("build step 3", runner.out.getvalue())
 
     def test_a_hand_off_that_landed_before_its_comment_gets_the_comment(self):
         board = new_board()

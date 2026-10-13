@@ -38,7 +38,8 @@ class FakeSubprocess:
     def __init__(self):
         self.calls, self.last = [], None
 
-    def run_role(self, role, card, worktree, prompt, context=None, author=None):
+    def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                 choice=None):
         self.calls.append((role, card, str(worktree)))
         self.last = executors.Session(role=role, card=card, backend="subprocess", agent="x",
                                       model=None, code=EXIT.DONE, reason="", crashed=False,

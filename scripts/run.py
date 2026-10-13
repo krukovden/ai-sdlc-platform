@@ -25,8 +25,9 @@ Usage:
                          design-review comment states; exit 3 otherwise. Phase 3
                          starts only past this check
 
-Phases served so far: 2 (design). A Feature that reaches a phase this runner
-does not serve yet is left where it is, waiting, and the run stops there.
+Phases served so far: 2 (design) and 3.1–3.2 (development: planning, then
+building — `scripts/phase3/`). A Feature that reaches a phase this runner does
+not serve yet is left where it is, waiting, and the run stops there.
 
 At a gate the runner never moves the card. Approving a design is setting
 `idp:development` on the card, and sending it back is a comment and
@@ -72,6 +73,7 @@ EXIT = _load("idp_exit_codes", SCRIPT_DIR / "exit_codes.py")
 board_cli = _load("idp_board", SCRIPT_DIR / "board.py")
 lease = _load("idp_lease", SCRIPT_DIR / "lease.py")
 executors = _load("idp_executors", SCRIPT_DIR / "executors" / "__init__.py", package=True)
+phase3 = _load("idp_phase3", SCRIPT_DIR / "phase3" / "__init__.py", package=True)
 state = board_cli.state
 tags = state.tags
 memory = board_cli.memory
@@ -284,9 +286,14 @@ Never publish the ADR and never call a tracker: the runner attaches it.
 
 class Runner:
 
+    run_py = SCRIPT_DIR / "run.py"
+    repo_root = REPO_ROOT
+    state = state
+    check_adr = staticmethod(check_adr)
+
     def __init__(self, board, profile, executor, run_id, repo=None, ask=None,
                  worktree_for=None, base_sha=None, design=None,
-                 heartbeat_minutes=lease.HEARTBEAT_MINUTES, out=None):
+                 heartbeat_minutes=lease.HEARTBEAT_MINUTES, out=None, development=None):
         self.board = board
         self.profile = {k: v for k, v in (profile or {}).items()}
         self.executor = executor
@@ -303,9 +310,17 @@ class Runner:
         self.heartbeat_minutes = heartbeat_minutes
         self.out = out or sys.stderr
         self.profile_hash = board_cli.profile_hash(self.profile)
+        self.development = development or (lambda runner: phase3.Development(runner))
 
     def say(self, text):
         print(text, file=self.out)
+
+    @staticmethod
+    def error(code, message, fix):
+        return RunnerError(code, message, fix)
+
+    def heartbeat(self, card):
+        return Heartbeat(self.board, card, self.run_id, self.heartbeat_minutes)
 
     def comments(self, card):
         return self.board.list_comments(card)
@@ -344,13 +359,18 @@ class Runner:
                 moved = True
                 continue
             if tag == tags.DEVELOPMENT:
-                ok, message, fix = check_adr(self.board, feature)
-                self.say(message if ok else f"{message}. FIX: {fix}")
-            self.say(f"{feature} is at {tag or 'no phase tag'}: this runner serves the design "
-                     "phase so far (phase 3 is IDE-147 build step 3). It stays there, "
-                     "waiting.")
+                return self.phase_development(feature)
+            self.say(f"{feature} is at {tag or 'no phase tag'}: this runner serves design and "
+                     "development so far (integration and QA are IDE-147 build steps 4 and "
+                     "9). It stays there, waiting.")
             return EXIT.DONE if moved else EXIT.REFUSED
         return EXIT.DONE
+
+    # -- phase 3 ------------------------------------------------------------
+
+    def phase_development(self, feature):
+        """3.1 planning and 3.2 building, owned by this run: `scripts/phase3/`."""
+        return self.development(self).run(feature)
 
     # -- phase 2 ------------------------------------------------------------
 
