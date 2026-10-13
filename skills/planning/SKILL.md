@@ -1,6 +1,7 @@
 ---
 name: planning
-description: Use when an approved ADR has to become a set of PBIs and one feature branch — cuts the work into thin vertical slices, declares the paths each one touches, and hands them to a script that builds the overlap graph, refuses parallel slices that share files, refuses dependency cycles, and creates the cards and their agent briefs in one action
+description: Only when invoked through /idp or /idp-develop: an approved ADR becomes PBIs and one feature branch through the planner's fixed slicing, path declaration and graph validation flow.
+disable-model-invocation: true
 ---
 
 # Planning

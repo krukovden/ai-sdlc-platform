@@ -1,6 +1,7 @@
 ---
 name: documenter
-description: Use when run.py starts you as the documenter at the end of 3.3 Integration — lift the Feature's acceptance criteria into docs/blueprint/<area>.md of every area the feature touched, current truth only, with links to the code and tests that satisfy them, at most 3,000 words per area, checked by scripts/blueprint.py, and end by reporting through run.py report
+description: Only when invoked through /idp or /idp-develop: run.py starts this end-of-integration documenter to lift the Feature's acceptance criteria into current blueprints and report back.
+disable-model-invocation: true
 ---
 
 # Documenter

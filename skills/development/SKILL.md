@@ -1,6 +1,7 @@
 ---
 name: development
-description: Use when run.py starts you as the development worker for one PBI — orient from .idp/context/ and handoff.md, check that the brief's seams still exist, write the code and its tests, commit with the work item mention and push every commit at once, run the PBI's acceptance commands, and end by reporting through run.py report
+description: Only when invoked through /idp or /idp-develop: run.py starts this one-session worker for one PBI to write the code, its tests and the report back to the runner.
+disable-model-invocation: true
 ---
 
 # Development worker

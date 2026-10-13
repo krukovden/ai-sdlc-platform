@@ -1,6 +1,7 @@
 ---
 name: design
-description: Use when an approved Feature card has to become an ADR — runs the architect, external practice, design-it-twice alternatives on budget and an independent critic in a fixed order, keeps a decision registry where every decision states how expensive it is to reverse, and produces a draft ADR ready for a human to approve
+description: Only when invoked through /idp-design: an approved Feature card becomes an ADR through the fixed architect, practice, alternatives and critic loop, with a decision registry and a draft ready for human approval.
+disable-model-invocation: true
 ---
 
 # /idp-design
