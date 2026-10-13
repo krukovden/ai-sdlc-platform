@@ -54,6 +54,11 @@ CHAIN_TIMEOUT = 5
 MARK = "scripts/hooks/statusline.py"
 
 
+def launcher():
+    candidate = SCRIPTS.parent.parent / "bin" / "statusline.py"
+    return candidate if candidate.exists() else Path(__file__).resolve()
+
+
 def state_dir(environ=None):
     environ = os.environ if environ is None else environ
     return Path(environ.get("IDP_STATE_DIR") or Path.home() / ".idp" / "hooks")
@@ -160,7 +165,10 @@ def show(raw, state, run=subprocess.run):
 # ---------------------------------------------------------------------------
 
 def ours(entry):
-    return MARK in (command_of(entry) or "")
+    command = command_of(entry) or ""
+    return (MARK in command
+            or command == f'python3 "{launcher()}"'
+            or command.endswith('/.idp/platform/bin/statusline.py"'))
 
 
 def install(settings_path, state, script=None, out=sys.stdout):
@@ -168,8 +176,20 @@ def install(settings_path, state, script=None, out=sys.stdout):
     settings = json.loads(settings_path.read_text(encoding="utf-8")) \
         if settings_path.exists() else {}
     current = settings.get("statusLine")
+    target_script = str(script or launcher())
+    expected_command = f'python3 "{target_script}"'
     if ours(current):
-        print("the idp status line is already installed; nothing changed", file=out)
+        cur_cmd = command_of(current)
+        if cur_cmd == expected_command:
+            print("the idp status line is already installed; nothing changed", file=out)
+            return EXIT.OK
+        if isinstance(current, dict):
+            current["command"] = expected_command
+        else:
+            settings["statusLine"] = {"type": "command", "command": expected_command}
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+        print("updated the idp status line script path", file=out)
         return EXIT.OK
     state = Path(state)
     state.mkdir(parents=True, exist_ok=True)
@@ -177,7 +197,7 @@ def install(settings_path, state, script=None, out=sys.stdout):
                                    encoding="utf-8")
     if settings_path.exists():
         shutil.copy2(settings_path, settings_path.with_name(settings_path.name + ".idp-backup"))
-    entry = {"type": "command", "command": f'python3 "{script or Path(__file__).resolve()}"'}
+    entry = {"type": "command", "command": expected_command}
     if isinstance(current, dict) and "padding" in current:
         entry["padding"] = current["padding"]
     settings["statusLine"] = entry
