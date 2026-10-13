@@ -216,6 +216,40 @@ class AgentLoopTests(AgentTestCase):
         self.assertEqual(self.passes, [0, 900, 1800])
         self.assertEqual(self.made, [0, 900, 1800])          # asked afresh every time
 
+    def test_a_development_lost_to_a_limit_is_served_again_once_it_resets(self):
+        # 0–299 s: codex and copilot are at their usage limit, so the review rule
+        # leaves nothing for development; design still runs on claude. At 300 s
+        # the limits reset and the very next pass serves development again.
+        board = new_board(tags.DEVELOPMENT)
+        limited = lambda: self.clock.now() < 300                      # noqa: E731
+        loop = self.loop(board, development=Refusing)
+        loop.make_executor = lambda: ScriptedExecutor(
+            self.session(), available=["claude"] if limited() else None)
+        self.assertEqual(loop.served(), ["design"])
+        loop.run(passes=4)                                  # passes at 0, 60, 180, 420
+        self.assertEqual(Refusing.calls, 1)
+        self.assertEqual(loop.served(), ["design", "development"])
+
+    def test_an_exhausted_worker_is_re_resolved_not_cached_forever(self):
+        three = ["claude", "codex", "copilot"]
+        loop = self.loop(new_board(), executor=ScriptedExecutor(self.session(), available=three))
+        self.assertEqual(loop.served(), ["design", "development"])
+        for agent, model in (("codex", "gpt-5"), ("copilot", "gpt-4.1"), ("codex", None),
+                             ("copilot", None)):
+            loop.executor.exhaust(run.executors.Choice(agent, model))
+        # The cached executor would now serve design only; the limits have reset.
+        self.executor = ScriptedExecutor(self.session(), available=three)
+        self.assertEqual(loop.served(), ["design", "development"])
+        self.assertEqual(len(self.made), 2)
+
+    def test_after_an_idle_rest_a_degraded_executor_is_asked_again(self):
+        board = FakeBoard(profile=PROFILE)
+        loop = self.loop(board)
+        loop.served()
+        loop.executor.exhaust(run.executors.Choice("codex", "gpt-5"))
+        loop.run(passes=1)
+        self.assertIsNone(loop.executor)
+
     def test_serve_narrows_the_phases(self):
         board = new_board(tags.DEVELOPMENT)
         self.loop(board, development=Refusing, serve=["design"]).run(passes=2)

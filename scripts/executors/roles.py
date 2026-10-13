@@ -99,6 +99,10 @@ class Resolver:
         """Mark an entry unavailable for the rest of the run: it hit a usage limit."""
         self._available[as_choice(choice)] = False
 
+    def unavailable(self):
+        """The entries asked about so far and found unavailable — exhausted included."""
+        return [choice for choice, answer in self._available.items() if not answer]
+
     def available(self, choice):
         """Launchable, and past the probe. With no probe to ask, an agent whose
         command line is still unverified (agents.UNVERIFIED) is not available."""

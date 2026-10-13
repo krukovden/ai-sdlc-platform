@@ -498,8 +498,14 @@ class AgentLoop:
     # -- what this machine serves ---------------------------------------------
 
     def served(self):
-        """The phases whose roles this machine can fill now, within `--serve`."""
-        if self.executor is None:
+        """The phases whose roles this machine can fill now, within `--serve`.
+
+        A requested phase that the cached executor cannot serve is asked again of
+        a fresh one, at once: the cache remembers an agent exhausted at its usage
+        limit for as long as it lives, and a limit resets.
+        """
+        fresh = self.executor is None
+        if fresh:
             self.executor = AgentExecutor(self.make_executor(), self.board, self.run_id,
                                           self.run_py)
         found = []
@@ -513,7 +519,18 @@ class AgentLoop:
             except self.executors.ResolutionError:
                 continue
             found.append(phase)
+        if len(found) < len(self.serve) and not fresh:
+            self.executor = None
+            return self.served()
         return found
+
+    def degraded(self):
+        """Is there availability to regain? Then a rest ends with a fresh executor."""
+        if self.executor is None:
+            return False
+        resolver = getattr(self.executor, "resolver", None)
+        unavailable = getattr(resolver, "unavailable", None)
+        return bool(unavailable and unavailable())
 
     # -- one pass ---------------------------------------------------------------
 
@@ -714,6 +731,8 @@ class AgentLoop:
                     continue
                 self.idle += 1
                 self.rest(min(self.max_idle, self.poll * (2 ** min(self.idle - 1, 10))))
+                if self.degraded():
+                    self.executor = None                # re-probed after the backoff
             if self.presence.stop_requested():
                 self.say(f"run '{self.run_id}' stops: releasing what it still holds.")
                 release_run(self.board, self.run_id, self.list_cards(), self.worktrees,
