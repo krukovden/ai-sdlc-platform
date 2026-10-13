@@ -89,6 +89,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -916,8 +917,20 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                  fix="add 'project_id' to .idp/profile.json — the project name — then re-run")
         return project
 
+    def _pace(self):
+        """`pace_seconds`: wait after a board write so a human can watch the lifecycle.
+
+        Observation only — a demo or a live experiment. Absent or 0 in a normal run.
+        """
+        seconds = float(self.profile.get("pace_seconds") or 0)
+        if seconds > 0:
+            time.sleep(seconds)
+
     def _az(self, args, **kwargs):
-        return run_az(args, token=self.token, auth_hint=self.auth_hint, **kwargs)
+        answer = run_az(args, token=self.token, auth_hint=self.auth_hint, **kwargs)
+        if any(word in args[:4] for word in ("create", "update", "add", "remove", "delete")):
+            self._pace()
+        return answer
 
     def _authorization(self):
         """The same credential the CLI uses, in the header REST wants.
@@ -951,9 +964,12 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         scope = urllib.parse.quote(self._project(project))
         url = (f"{self.organization}/{scope}/_apis/{path}"
                f"?{urllib.parse.urlencode(parameters)}")
-        return rest_call(url, method=method, body=body, content_type=content_type,
-                         authorization=self._authorization(),
-                         auth_hint=self.auth_hint, parse_json=parse_json, **kwargs)
+        answer = rest_call(url, method=method, body=body, content_type=content_type,
+                           authorization=self._authorization(),
+                           auth_hint=self.auth_hint, parse_json=parse_json, **kwargs)
+        if str(method).upper() != "GET":
+            self._pace()
+        return answer
 
     def work_item_type(self, kind):
         configured = dict(DEFAULT_WORK_ITEM_TYPES)

@@ -226,6 +226,12 @@
       "type": "string",
       "minLength": 1
     },
+    "pace_seconds": {
+      "description": "Observation only: seconds to wait after every board write so a human can watch the lifecycle move. Absent or 0 in a normal run.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 600
+    },
     "branch_prefix": {
       "type": "string",
       "minLength": 1

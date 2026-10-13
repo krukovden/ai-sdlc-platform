@@ -2043,3 +2043,27 @@ class PullRequestTests(ScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PaceTests(unittest.TestCase):
+    """`pace_seconds` slows board writes for a human watching; reads never wait."""
+
+    def test_writes_wait_and_reads_do_not(self):
+        board = azure.Board("pat", {"board": "azure-devops", "workspace": "o",
+                                      "project_id": "p", "pace_seconds": 7})
+        with mock.patch.object(azure, "run_az", return_value={}), \
+                mock.patch.object(azure, "rest_call", return_value={}), \
+                mock.patch.object(azure.time, "sleep") as sleep:
+            board._az(["boards", "work-item", "show", "--id", "1"])
+            board._rest("wit/workitems/1")
+            self.assertEqual(sleep.call_count, 0)
+            board._az(["boards", "work-item", "update", "--id", "1"])
+            board._rest("wit/workitems/1", method="PATCH", body=[])
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [7.0, 7.0])
+
+    def test_no_pace_means_no_wait(self):
+        board = azure.Board("pat", {"board": "azure-devops", "workspace": "o", "project_id": "p"})
+        with mock.patch.object(azure, "run_az", return_value={}), \
+                mock.patch.object(azure.time, "sleep") as sleep:
+            board._az(["boards", "work-item", "update", "--id", "1"])
+        sleep.assert_not_called()

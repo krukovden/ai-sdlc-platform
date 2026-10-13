@@ -34,6 +34,7 @@ one more after it. A lost fence is `lease.OwnershipLost`, never a silent move.
 import json
 import os
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -209,6 +210,9 @@ class CatalogStates(AdapterStates):
         except ValueError:
             data = {}
         self.expect(board, identifier, run, owner)
+        seconds = float(self.profile.get("pace_seconds") or 0)
+        if seconds > 0:
+            time.sleep(seconds)
         return {"moved": True, "bucket": bucket, "catalog": data}
 
     def reopen(self, board, identifier, evidence, run, owner=None):
