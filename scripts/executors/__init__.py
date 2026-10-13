@@ -16,10 +16,12 @@ HANDOFF — start a fresh session on the same card — and `executor.last` says
 `crashed`, and whether a rate-limit or overload event preceded it, so the
 runner can count the attempt or pause the card.
 
-Backends register themselves by name. `subprocess` is built in; `orca` is a
-later build step (IDE-147 step 6) and registers through `register_backend`.
-`backend: auto` picks `orca` only when that backend is registered **and**
-`orca status --json` answers, and `subprocess` otherwise.
+Backends register themselves by name: `subprocess` (local.py) and `orca`
+(orca_backend.py, IDE-147 step 6). `backend: auto` picks `orca` only when that
+backend is registered **and** `orca status --json` answers, and `subprocess`
+otherwise. Naming `orca` while Orca does not answer is refused with a FIX; one
+run may still use both, because the `orca` backend sends any session it cannot
+launch through `subprocess`.
 """
 
 import importlib.util
@@ -208,9 +210,14 @@ def backend_name(executors=None, orca_probe=orca_reachable):
     if wanted not in BACKENDS:
         raise ResolutionError(
             f"the profile asks for the '{wanted}' executor backend, and this platform "
-            "has not built it yet (IDE-147 build step 6)",
-            "set executors.backend to \"auto\" or \"subprocess\"; auto moves to Orca "
-            "by itself once that backend exists")
+            "does not have it",
+            "set executors.backend to \"auto\", \"orca\" or \"subprocess\"")
+    if wanted == "orca" and not orca_probe():
+        raise ResolutionError(
+            "the profile asks for the 'orca' executor backend, and `orca status --json` "
+            "does not answer: this process is not running inside Orca",
+            "start run.py from an Orca terminal, or set executors.backend to \"auto\" "
+            "(Orca when it answers, subprocess otherwise)")
     return wanted
 
 
@@ -221,10 +228,12 @@ def select(executors=None, resolver=None, orca_probe=orca_reachable, **options):
 
 
 from .local import SubprocessExecutor  # noqa: E402 - registers itself below
+from .orca_backend import OrcaExecutor  # noqa: E402
 
 register_backend("subprocess", SubprocessExecutor)
+register_backend("orca", OrcaExecutor)
 
 __all__ = ["AGENTS", "ROLES", "BACKENDS", "Choice", "Executor", "ResolutionError",
-           "Resolver", "Session", "SubprocessExecutor", "agents", "environment",
+           "OrcaExecutor", "Resolver", "Session", "SubprocessExecutor", "agents", "environment",
            "parse_entry", "read_result", "register_backend", "roles", "select",
            "write_result"]

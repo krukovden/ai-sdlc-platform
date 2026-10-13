@@ -392,8 +392,15 @@ class ResultFileTests(ScriptTestCase):
 
 class BackendSelectionTests(ScriptTestCase):
 
+    def setUp(self):
+        # These tests are about a platform whose orca backend is absent or stubbed;
+        # the real one (tests/test_orca_backend.py) is put back afterwards.
+        self.real_orca = executors.BACKENDS.pop("orca", None)
+
     def tearDown(self):
         executors.BACKENDS.pop("orca", None)
+        if self.real_orca is not None:
+            executors.BACKENDS["orca"] = self.real_orca
 
     def test_auto_without_an_orca_backend_is_subprocess_and_never_asks_orca(self):
         asked = []
