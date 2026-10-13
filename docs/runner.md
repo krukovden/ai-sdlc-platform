@@ -77,7 +77,8 @@ From `idp:design`, that is:
 
 1. **Claim.** One fenced write adds `idp:owner:<run>`; the claim comment records
    the run, the base SHA and the profile's hash. A card held by another run is
-   refused with nothing written.
+   refused with nothing written, and so is a claim without the profile hash:
+   every claim carries it, a takeover's and a paused card's too.
 2. **Session.** The card, its comments and — on a redesign — the ADR that came
    back are written to `<worktree>/.idp/context/`, and the `design` role is
    started there with the `/idp-design` skill. The session has no board token;
@@ -88,6 +89,13 @@ From `idp:design`, that is:
    it. Both replace what was there under the same title.
 4. **Hand off** to `idp:design-review`, with a comment stating the ADR's
    sha256. An approval covers exactly those bytes.
+
+**Every write after the claim is fenced.** Before each comment, attachment or tag
+write the runner re-reads the card; when the owner tag is not its own any more —
+the lease was reaped, a human took it over — it stops with exit 3 and writes
+nothing more, not even its heartbeat. A design session that cannot be launched at
+all (the executor reports `launch_failed`) is infrastructure: retried after 5, 30
+and 120 s, never an attempt, and then the card is paused for any run to take.
 
 Then the gate. **The runner never moves the card at a gate.** Approve by setting
 `idp:development` on the card; send it back by commenting why and setting
@@ -114,6 +122,29 @@ The code is `scripts/phase3/`; `run.py` only hands the card to it.
 A `small-feature` or `bug` card at `idp:design` is refused with exit 3 and a FIX:
 neither route has a design review, so it starts at `idp:development`. The runner
 cannot put it there itself — it has no path to `idp:development` at all.
+
+**The board's branch is data, not a promise.** Before anything is pushed or
+claimed, the Feature's branch is normalised (whitespace and `refs/heads/` off) and
+refused with exit 3 and a FIX when it is `main`, the repository's actual default
+branch (`origin/HEAD`), any branch the profile lists under `protected_branches`,
+or not a branch at all. Branch names are compared without case, as Azure Repos
+compares them. Both mergers refuse such a target again on their own, and every
+push the runner makes checks it once more.
+
+```json
+"protected_branches": ["release/2026", "develop"]
+```
+
+**Every write is fenced** (checklist item 3). Once the Feature is claimed, each
+board write — a comment with its evidence, an attachment, a state move, a pull
+request call, a tag write — first re-reads the Feature, and each git push runs the
+same check. A run whose owner tag is gone stops with exit 3 before that write or
+push and writes nothing after it. State moves are the tag writer's fenced write
+besides (one JSON patch with `test /rev` on Azure DevOps); a PBI's move names the
+exact worker tag it was claimed under, and completing a PBI never releases a tag
+that is not this run's own. On the engineering-catalog path the catalog's `move`
+takes no expected revision, so the item and the Feature are re-read just before
+and just after it.
 
 **Before anything is written**, every role must resolve once, and `review` must
 resolve to a different agent and model than `worker` — the hard review rule — or
@@ -196,10 +227,11 @@ For each item:
    medium and low become PR comments; low confidence goes to *Unverified*.
 5. **Merge**, by the runner as tech lead, one PBI at a time: the PR
    `pbi/…/g<N> → feature/…` is opened without auto-complete and completed only for
-   the tested merge — on Azure Repos pinning `lastMergeSourceCommit` to `M`; if a
-   sibling moved the feature head first, steps 2–3 of finalize run again on the new
-   head, and that is not an attempt. Then the PBI → done, the owner tag off, a
-   summary comment.
+   the tested merge — at git level with `--force-with-lease=<feature>:F`, so only
+   the tested combination can land; on Azure Repos only when the profile opts in
+   (below). If a sibling moved the feature head first, steps 2–3 of finalize run
+   again on the new head, and that is not an attempt. Then the PBI → done, the
+   owner tag off, a summary comment.
 
 **Tasks advance one by one.** At every finalize — passed or failed — a Task whose
 own witnesses all passed goes to done, and the first Task that is not proved yet
@@ -207,16 +239,26 @@ goes to doing. When the PBI merges, a Task is closed only if its witnesses passe
 a step whose witness is `{manual}` or `{evidence}` is left open with a comment, for
 the human at QA. No Task is ever closed without its own witness.
 
-**The Azure Repos completion window.** `lastMergeSourceCommit` pins the source of
-the completion, not its target. The runner asks the remote for the feature head
-immediately before completing (no fetch in between), and afterwards checks that
-the squash's parent is the tested `F`. If a sibling landed in that window, the
-runner records a `merge-race` event and runs the witnesses again on the head that
-now exists: green, the merge stands; otherwise the Feature is blocked for a human,
-because the code is already on the feature branch. Whether Azure DevOps itself
-refuses such a completion is unmeasured — see *Known gaps* in `CLAUDE.md` and
-experiment 8 in `docs/experiments/README.md`. Git-level merges (Linear) have no
-window: their push is a compare-and-swap on `F`.
+**Azure Repos completion is refused until it is proven.** `lastMergeSourceCommit`
+pins the source of the completion, not its target, so a sibling landing in the
+window merges a combination nobody tested. Until experiment 8
+(`docs/experiments/README.md`) shows the service refuses that, the runner does not
+complete a PBI's pull request at all: it leaves it open, comments on it once with
+the reason and a FIX line, records a `merge-refused` event on the PBI, and — when
+nothing else can run — blocks the Feature naming it. The human completes the pull
+request once the feature head is still the tested `F`, or accepts the window:
+
+```json
+"development": {"azure_complete_unproven": true}
+```
+
+Opted in, the runner asks the remote for the feature head immediately before
+completing (no fetch in between), and afterwards checks that the squash's parent is
+the tested `F`. If a sibling landed in that window, it records a `merge-race` event
+and runs the witnesses again on the head that now exists: green, the merge stands;
+otherwise the Feature is blocked for a human, because the code is already on the
+feature branch. Git-level merges (Linear) have no window: their push is a
+compare-and-swap on `F`.
 
 Every failure has one outcome and one route:
 
@@ -224,6 +266,7 @@ Every failure has one outcome and one route:
 | -- | -- |
 | `defect` — a witness fails, the scanner fails, the diff touches a pinned plan file, a Bug's regression test is missing or passes without the fix | a fresh worker session with the output; an attempt |
 | `infra` — the remote, the network, a runner error | retried after 5, 30, 120 s; never an attempt; then the PBI waits for the next run |
+| `infra` — the agent could not be launched at all (`launch_failed` from the executor) | the session is started again after 5, 30, 120 s; never an attempt; then the PBI is released, and a loop with nothing else to run pauses the Feature — `idp:paused:<run>`, not `idp:blocked` — so another machine may take it at once. Planning, integration and documenter sessions are retried and paused the same way |
 | `witness_timeout`, `budget` | the PBI is blocked and sent back to planning: the witness is wrong, not the code |
 | `malformed` — no pinned plan entry, a witness that breaks the three rungs (`{evidence}`, `{command, timeout}`, `{manual}`), zero runnable witnesses | blocked at once, before anything runs |
 | `conflict` — the feature head does not merge in | a conflict-resolution session with both sides named; an attempt |
@@ -336,14 +379,22 @@ area. The model writes; `scripts/blueprint.py check` decides: the template's sha
 every link resolves, every built AC links code and test, the word ceiling, and
 nothing changed outside `docs/blueprint/`. A documenter's own commits are part of
 that diff: any path outside `docs/blueprint/**` is refused with a FIX, and nothing
-is committed or pushed. A refusal goes back with its problems as
+is committed or pushed. Nothing to write is a pass only where an area is already
+documented: a feature that changes product code in a product with no area
+blueprint at all is refused with a FIX, so new code never reaches QA undocumented.
+A refusal goes back with its problems as
 an attempt. A cached documentation result is rechecked against the current
 feature-branch tip, including an area file a later commit deleted, so a DONE from
 an earlier head is not trusted. What passes is committed to the feature branch as
 `docs(blueprint): … #<card>`, marked `idp-blueprint: <card>@<head>`, so it sits in
 the same pull request into `main` as the code.
 
-**The hand-off**, for now the end of the pipeline:
+**The hand-off**, for now the end of the pipeline, hands exactly the commit 3.3
+validated: the documentation commit the documenter pushed, or the integrated head
+when nothing needed writing. The feature branch is compared with it before the
+first side effect and again immediately before the `qa-handoff` comment; if
+somebody pushed in between, nothing is handed off, and 3.3 runs again on the new
+head, so the head QA gets is one integration actually ran on. Then:
 
 1. the pull request feature → `main` is opened (Azure Repos; on Linear the record
    is a comment), so the AI review pipeline and the full suite run on it. **The
@@ -454,7 +505,8 @@ a card carrying `idp:stop`; remove the tag to let runs take it again.
 a session that ran out of tokens — and does not want to wait out the 60-minute
 lease. It shows the current owner, its last sign of life by the board's clock, and
 the revision; asks you to type `yes`; and claims fenced on that revision, so if the
-owner wrote anything in between, nothing is taken. Then it says where the work
+owner wrote anything in between, nothing is taken. Like every claim, the takeover
+comment records the profile hash. Then it says where the work
 resumes — `handoff.md` on the PBI branches that carry one, else git and the board —
 and runs the Feature on from there (`--claim-only` stops after the claim). A
 takeover is a new lease generation, so whatever the dead run still pushes to its
