@@ -8,6 +8,7 @@ const {run} = require('../cli');
 const {sync} = require('../cli/version');
 const {check} = require('../skills/platform-freshness/check');
 const {fixture, json} = require('./fixture');
+const {CURRENT, NEXT, AFTER} = require('./fixture');
 
 const receiptOf = ctx => json(path.join(ctx.home, '.idp/platform/receipt.json'));
 const dropCatalogSkill = (ctx, name) => {
@@ -52,10 +53,10 @@ test('keep-local carries a removed edited file into a new version payload', asyn
   await run(['install', '--target', 'orca'], ctx);
   const edited = path.join(receiptOf(ctx).payload, 'skills/planning/SKILL.md');
   fs.appendFileSync(edited, '\nmine\n');
-  dropCatalogSkill(ctx, 'planning'); sync('0.2.0', ctx.root);
+  dropCatalogSkill(ctx, 'planning'); sync(NEXT, ctx.root);
   await run(['update', '--keep-local'], ctx);
   assert.match(fs.readFileSync(path.join(receiptOf(ctx).payload, 'skills/planning/SKILL.md'), 'utf8'), /mine\n$/);
-  assert.equal(fs.existsSync(path.join(ctx.home, '.idp/platform/0.1.0')), false);
+  assert.equal(fs.existsSync(path.join(ctx.home, `.idp/platform/${CURRENT}`)), false);
 });
 
 test('uninstall --target all removes a single-target installation', async t => {
@@ -129,7 +130,7 @@ test('Claude gets a real SessionStart hook and Copilot gets no second one', asyn
   const file = path.join(ctx.root, 'catalog.json'), catalog = json(file); catalog.source = remote; fs.writeFileSync(file, JSON.stringify(catalog));
   const command = commands[0].command.replace('${CLAUDE_PLUGIN_ROOT}', ctx.root);
   const stdout = execFileSync('sh', ['-c', command], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'});
-  assert.match(stdout, /^AI SDLC Platform 0\.1\.0 → 9\.0\.0 available\. Update: .*\n$/);
+  assert.match(stdout, new RegExp(`^AI SDLC Platform ${CURRENT.replace(/\./g, '\\.')} → 9\\.0\\.0 available\\. Update: .*\n$`));
 });
 
 test('the freshness reminder names --local only for a project-local installation', async t => {
@@ -163,8 +164,8 @@ async function installedUpdateFixture(t) {
   await run(['install'], ctx);
   const edited = path.join(receiptOf(ctx).payload, 'skills/design/SKILL.md');
   fs.appendFileSync(edited, '\nmine\n');
-  // 0.2.0 drops a skill, so the update has to add, replace, retarget and delete.
-  dropCatalogSkill(ctx, 'planning'); sync('0.2.0', ctx.root);
+  // NEXT drops a skill, so the update has to add, replace, retarget and delete.
+  dropCatalogSkill(ctx, 'planning'); sync(NEXT, ctx.root);
   return ctx;
 }
 const UPDATE = ['update', '--overwrite'];
@@ -173,7 +174,7 @@ test('an update interrupted at any side effect is finished by the next run', asy
   const counting = await installedUpdateFixture(t);
   const probes = Object.fromEntries(FAULTS.map(method => [method, probe(method)]));
   try { await run(UPDATE, counting); } finally { Object.values(probes).forEach(p => p.restore()); }
-  await assertConsistent(counting, '0.2.0');
+  await assertConsistent(counting, NEXT);
   for (const method of FAULTS) {
     const total = probes[method].calls;
     assert.ok(total > 0, `${method} is exercised by an update`);
@@ -186,7 +187,7 @@ test('an update interrupted at any side effect is finished by the next run', asy
         assert.ok(fault.fired, 'the fault fired');
         assert.match(String(failure), /injected/, 'and surfaced');
         await run(UPDATE, ctx);
-        await assertConsistent(ctx, '0.2.0');
+        await assertConsistent(ctx, NEXT);
         assert.equal(fs.existsSync(path.join(ctx.home, '.claude/skills/planning')), false);
         assert.ok(fs.existsSync(path.join(ctx.home, '.claude/skills/design/SKILL.md')));
       });

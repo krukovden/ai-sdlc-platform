@@ -25,4 +25,9 @@ function fixture(t) {
   const output = [];
   return {temp, root, home, cwd, output, out: line => output.push(line)};
 }
-module.exports = {fixture, json, packedRoot};
+// Versions relative to the package, so a release never breaks the suite:
+// CURRENT is what is installed, NEXT and AFTER are the simulated releases.
+const CURRENT = require('../package.json').version;
+const bump = (v, n) => { const [a, b] = v.split('.').map(Number); return `${a}.${b + n}.0`; };
+const NEXT = bump(CURRENT, 1), AFTER = bump(CURRENT, 2);
+module.exports = {CURRENT, NEXT, AFTER, fixture, json, packedRoot};

@@ -9,6 +9,7 @@ const {run, ROOT} = require('../cli');
 const {sync} = require('../cli/version');
 const {check} = require('../skills/platform-freshness/check');
 const {fixture, json} = require('./fixture');
+const {CURRENT, NEXT, AFTER} = require('./fixture');
 for (const target of ['claude', 'copilot', 'orca']) {
   test(`${target}: install, status, simulated update, check and clean uninstall`, async t => {
     const ctx = fixture(t);
@@ -19,11 +20,11 @@ for (const target of ['claude', 'copilot', 'orca']) {
     const installed = path.join(ctx.home, folder, 'skills/design/design.py');
     assert.match(execFileSync('python3', [installed, '--help'], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'}), /design.py/);
     assert.match(execFileSync('python3', [path.join(ctx.home, '.local/bin/idp'), '--help'], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'}), /board.py/);
-    assert.match(cli('status'), /0.1.0/);
+    assert.match(cli('status'), new RegExp(CURRENT.replace(/\./g, '\\.')));
     const receipt = json(path.join(ctx.home, '.idp/platform/receipt.json'));
     const edited = path.join(receipt.payload, 'skills/design/SKILL.md');
     fs.appendFileSync(edited, '\nLocal change\n');
-    sync('0.2.0', ctx.root);
+    sync(NEXT, ctx.root);
     const refused = spawnSync(process.execPath, [path.join(ctx.root, 'bin/idp-platform.js'), 'update', '--yes'], {env: {...process.env, HOME: ctx.home}, encoding: 'utf8'});
     assert.ok(refused.status);
     assert.match(refused.stderr, /Local edits preserved/);
@@ -36,10 +37,10 @@ for (const target of ['claude', 'copilot', 'orca']) {
     fs.mkdirSync(remote);
     execFileSync('git', ['init', '-q', remote]);
     execFileSync('git', ['-C', remote, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'release']);
-    execFileSync('git', ['-C', remote, 'tag', 'v0.3.0']);
+    execFileSync('git', ['-C', remote, 'tag', `v${AFTER}`]);
     const catalogFile = path.join(ctx.root, 'catalog.json');
     const catalog = json(catalogFile); catalog.source = remote; fs.writeFileSync(catalogFile, JSON.stringify(catalog));
-    assert.match(cli('check'), /0.2.0 → 0.3.0 available/);
+    assert.ok(cli('check').includes(`${NEXT} → ${AFTER} available`));
     cli('uninstall');
     assert.deepEqual(fs.readdirSync(ctx.home), []);
   });
@@ -64,7 +65,7 @@ test('freshness is one line, weekly, and never updates', async t => {
   check(options); check(options);
   assert.equal(calls, 1); assert.equal(ctx.output.length, 1);
   assert.match(ctx.output[0], /available/);
-  assert.equal(json(path.join(ctx.home, '.idp/platform/receipt.json')).version, '0.1.0');
+  assert.equal(json(path.join(ctx.home, '.idp/platform/receipt.json')).version, CURRENT);
   check({...options, now: options.now + 8 * 24 * 60 * 60 * 1000}); assert.equal(calls, 2);
 });
 test('version sync keeps manifests and catalog skill entries aligned', t => {
@@ -93,7 +94,7 @@ test('catalog additions and removals need no installer edits', async t => {
   fs.writeFileSync(path.join(skill, 'SKILL.md'), '---\nname: new-user-skill\ndescription: Test\n---\n');
   catalog.skills.push({name: 'new-user-skill', path: 'skills/new-user-skill'});
   catalog.skills = catalog.skills.filter(s => s.name !== 'planning');
-  fs.writeFileSync(file, JSON.stringify(catalog)); sync('0.2.0', ctx.root);
+  fs.writeFileSync(file, JSON.stringify(catalog)); sync(NEXT, ctx.root);
   ctx.output.length = 0; await run(['update'], ctx);
   assert.match(ctx.output.join('\n'), /\+ skills\/new-user-skill\/SKILL.md/);
   assert.match(ctx.output.join('\n'), /- skills\/planning\/SKILL.md/);
