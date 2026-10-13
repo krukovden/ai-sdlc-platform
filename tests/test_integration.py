@@ -20,7 +20,7 @@ from unittest import mock
 
 from support import ScriptTestCase, load_script
 from fakeboard import Crash, crash_and_resume
-from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, World,
+from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, VERDICT, World,
                           commit_push, design, git, integration_finding, lease, pbi,
                           phase3, run, shape, tags, write_blueprint)
 
@@ -719,6 +719,111 @@ class ReconcileTests(IntegrationTestCase):
         reconcile = phase3.states.Reconciler("ado-board.js", run=fake, out=out)
         self.assertIsNone(reconcile("design"))
         self.assertIn("401", out.getvalue())
+
+
+def attempts_since_handback(world, phase):
+    """Attempts for `phase` after the block a human then lifted.
+
+    The hand-off that ends a successful resume is not a new cycle: it must not
+    hide the attempts that resume just spent.
+    """
+    found = []
+    for comment in world.board.list_comments(FEATURE):
+        data = lease.read_event(comment.get("body") or "")
+        if not data:
+            continue
+        if data.get("kind") == lease.BLOCK:
+            found = []
+        elif data.get("kind") == "attempt" and data.get("phase") == phase:
+            found.append(dict(data, text=phase3.common.event_text(comment.get("body"))))
+    return found
+
+
+class ReviewFixTests(IntegrationTestCase):
+    """Attempt budgets renew when a human lifts the block; a cached bad answer still counts."""
+
+    def test_cached_malformed_witness_consumes_an_attempt_on_resume(self):
+        world = self.world()
+        bad = {"summary": "the modules agree", "findings": [{
+            "kind": "duplicate", "title": "Duplicate helper", "detail": "src/a.py:1",
+            "paths": ["src/a.py"],
+            "criteria": [{"text": "one helper", "witness": "grep helper src/a.py"}],
+        }]}
+
+        def plant_and_crash(world, worktree):
+            path = Path(worktree) / ".idp" / "integration-r1.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(bad), encoding="utf-8")
+            return None
+
+        world.integration = [plant_and_crash]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.integration = [[]]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        resumed = attempts_since_handback(world, "integration-r1")
+        self.assertTrue(resumed)
+        self.assertEqual(resumed[0].get("outcome"), "malformed")
+        self.assertIn("witness", resumed[0]["text"])
+
+    def test_unblocking_documenter_allows_corrected_session(self):
+        world = self.world()
+        world.documenter = lambda world, worktree: write_blueprint(
+            world, worktree, text=BLUEPRINT.replace("## Architecture", "## Wrong"))
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        sessions_before = len(world.sessions["documenter"])
+        self.assertEqual(sessions_before, 3)
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.documenter = write_blueprint
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(len(world.sessions["documenter"]), sessions_before + 1)
+        phase = next(a["phase"] for a in world.events(FEATURE, "attempt")
+                     if str(a.get("phase", "")).startswith("documenter-"))
+        self.assertEqual(len(attempts_since_handback(world, phase)), 0)
+
+    def test_documenter_attempts_survive_a_crash_until_a_human_unblocks(self):
+        world = self.world()
+        world.documenter = lambda world, worktree: write_blueprint(
+            world, worktree, text=BLUEPRINT.replace("## Architecture", "## Wrong"))
+
+        def first_attempt(board):
+            for comments in board.comments.values():
+                for comment in comments:
+                    data = lease.read_event(comment.get("body") or "")
+                    if data and data.get("kind") == "attempt" and \
+                            str(data.get("phase") or "").startswith("documenter-"):
+                        return True
+            return False
+
+        world.board.crash_when(first_attempt)
+        with self.assertRaises(Crash):
+            world.runner().run_feature(FEATURE)
+        self.assertTrue(world.board.fault_fired)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [a for a in world.events(FEATURE, "attempt")
+                    if str(a.get("phase", "")).startswith("documenter-")]
+        self.assertEqual([a["n"] for a in attempts], [1, 2, 3])
+
+    def test_unblocking_integration_and_verdict_renews_their_budgets(self):
+        world = self.world()
+        broken = [{"kind": "duplicate", "title": "t", "detail": "d", "paths": ["src/x.py"],
+                   "criteria": [{"text": "x", "witness": {"evidence": "looked"}}]}]
+        world.integration = [broken]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(len(world.events(FEATURE, "attempt", phase="integration-r1")), 3)
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.integration = [[]]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(len(attempts_since_handback(world, "integration-r1")), 0)
+
+        bug = self.world(route="bug", approve=False, plan=VERDICT_PLAN)
+        bug.verdict = "---\ntype: verdict\n---\n\nIt is broken.\n"
+        self.assertEqual(bug.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(len(bug.events(FEATURE, "attempt", phase="verdict")), 3)
+        bug.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        bug.verdict = VERDICT
+        self.assertEqual(bug.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertGreater(len(bug.sessions.get("verdict", [])), 3)
 
 
 if __name__ == "__main__":

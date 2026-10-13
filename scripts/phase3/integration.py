@@ -413,8 +413,24 @@ class Integration:
         comments = self.comments()
         return len(lease.events(comments, HANDED)) + len(lease.events(comments, lease.BLOCK))
 
-    def attempts(self, phase):
-        return len(lease.events(self.comments(), "attempt", phase=phase))
+    def attempts(self, phase, since_unblock=True):
+        """Attempts for `phase` in the current human cycle.
+
+        A crash resumes inside the same cycle, so the count is kept. A human
+        lifting `idp:blocked`, or handing the Feature back from QA, starts a
+        new cycle and a new budget of three. The displayed `n` resets; the
+        dedupe key does not, or a retry would no-op and the session would spin.
+        """
+        found = []
+        for comment in self.comments():
+            data = lease.read_event(comment.get("body"))
+            if not data:
+                continue
+            if since_unblock and data.get("kind") in (lease.BLOCK, HANDED):
+                found = []
+            elif data.get("kind") == "attempt" and data.get("phase") == phase:
+                found.append(data)
+        return len(found)
 
     # -- a session, with the runner's attempts around it ---------------------
 

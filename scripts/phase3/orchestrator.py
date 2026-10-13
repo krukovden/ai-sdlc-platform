@@ -1213,8 +1213,13 @@ class Development:
     # -- the Feature's counters and modifiers ---------------------------------
 
     def feature_attempt(self, phase, n, cause, reason):
+        # `n` is the count inside the current human cycle and resets when that
+        # cycle starts. The dedupe key is the all-time count, or the first
+        # attempt of a new cycle would find the old key and post nothing.
+        total = len(lease.events(self.board.list_comments(self.feature), ATTEMPT,
+                                 phase=phase)) + 1
         lease.post_event(self.board, self.feature, ATTEMPT,
-                         f"{ATTEMPT}:{phase}:{self.feature}:{n}",
+                         f"{ATTEMPT}:{phase}:{self.feature}:{total}",
                          text=f"{phase.capitalize()} attempt {n} of {MAX_ATTEMPTS} did not "
                               f"finish: {reason}",
                          phase=phase, n=n, cause=cause, outcome=cause, run=self.run_id)

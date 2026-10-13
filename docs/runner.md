@@ -319,6 +319,9 @@ the last place a duplicate is caught. The code is `scripts/phase3/integration.py
    number, its cycle and a verdict — `green`, `findings` or `blocked`. **At most two
    rounds of fixes** per cycle; the third failure sets `idp:blocked`, so a night run
    cannot loop. A human lifting the block, or a return from QA, starts a new cycle.
+   Documenter, integration and verdict attempts are three per that cycle: they
+   survive a crash and resume, and the lift grants three more. A witness that is
+   not an object is a malformed answer and consumes one of those attempts.
 
 The plan in git is the record of every amendment, and the board mirrors it: a run
 that died between the commit and the pin, or between the pin and the round's
