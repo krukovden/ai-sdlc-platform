@@ -24,6 +24,19 @@ Usage:
                          exactly one ADR on the Feature, and its bytes are the ones the
                          design-review comment states; exit 3 otherwise. Phase 3
                          starts only past this check
+    run.py --agent [--serve PHASE,...] [--run-id ID]
+                         loop until stopped: claim any card waiting for a phase this
+                         machine serves, run it, hand it off; gates are left waiting
+                         and every call made alone is a decision comment
+    run.py stop [--run-id ID]
+                         finish the task in flight, commit, write handoff.md, and
+                         release the run's claims as idp:paused:<run>
+    run.py takeover <card> [--claim-only]
+                         show the owner and its last heartbeat, ask, claim fenced on
+                         what you saw, then resume; never in agent mode
+    run.py decide --context ... --decision ... --rationale ... --alternative ...
+                  --load-bearing yes|no
+                         a session's record of a call it made with nobody to ask
 
 Phases served so far: 2 (design) and 3.1–3.2 (development: planning, then
 building — `scripts/phase3/`). A Feature that reaches a phase this runner does
@@ -74,6 +87,7 @@ board_cli = _load("idp_board", SCRIPT_DIR / "board.py")
 lease = _load("idp_lease", SCRIPT_DIR / "lease.py")
 executors = _load("idp_executors", SCRIPT_DIR / "executors" / "__init__.py", package=True)
 phase3 = _load("idp_phase3", SCRIPT_DIR / "phase3" / "__init__.py", package=True)
+agent_mode = _load("idp_agent_mode", SCRIPT_DIR / "agent_mode.py")
 state = board_cli.state
 tags = state.tags
 memory = board_cli.memory
@@ -311,6 +325,9 @@ class Runner:
         self.out = out or sys.stderr
         self.profile_hash = board_cli.profile_hash(self.profile)
         self.development = development or (lambda runner: phase3.Development(runner))
+        # Why this run must stop before its next session, or None: `run.py stop`
+        # or `idp:stop` on the card (scripts/agent_mode.py).
+        self.stopping = lambda card: None
 
     def say(self, text):
         print(text, file=self.out)
@@ -345,6 +362,10 @@ class Runner:
                          f"FIX: remove {tags.STOP} to let runs take it again")
                 return EXIT.REFUSED if not moved else EXIT.DONE
 
+            stop = self.stopping(feature)
+            if stop:
+                self.say(f"{feature}: stopping before its next phase — {stop}.")
+                return EXIT.DONE if moved else EXIT.REFUSED
             tag = tags.phase_of(self.board.read_card(feature).get("tags"))
             if tag == tags.DESIGN:
                 code = self.phase_design(feature)
@@ -407,6 +428,9 @@ class Runner:
                     return self.block(feature, f"design did not produce a valid ADR in "
                                                f"{MAX_ATTEMPTS} attempts; the last reason: "
                                                f"{feedback or 'no ADR came out'}")
+                stop = self.stopping(feature)
+                if stop:
+                    return self.pause(feature, stop)
                 code = self.design_session(feature, base, feedback)
                 last = self.executor.last or {}
                 if code == EXIT.DONE:
@@ -703,6 +727,8 @@ def cmd_run(args):
         ask = input
     runner = Runner(board, profile, executor, args.run_id or tags.current_run_id(),
                     repo=os.getcwd(), ask=ask)
+    runner.stopping = agent_mode.stop_signal(
+        board, agent_mode.Presence(runner.design.HOME, runner.run_id))
     try:
         code = runner.run_feature(args.feature)
     except RunnerError as exc:
@@ -746,7 +772,98 @@ def cmd_adr_check(args):
     sys.exit(EXIT.DONE)
 
 
-COMMANDS = ("run", "report", "reap", "adr-check")
+def worktrees_home(repo):
+    """Where this machine keeps the runner's worktrees for `repo`."""
+    return Path(load_design().HOME) / "worktrees" / Path(repo).resolve().name
+
+
+def project_cards(board, profile):
+    project = board_cli.project_id_from(profile, None)
+    return lambda: board.list_project(project)
+
+
+def cmd_agent(args):
+    profile, _, board = board_cli.open_board()
+    run_id = args.run_id or tags.current_run_id()
+    serve = [p.strip() for p in (args.serve or "").split(",") if p.strip()] or None
+    unknown = sorted(set(serve or ()) - set(agent_mode.PHASES))
+    if unknown:
+        fail(EXIT.REFUSED, f"agent mode serves no phase called {', '.join(unknown)}",
+             fix=f"pass --serve with any of {', '.join(agent_mode.PHASES)}")
+
+    def make_executor():
+        try:
+            return executors.select(profile.get("executors"))
+        except executors.ResolutionError as exc:
+            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+
+    def make_runner(executor, out):
+        return Runner(board, profile, executor, run_id, repo=os.getcwd(), out=out)
+
+    os.environ["IDP_AGENT_MODE"] = "1"
+    loop = agent_mode.AgentLoop(
+        board, profile, run_id, make_executor, make_runner, project_cards(board, profile),
+        agent_mode.Presence(load_design().HOME, run_id), executors, SCRIPT_DIR / "run.py",
+        serve=serve, out=sys.stderr, worktrees=worktrees_home(os.getcwd()).parent,
+        handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention)
+    sys.exit(loop.run())
+
+
+def cmd_stop(args):
+    profile, _, board = board_cli.open_board()
+    home = load_design().HOME
+    runs = [args.run_id] if args.run_id else (
+        agent_mode.Presence.live_runs(home) or [tags.current_run_id()])
+    sys.exit(agent_mode.stop(board, home, runs, project_cards(board, profile),
+                             worktrees_home(os.getcwd()).parent,
+                             handoff=phase3.common.handoff_module(),
+                             mention=phase3.gitops.mention))
+
+
+def cmd_takeover(args):
+    profile, _, board = board_cli.open_board()
+    run_id = args.run_id or tags.current_run_id()
+    interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
+    try:
+        result = agent_mode.takeover(board, args.card, run_id, input,
+                                     agent_mode=not interactive)
+    except agent_mode.AgentError as exc:
+        fail(exc.code, exc.message, fix=exc.fix)
+    if result["outcome"] not in ("written", "unchanged"):
+        sys.exit(EXIT.REFUSED)
+    children = [c["identifier"] for c in board.list_children(args.card)]
+    found = agent_mode.handoff_branches(lambda *a: git(os.getcwd(), *a), children)
+    print("It resumes from " + (", ".join(f"handoff.md on {b}" for b in found) if found
+                                else "git and the board: no PBI branch carries a handoff.md"))
+    if args.claim_only:
+        sys.exit(EXIT.DONE)
+    try:
+        executor = executors.select(profile.get("executors"))
+    except executors.ResolutionError as exc:
+        fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+    runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
+    runner.stopping = agent_mode.stop_signal(board, agent_mode.Presence(runner.design.HOME,
+                                                                        run_id))
+    try:
+        sys.exit(runner.run_feature(args.card))
+    except RunnerError as exc:
+        fail(exc.code, exc.message, fix=exc.fix)
+
+
+def cmd_decide(args):
+    target = os.environ.get("IDP_RESULT", "").strip()
+    worktree = Path(args.worktree) if args.worktree else (
+        Path(target).parent.parent if target else Path(os.getcwd()))
+    try:
+        entry = agent_mode.decision_entry(args.context, args.decision, args.rationale,
+                                          args.alternative, args.load_bearing == "yes",
+                                          args.sign_off)
+    except ValueError as exc:
+        fail(EXIT.REFUSED, str(exc), fix="give every one of the six fields a sentence")
+    print(agent_mode.write_decision(worktree, entry))
+
+
+COMMANDS = ("run", "report", "reap", "adr-check", "agent", "stop", "takeover", "decide")
 
 
 def build_parser():
@@ -778,11 +895,40 @@ def build_parser():
     p = sub.add_parser("adr-check", help="exactly one ADR, and it is the approved one")
     p.add_argument("feature")
     p.set_defaults(func=cmd_adr_check)
+
+    p = sub.add_parser("agent", help="loop until stopped (also `run.py --agent`)")
+    p.add_argument("--run-id", help="claim as this run; default IDP_RUN_ID, else this "
+                                    "user and machine")
+    p.add_argument("--serve", help="only these phases, comma-separated: "
+                                   + ", ".join(agent_mode.PHASES))
+    p.set_defaults(func=cmd_agent)
+
+    p = sub.add_parser("stop", help="finish the task in flight, hand off, pause the claims")
+    p.add_argument("--run-id", help="stop this run; default every live loop here, else "
+                                    "this user and machine")
+    p.set_defaults(func=cmd_stop)
+
+    p = sub.add_parser("takeover", help="claim a dead run's card after you confirm")
+    p.add_argument("card")
+    p.add_argument("--run-id", help="claim as this run")
+    p.add_argument("--claim-only", action="store_true", help="claim, and do not resume")
+    p.set_defaults(func=cmd_takeover)
+
+    p = sub.add_parser("decide", help="a session records a call it made alone")
+    for name in ("context", "decision", "rationale", "alternative"):
+        p.add_argument(f"--{name}", required=True)
+    p.add_argument("--load-bearing", choices=("yes", "no"), required=True,
+                   help="yes when two readings would touch different files or components")
+    p.add_argument("--sign-off", default="agent mode; for a human to review")
+    p.add_argument("--worktree", help="where to write it; default $IDP_RESULT's, else here")
+    p.set_defaults(func=cmd_decide)
     return parser
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--agent":
+        argv = ["agent", *argv[1:]]
     if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)

@@ -144,6 +144,9 @@ class FakeBoard(phases.PhaseMixin):
                 "parent": card["parent"], "labels": list(card["tags"]),
                 "kind": card["kind"]}
 
+    def list_project(self, project_id=None):
+        return [self.get_issue(c) for c in sorted(self.cards)]
+
     def list_children(self, identifier):
         return [self.get_issue(c["identifier"]) for c in self.cards.values()
                 if c["parent"] == str(identifier)]
