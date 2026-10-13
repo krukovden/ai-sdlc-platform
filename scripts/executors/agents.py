@@ -47,7 +47,11 @@ def launch_argv(choice, prompt):
         return ["codex", "exec", "--full-auto", "--skip-git-repo-check",
                 *_model("-m", model), prompt]
     if agent == "copilot":
-        return ["copilot", "-p", prompt, "--allow-all-tools", *_model("--model", model)]
+        # --allow-all-paths: the skill, its scripts and the runner live outside the
+        # worktree, and an unattended session has nobody to approve a path prompt —
+        # without it every read of SKILL.md is denied (the live ADO run, 2026-10-13).
+        return ["copilot", "-p", prompt, "--allow-all-tools", "--allow-all-paths",
+                *_model("--model", model)]
     if agent == "cursor":
         return ["cursor-agent", "-p", prompt, "--force", *_model("--model", model)]
     if agent == "opencode":

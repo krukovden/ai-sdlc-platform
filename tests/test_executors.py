@@ -364,6 +364,14 @@ class SubprocessBackendTests(ScriptTestCase):
         self.assertEqual(recorded["entries"], [])
         self.assertTrue(recorded["path"])
 
+    def test_copilot_may_read_the_skill_outside_its_worktree_unattended(self):
+        # An unattended Copilot session has nobody to approve a path prompt; without
+        # --allow-all-paths it cannot read SKILL.md or run the skill's scripts.
+        argv = executors.agents.launch_argv(executors.roles.Choice("copilot", "gpt-5.4"), "go")
+        self.assertIn("--allow-all-paths", argv)
+        self.assertIn("--allow-all-tools", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.4")
+
     def test_claude_is_launched_streaming_json_with_its_model(self):
         self.script(report=EXIT.DONE)
         self.run_design()
