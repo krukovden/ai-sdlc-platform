@@ -12,6 +12,7 @@ Pre-registration: docs/experiments/e5-orca-coordinator.md. Stdlib only.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -22,7 +23,18 @@ RESUME = sys.argv[2:6] if len(sys.argv) >= 6 else None
 OUT.mkdir(parents=True, exist_ok=True)
 TRACE = OUT / "trace.jsonl"
 STARTED = time.time()
+# E5_PLACEMENT=path:<existing worktree> places the worker in a worktree Orca already
+# knows (variant run); unset = new-child from an explicit base (the registered design).
+EXISTING = os.environ.get("E5_PLACEMENT")
+ONLY_A = bool(os.environ.get("E5_ONLY_A"))
+BASE = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 CHECK_MS = 240000
+
+
+def PLACEMENT(name):
+    if EXISTING:
+        return ["--worktree", EXISTING]
+    return ["--worktree", "new-child", "--base-branch", BASE, "--name", name]
 
 
 def orca(*argv, timeout=300):
@@ -73,28 +85,50 @@ def main():
     b_id = b_id or (b.get("task") or b)["id"]
     print("tasks", a_id, b_id)
 
-    settled = {}
+    settled, paths = {}, {}
+
+    def settled_path(name):
+        return paths[name]
 
     def start(task_id, name):
         receipt = need("worker-start", *orca(
             "orchestration", "worker-start", "--run", run, "--task", task_id,
-            "--worktree", "new-child", "--name", name, "--agent", "claude", "--model", "haiku",
-            "--setup", "skip", "--json", timeout=600))
+            *PLACEMENT(name), "--agent", "claude", "--model", "haiku",
+            *([] if EXISTING else ["--setup", "skip"]), "--json", timeout=600))
+        for effect in receipt.get("effects", []):
+            if effect.get("kind") == "worktree":
+                paths[name] = effect["id"].split("::", 1)[1]
         return receipt
 
+    pending_ack = []
+
     def wait_done(dispatch):
+        """A Delivery replays until acknowledged, so every batch is acked."""
         deadline = time.time() + CHECK_MS / 1000
         while time.time() < deadline:
-            doc = need("check", *orca("orchestration", "check", "--run", run, "--wait",
-                                      "--types", "worker_done,escalation,question",
-                                      "--timeout-ms", "60000", "--json", timeout=120))
-            text = json.dumps(doc)
-            if dispatch in text and "worker_done" in text:
-                return doc
+            argv = ["orchestration", "check", "--run", run, "--wait", "--types",
+                    "worker_done,escalation,question", "--timeout-ms", "60000", "--json"]
+            if pending_ack:
+                argv[2:2] = ["--ack", pending_ack.pop()]
+            doc = need("check", *orca(*argv, timeout=120))
+            if doc.get("deliveryId"):
+                pending_ack.append(doc["deliveryId"])
+            for message in doc.get("messages") or []:
+                if message.get("type") != "worker_done":
+                    continue
+                payload = json.loads(message.get("payload") or "{}")
+                if payload.get("dispatchId") == dispatch:
+                    print("worker_done", dispatch, payload.get("outcome"))
+                    return payload
         print("STOP: no worker_done for", dispatch)
         sys.exit(1)
 
-    for task_id, name in ((a_id, "e5-a"), (b_id, "e5-b")):
+    # --deps is honoured: B cannot start while A has not settled (no worker is made)
+    early = orca("orchestration", "worker-start", "--run", run, "--task", b_id,
+                 "--worktree", "current", "--agent", "claude", "--json")
+    print("B before A settled -> exit", early[0], (early[1] or {}).get("error", {}).get("code"))
+
+    for task_id, name in ((a_id, "e5-a"), (b_id, "e5-b"))[:1 if ONLY_A else 2]:
         if RESUME and task_id == a_id:
             dispatch = RESUME[3]
         else:
@@ -104,6 +138,13 @@ def main():
         need("worker-list", *orca("orchestration", "worker-list", "--run", run, "--json"))
         need("worker-release", *orca("orchestration", "worker-release", "--dispatch", dispatch,
                                      "--json"))
+        if EXISTING:
+            continue
+        path = settled_path(name)
+        head = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+        print(name, "worktree", path, "HEAD == requested base:", head == BASE)
+        orca("worktree", "rm", "--worktree", f"path:{path}", "--force", "--json")
 
     leftover = need("worker-list", *orca("orchestration", "worker-list", "--run", run,
                                          "--terminal-state", "reclaimable", "--json"))

@@ -94,6 +94,48 @@ Deviation from the stop rule (more than 2 workers): attempt 2's worker A plus
 the 2 of attempt 3 make 3 haiku sessions. The rule's purpose is cost; the cause
 was my own parse bug, not Orca.
 
-### Attempt 3 — one terminal, one Run, the full cycle
+### Attempt 3 — one terminal, one Run, the full cycle (probe bug: no ack)
 
-(filled in after the run)
+Worker A succeeded and `HEAD == requested base` held; worker B reported
+`failed` correctly (`worker-list`: `workerState: failed`, `outcome: failed`,
+`nextAction: release`). The probe then looped on A's message: **a Delivery
+replays until it is acknowledged** (`check --ack <deliveryId>`). My omission;
+the trace grew to 2.6 MB and was not kept. Cleaned up by hand.
+
+### Attempt 4 — the registered design, clean (PASS)
+
+Probe `tests/fixtures/orca/e5_probe.py`, started with
+`orca terminal create --command …`, trace `tests/fixtures/orca/e5-run/trace.jsonl`
+(raw argv, exit code and stdout of every verb), 25 s wall clock, Run
+`run_27fe0f77a05e`:
+
+| Pass rule | Observed |
+| -- | -- |
+| 1. every verb exits 0 and prints one JSON document | yes, 14 of 14 (the one non-zero exit is the deliberate negative test below) |
+| 2. `worker_done` matched by Dispatch id with the expected outcome | A `succeeded`, B `failed`; matched on `payload.dispatchId` / `payload.outcome` |
+| 3. `--deps` honoured | `worker-start` on B before A settled → exit 1, `error.code: task_not_startable`, `data.unmetDependencies: [A]`; no worker was created |
+| 4. release, then nothing reclaimable | both `released`, `processAction: closed_agent_terminal`; `worker-list --terminal-state reclaimable` → `workers: []`, `counts: {released: 2}` |
+| 5. worktrees removed | `orca worktree rm path:… --force` → `removed: true`; `git worktree list` shows none, no `e5-*` branch left |
+
+**Verdict: the hypothesis holds. A script with no model can run the whole
+cycle over `--json`.** Build the `orca` backend.
+
+### What the runs taught (each one changes the backend)
+
+| Finding | Evidence | Consequence |
+| -- | -- | -- |
+| Orca counts coordination depth from the caller; max is 1 | attempt 1: `nested_worker_depth_exceeded` | A runner started inside a dispatched worker cannot use the backend: fall through to `subprocess`. |
+| `worker-start` result is `result.{runId, taskId, dispatchId, state, stage, launch.effective, effects[]}`; the worktree and terminal are `effects[]` entries | `e5-run` | Read `dispatchId`, never `id`; worktree path from the `kind: worktree` effect. |
+| **`new-child` branches from `origin/main`, not from the current worktree's HEAD** | attempt 2: worker A's HEAD was `1c437be` = `origin/main`, the parent was at `90e2930` | Spec "Explicit bases": always pass `--base-branch <sha>`. With it, `HEAD == requested base` held for both workers in attempts 3 and 4. |
+| A Run belongs to the terminal that created it | attempt 2b: `check` → `consumer_fenced`; `check --terminal <other>` → "attested as … cannot act as …" | One executor = one process = one Run. A second process creates its own Run (`run-use` exists for an explicit takeover; not used). |
+| `run-create` re-binds the calling terminal | after attempt 1 my own terminal's `run-current` was the experiment Run | The backend creates its Run once per executor and always passes `--run`. |
+| A Delivery replays until acknowledged | attempt 3 | Every `check` carries `--ack` of the previous `deliveryId`. |
+| `worker-release` has no coordinator fence | attempt 2: released from a foreign shell | Cleanup of an orphan is always possible. |
+| `worker-release` does not remove the worktree | `git worktree list` after release | The backend removes worktrees it created (`orca worktree rm`), never ones it was given. |
+| Existing worktree placement works, but `--setup` is refused for it | variant `e5-variant-a-setup-refused`: `invalid_argument` "Creation and setup options apply only to new-child or new-top-level worktrees"; variant `e5-variant-existing-worktree`: `--worktree path:<abs>` without `--setup` → `succeeded`, 13 s | Use `path:<worktree>` for a worktree Orca already knows; `new-child` + `--base-branch` + `--setup skip` otherwise. |
+| Orca does not know a worktree made by plain `git worktree add` | `worktree show --worktree path:…` → `selector_not_found` | The runner's own `~/.idp/worktrees/…` cannot be a `path:` target. See the backend's placement rule. |
+
+Cost: 6 haiku sessions in total (attempt 2 A; attempt 3 A, B; attempt 4 A, B;
+the existing-worktree variant A) plus 1 that never launched. The stop rule's
+"more than 2 workers" was exceeded because of probe bugs (receipt key, ack), not
+Orca behaviour; each stop was acted on, none retried blindly.
