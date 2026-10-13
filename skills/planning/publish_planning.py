@@ -264,17 +264,15 @@ def publish(board, profile, session, plan, planning, remote="origin", base=None,
 def hand_on(board, session):
     """Move the feature out of planning — unless somebody already did.
 
-    Idempotency reaches this far too. `finish_phase` refuses to move a card that
-    is not in `In Planning`, which is correct for a first run and wrong for a
-    second, so the second asks first instead of tripping over a refusal that
-    means nothing went wrong.
+    Idempotency reaches this far too, and it is the board's to answer:
+    `finish_phase` is one fenced write that comes back `changed: False` when the
+    card is already where planning leaves it. This used to compare the card's
+    status with the target position itself, which broke the day a position
+    became a tag marker (IDE-147); only the board knows what a position is.
     """
-    issue = board.get_issue(session["feature"])
-    target = board.phase_status("planning", "next")
-    if (issue.get("status") or "").casefold() == target.casefold():
-        print(f"{session['feature']} is already in '{target}'", file=sys.stderr)
-        return
-    board.finish_phase(session["feature"], "planning")
+    result = board.finish_phase(session["feature"], "planning")
+    if not result.get("changed", True):
+        print(f"{session['feature']} is already where planning leaves it", file=sys.stderr)
 
 
 def main(argv=None):

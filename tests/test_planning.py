@@ -163,9 +163,12 @@ class StubBoard:
         return {"identifier": identifier, "status": self.PHASES[phase]["active"]}
 
     def finish_phase(self, identifier, phase, kind="next"):
-        self.transitions.append(("finish", identifier, phase))
-        self.issues[identifier]["status"] = self.PHASES[phase][kind]
-        return {"identifier": identifier, "status": self.PHASES[phase][kind]}
+        # Idempotent, as the real one is: a card already there is not moved.
+        target = self.PHASES[phase][kind]
+        changed = self.issues[identifier]["status"] != target
+        self.transitions.append(("finish", identifier, phase, changed))
+        self.issues[identifier]["status"] = target
+        return {"identifier": identifier, "status": target, "changed": changed}
 
 
 class FakeGit:
@@ -621,8 +624,8 @@ class IdempotencyTests(PublishingCase):
             self.publish(payload, board=board, git=git,
                          session=dict(self.session, state="VALIDATED"))
 
-        finishes = [t for t in board.transitions if t[0] == "finish"]
-        self.assertEqual(len(finishes), 1)
+        moves = [t for t in board.transitions if t[0] == "finish" and t[3]]
+        self.assertEqual(len(moves), 1)
         self.assertEqual(board.issues["IDE-82"]["status"], "Ready for Development")
 
     def test_a_dry_run_writes_nothing_at_all(self):
