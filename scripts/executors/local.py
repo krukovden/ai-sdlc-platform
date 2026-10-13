@@ -21,8 +21,11 @@ from . import EXIT, Executor, agents, clear_result, environment, read_result, re
 LIMITS = ("rate_limit", "overloaded")
 
 # What the agents without a stream print when the account is out of usage. Codex
-# and Copilot say it in prose; the words are matched, case-folded, anywhere in a
-# line. Experiment 4 of IDE-147 records the exact text each tool prints.
+# and Copilot say it in prose; the words are matched, case-folded and with typographic
+# apostrophes made plain, anywhere in a line. Experiment 4 of IDE-147 records the
+# exact text each tool prints; the one observed so far is Codex's TUI on 2026-10-12:
+# "You've hit your usage limit … try again at Oct 13th, 2026 12:12 AM".
+APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'"})
 LIMIT_TEXT = (
     ("you've hit your usage limit", "usage_limit"),
     ("you have hit your usage limit", "usage_limit"),
@@ -40,7 +43,7 @@ def limit_event(line):
     try:
         event = json.loads(line)
     except (TypeError, ValueError):
-        folded = str(line or "").casefold()
+        folded = str(line or "").translate(APOSTROPHES).casefold()
         for text, kind in LIMIT_TEXT:
             if text in folded:
                 return kind

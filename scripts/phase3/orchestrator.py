@@ -426,7 +426,11 @@ class Development:
             if not pending and not self.running:
                 return self.built(feature, work)
             by_key = {i["key"]: i for i in work}
-            ready = [i for i in pending if self.ready(i, by_key, status)]
+            # `run.py stop` or `idp:stop`: what runs finishes, nothing new starts.
+            stop = getattr(self.runner, "stopping", lambda card: None)(feature)
+            if stop and not self.running:
+                return self.stop_here(feature, work, stop)
+            ready = [] if stop else [i for i in pending if self.ready(i, by_key, status)]
             if not self.running and not ready:
                 return self.terminate(feature, work, status, by_key)
             for item in ready:
@@ -1218,6 +1222,39 @@ class Development:
         tags.release(self.board, self.feature, self.run_id)
         self.say(f"{self.feature}: blocked — {reason}")
         return EXIT.BLOCKED
+
+    def stop_here(self, feature, work, reason):
+        """Stopped with nothing running: hand off what this run holds, then pause it.
+
+        A PBI still held — its last session ended without a merge — gets the
+        mechanical handoff in its worktree (wip and handoff.md, pushed), then
+        `idp:paused:<run>`; the Feature is paused last. Any run continues it.
+        """
+        for item in work:
+            owner = tags.owner_of(item["labels"])
+            if not owner or tags.run_of(owner) != self.run_id:
+                continue
+            pbi = item["id"]
+            claim = self.claim_of(pbi)
+            path = self.home / f"{pbi}-g{claim['generation']}" if claim else None
+            note = "no worktree to hand off"
+            if path is not None and path.exists():
+                try:
+                    done = handoff_module().handoff(path, f"stopped: {reason}", pbi,
+                                                    mention=mention_of(pbi),
+                                                    feature_branch=self.feature_branch)
+                    note = f"handoff pushed at `{done['commit'][:12]}`"
+                except Exception as exc:                        # noqa: BLE001 - still pause
+                    note = f"the mechanical handoff failed: {exc}"
+            tags.pause(self.board, pbi, self.run_id)
+            generation = claim.get("generation") if claim else 0
+            lease.post_event(self.board, pbi, PAUSE, f"{PAUSE}:{pbi}:stop:g{generation}",
+                             text=f"Paused: {reason}; {note}. Any run may take this PBI now.",
+                             run=self.run_id, reason=flat(reason))
+        if self.journal is not None:
+            self.journal.add(f"Stopped: {reason}.")
+            self.journal.upload()
+        return self.pause_card(feature, f"stopped: {reason}")
 
     def pause_card(self, card, reason):
         tags.pause(self.board, card, self.run_id)

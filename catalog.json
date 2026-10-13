@@ -10,5 +10,10 @@
     {"name": "establish-project", "path": "skills/establish-project"},
     {"name": "platform-freshness", "path": "skills/platform-freshness"}
   ],
-  "agents": []
+  "agents": [],
+  "hooks": [
+    {"name": "platform-freshness", "path": "hooks/platform-freshness.json"},
+    {"name": "cliff-handoff", "path": "hooks/cliff-handoff.json"},
+    {"name": "context-watch", "path": "hooks/context-watch.json"}
+  ]
 }

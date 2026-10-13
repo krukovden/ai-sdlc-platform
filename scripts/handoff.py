@@ -16,7 +16,8 @@ What it does, in order:
    out. Commits `wip(handoff): <reason>` with the work item mention and pushes.
 2. Writes a mechanical `handoff.md` — the branch, the card, the last commit, the
    files left uncommitted, the reason, the model's last message if there was
-   one — commits and pushes it.
+   one — commits and pushes it. A handoff.md the model wrote itself (layer 1) is
+   kept, with the mechanical facts under it.
 3. With `--pause`, swaps `idp:owner:<run>` for `idp:paused:<run>` on the card in
    one fenced write, so another machine can take it at once. That needs a board
    credential, so only the runner does it; a hook inside a model session holds
@@ -38,6 +39,7 @@ import argparse
 import fnmatch
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +62,14 @@ EXIT = _sibling("exit_codes", "idp_exit_codes")
 tags = _sibling("tags", "idp_tags")
 
 HANDOFF_FILE = "handoff.md"
+MECHANICAL = "<!-- idp:mechanical-handoff -->"
+SCRIPT_HEADER = "# Handoff\n\nWritten by a script"
+SCRATCH = ".idp/"
+DECISIONS_GLOB = "decisions.jsonl*"
+DECISIONS_HEADING = "## Decisions not yet on the board"
+PAUSE_MARK = "idp:pause-request"
+PAUSE_REQUEST = re.compile(r"idp:pause-request\s+(\{[^{}]*\})")
+DECISIONS_BLOCK = re.compile(re.escape(DECISIONS_HEADING) + r".*?```jsonl\n(.*?)```", re.S)
 MAX_BYTES = 5 * 1024 * 1024
 PROTECTED = ("main", "master")
 BRANCH_PREFIX = "pbi/"
@@ -128,7 +138,9 @@ def select(worktree, entries):
     """(paths to stage, [(path, why it was left out)])."""
     staged, left_out = [], []
     for status, path in entries:
-        if path == HANDOFF_FILE:
+        if path == HANDOFF_FILE or path.startswith(SCRATCH):
+            # `.idp/` is the runner's scratch space; what in it must survive — the
+            # session's unposted decisions — travels inside handoff.md instead.
             continue
         full = Path(worktree) / path
         if is_secret(path):
@@ -140,7 +152,49 @@ def select(worktree, entries):
     return staged, left_out
 
 
-def render(branch, card, reason, last_commit, left_out, last_message):
+def pending_decisions(worktree):
+    """The decisions `run.py decide` recorded and nobody has posted yet, as raw lines."""
+    lines = []
+    scratch = Path(worktree) / SCRATCH
+    for path in sorted(scratch.glob(DECISIONS_GLOB)) if scratch.exists() else []:
+        lines += [line for line in path.read_text(encoding="utf-8").splitlines()
+                  if line.strip()]
+    return lines
+
+
+def pause_marker(request):
+    encoded = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return [f"<!-- {PAUSE_MARK} {encoded} -->", f"`{PAUSE_MARK} {encoded}`"]
+
+
+def read_pause_request(text):
+    """The pause request a handoff.md carries, or None. Either rendering counts."""
+    for match in PAUSE_REQUEST.finditer(text or ""):
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and data.get("card"):
+            return data
+    return None
+
+
+def read_decisions(text):
+    """The decisions a handoff.md carries for the next run to post."""
+    match = DECISIONS_BLOCK.search(text or "")
+    found = []
+    for line in (match.group(1).splitlines() if match else []):
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            found.append(data)
+    return found
+
+
+def render(branch, card, reason, last_commit, left_out, last_message, decisions=(),
+           pause_request=None):
     lines = ["# Handoff", "",
              "Written by a script, not by the model: the session ended before it could "
              "write its own. Continue from the branch and the card.", "",
@@ -155,12 +209,43 @@ def render(branch, card, reason, last_commit, left_out, last_message):
         lines.append("Nothing: every change was committed in the `wip(handoff)` commit.")
     lines += ["", "## The model's last message", "",
               (last_message or "").strip() or "None was recorded.", ""]
+    if decisions:
+        lines += [DECISIONS_HEADING, "",
+                  "Calls the session made alone in agent mode (`run.py decide`). The next "
+                  "run posts each one on the Feature; posting twice is once.", "",
+                  "```jsonl", *decisions, "```", ""]
+    if pause_request:
+        lines += ["## Pause request", "",
+                  f"Run `{pause_request.get('run') or 'the owner'}` could not pause "
+                  f"{pause_request['card']} itself. The next runner or `run.py reap` pauses "
+                  "it at once, while this handoff is still the branch's last commit.", "",
+                  *pause_marker(pause_request), ""]
     return "\n".join(lines)
 
 
+def compose(existing, text):
+    """The handoff.md to write: ours, under what the model wrote if it wrote one.
+
+    Layer 1 is the model writing handoff.md while it still can, and that is the
+    richer record; a script that overwrote it would destroy the best evidence
+    of where the session stopped. So a model's file is kept and the mechanical
+    facts go under a marker — replaced there on a second run, never appended twice.
+    """
+    if not existing or existing.startswith(SCRIPT_HEADER):
+        return text
+    model = existing.split(MECHANICAL, 1)[0].rstrip()
+    ours = text.replace("# Handoff", "## Mechanical handoff", 1)
+    return f"{model}\n\n{MECHANICAL}\n\n{ours}"
+
+
 def handoff(worktree, reason, card, mention=None, last_message=None, remote="origin",
-            feature_branch=None):
-    """Steps 1 and 2: the work and a mechanical handoff.md, committed and pushed."""
+            feature_branch=None, pause_request=None):
+    """Steps 1 and 2: the work and a mechanical handoff.md, committed and pushed.
+
+    `pause_request` — `{run, card, reason}` — is step 3 for a caller with no
+    board credential: written into handoff.md, it asks whoever reads the branch
+    next to make the owner-to-paused swap, without waiting out the lease.
+    """
     worktree = Path(worktree)
     branch = current_branch(worktree)
     protected = set(PROTECTED) | ({feature_branch} if feature_branch else set())
@@ -183,8 +268,10 @@ def handoff(worktree, reason, card, mention=None, last_message=None, remote="ori
     sha = git(worktree, "rev-parse", "HEAD").strip()
     subject = git(worktree, "log", "-1", "--format=%s").strip()
     text = render(branch, mention, reason, {"sha": sha, "subject": subject}, left_out,
-                  last_message)
+                  last_message, decisions=pending_decisions(worktree),
+                  pause_request=pause_request)
     target = worktree / HANDOFF_FILE
+    text = compose(target.read_text(encoding="utf-8") if target.exists() else None, text)
     if not target.exists() or target.read_text(encoding="utf-8") != text:
         target.write_text(text, encoding="utf-8")
     git(worktree, "add", "--", HANDOFF_FILE)

@@ -1,0 +1,20 @@
+{
+  "name": "cliff-handoff",
+  "description": "Handoff layer 2 (IDE-147): when a session ends on an API error, commit the work in progress and a mechanical handoff.md on the PBI branch, push both, then pause the card: itself when this user's board credential opens the board, otherwise through a pause request in handoff.md that the next runner pass or run.py reap honours at once. No model. Best-effort and unverified until experiment 4 (docs/experiments/e4-cliff-hooks.md) runs; layer 3 in run.py is the guarantee.",
+  "events": {
+    "claude": ["StopFailure"],
+    "copilot": ["errorOccurred", "sessionEnd"]
+  },
+  "script": "scripts/hooks/cliff_handoff.py",
+  "runtime": "python3",
+  "registration": {
+    "claude": "hooks/hooks.json",
+    "copilot": "hooks/copilot-hooks.json"
+  },
+  "platforms": [
+    "claude",
+    "copilot"
+  ],
+  "timeoutSec": 120,
+  "composition": "Copilot gets errorOccurred and sessionEnd only, never a SessionStart hook: a second SessionStart context hook can make Copilot drop both messages. The Copilot file is not registered by a plugin; copy it to ~/.copilot/hooks/ with IDP_PLATFORM_ROOT set, or print one with absolute paths: cliff_handoff.py --print-config copilot."
+}

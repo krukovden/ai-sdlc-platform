@@ -1,0 +1,14 @@
+{
+  "name": "context-watch",
+  "description": "Handoff layer 1 (IDE-147): the status line records context and five-hour usage per session; at 90% a PostToolUse hook tells the model, once per session, to finish the task in flight, commit, write handoff.md, push and report code 4. Advisory: it depends on the model obeying.",
+  "event": "PostToolUse",
+  "script": "scripts/hooks/context_watch.py",
+  "statusLine": "scripts/hooks/statusline.py",
+  "runtime": "python3",
+  "registration": "hooks/hooks.json",
+  "platforms": [
+    "claude"
+  ],
+  "timeoutSec": 10,
+  "composition": "A plugin cannot set a status line. Install it with `python3 scripts/hooks/statusline.py --install`, which wraps the status line already configured (Orca's, on this machine) instead of replacing it, prints what it wrapped, and is undone by --uninstall. Without the status line the hook has no numbers and stays silent."
+}
