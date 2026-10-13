@@ -24,6 +24,8 @@ is worth nothing.
 """
 
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -81,6 +83,16 @@ def validate(payload, schema, path="$"):
     message, and that person has less context than the validator did.
     """
     problems = []
+    if "oneOf" in schema:
+        matches = sum(not validate(payload, option, path) for option in schema["oneOf"])
+        if matches != 1:
+            problems.append(f"{path}: must match exactly one witness rung")
+        return problems
+    if schema.get("type") == "integer" and isinstance(payload, bool):
+        return [f"{path}: expected integer, got boolean"]
+    if isinstance(payload, (int, float)) and "minimum" in schema:
+        if payload < schema["minimum"]:
+            problems.append(f"{path}: must be at least {schema['minimum']}")
 
     # Null against a nullable schema is a complete answer, not a value to
     # inspect further: minLength and minItems have nothing to measure.
@@ -141,7 +153,8 @@ def validate(payload, schema, path="$"):
 # The schemas a provider is asked to enforce, as opposed to the ones this
 # platform enforces on its own artifacts. Only these are held to the rules below.
 PROVIDER_SCHEMAS = ("reviewer.schema.json", "practice.schema.json",
-                    "alternatives.schema.json", "challenge.schema.json")
+                    "alternatives.schema.json", "challenge.schema.json",
+                    "plan-coverage.schema.json")
 
 
 def strict_output_problems(schema, path="$"):
@@ -211,6 +224,24 @@ def load_providers(path=None):
     return json.loads(candidate.read_text(encoding="utf-8"))
 
 
+BOARD_CREDENTIAL = re.compile(
+    r"(^LINEAR_|^AZURE_DEVOPS_|^ADO_|_PAT$|^PAT$|^SYSTEM_ACCESSTOKEN$|"
+    r"(TOKEN|SECRET|PASSWORD)$)", re.IGNORECASE)
+# Keys a model CLI needs to answer at all; they are not board credentials.
+MODEL_KEYS = re.compile(r"^(OPENAI|ANTHROPIC|GEMINI|GOOGLE|CODEX|CLAUDE)_", re.IGNORECASE)
+
+
+def provider_environment(environ=None):
+    """The environment a model subprocess gets: ours, minus every board credential.
+
+    A reviewer sees a prompt built from artifacts; it has no business holding
+    the key that can write to the board.
+    """
+    source = os.environ if environ is None else environ
+    return {name: value for name, value in source.items()
+            if MODEL_KEYS.match(name) or not BOARD_CREDENTIAL.search(name)}
+
+
 def run_provider(spec, prompt, schema_name, timeout=300):
     """Run the configured command and hand back its stdout.
 
@@ -222,7 +253,8 @@ def run_provider(spec, prompt, schema_name, timeout=300):
                for part in spec["command"]]
     try:
         result = subprocess.run(command, input=prompt, capture_output=True,
-                                text=True, timeout=timeout)
+                                text=True, timeout=timeout,
+                                env=provider_environment())
     except FileNotFoundError:
         raise ReviewerError(f"provider '{spec.get('name')}' is not installed")
     except subprocess.TimeoutExpired:
@@ -299,6 +331,12 @@ def build_prompt(package, lenses, kind="review", writing=None):
         # than by a person on every artifact (IDE-140).
         writing,
         "Apply each of these lenses: " + ", ".join(lenses) + ".",
+        "A criterion must be falsifiable and express one observable outcome. "
+        "If either of two incompatible outcomes is correct, report a defect. "
+        "Constraints must state what is absent as well as present; inspect "
+        "observability, quantified success, and reversibility. "
+        "Do not embed verification methods in AC prose. All-must-have priorities "
+        "are a warning sign to investigate, not an automatic rejection.",
         "Every resolution must carry a confidence of evidence-backed or "
         "model-inference. Only evidence-backed answers close anything without "
         "a human seeing them; say model-inference when you are reasoning.",

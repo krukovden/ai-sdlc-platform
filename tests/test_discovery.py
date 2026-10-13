@@ -80,7 +80,13 @@ class DiscoveryTestCase(ScriptTestCase):
                     [{"id": "FR-1", "text": "поиск без сети", "priority": "must"}])
         self.answer("acceptance_criteria",
                     [{"id": "AC-1", "given": "нет сети", "when": "ищет",
-                      "then": "ответ за 300 мс", "covers": ["FR-1"]}])
+                      "then": "ответ за 300 мс", "covers": ["FR-1"]},
+                     {"id": "AC-2", "case": "error", "given": "index missing",
+                      "when": "searching", "then": "shows unavailable", "covers": ["FR-1"]}])
+
+        for slot in ("observability", "security", "migration", "cost", "performance"):
+            self.run_cli("answer", "--slot", slot, "--source", "reviewer", "--dismiss",
+                         "--reason", "No additional contract in this fixture")
 
     def package(self, slug="offline"):
         return json.loads((discovery.SESSIONS / slug / "package.json")
@@ -128,7 +134,9 @@ class T1Reproducibility(DiscoveryTestCase):
                  [{"id": "FR-1", "text": "поиск без сети", "priority": "must"}], "po"),
                 ("acceptance_criteria",
                  [{"id": "AC-1", "given": "нет сети", "when": "ищет",
-                   "then": "ответ за 300 мс", "covers": ["FR-1"]}], "po")):
+                   "then": "ответ за 300 мс", "covers": ["FR-1"]},
+                     {"id": "AC-2", "case": "error", "given": "index missing",
+                      "when": "searching", "then": "shows unavailable", "covers": ["FR-1"]}], "po")):
             text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
             self.run_cli("answer", "--slot", slot, "--value", text, "--source", source)
 

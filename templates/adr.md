@@ -1,6 +1,7 @@
 ---
 type: adr
 status: proposed
+scope: medium
 route: feature
 standard: "1.0"
 cid: <the same correlation id the feature carries>
@@ -13,8 +14,9 @@ parent: IDE-0
 
 ## What we build
 
-<Implementation, not product behaviour: the structure, the components, the contracts, the order of
-calls. Free subsections and diagrams are allowed.>
+<Architecture: components, boundaries, contracts and tradeoffs. Do not prescribe method names,
+call order or implementation steps. Flag overloaded detail, never the absence of task-level detail.
+For each decision name what the rejected option breaks, and the cost of reversing the choice.>
 
 ## What proves it
 

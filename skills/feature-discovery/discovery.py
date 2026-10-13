@@ -65,10 +65,13 @@ MATERIAL_SLOTS = [
     "functional_requirements", "non_functional_requirements",
     "constraints", "assumptions", "dependencies",
     "acceptance_criteria", "success_metrics",
+    "observability", "security", "migration", "cost", "performance",
 ]
 
 LENSES = ["edge-cases", "failure-modes", "non-functional", "data-and-migration",
-          "permissions-and-security", "operations-and-rollout", "contradictions"]
+          "permissions-and-security", "operations-and-rollout", "contradictions",
+          "falsifiability", "unambiguous-outcomes", "explicit-absence",
+          "observability", "quantified-success", "reversibility"]
 
 DEFAULT_LIMITS = {"max_gap_rounds": 5, "dry_rounds_to_stop": 2, "max_po_questions": 25}
 
@@ -391,6 +394,12 @@ def validate(package, state):
     if not material.get("acceptance_criteria"):
         problems.append("no acceptance criteria")
 
+    criteria = material.get("acceptance_criteria", [])
+    if len(criteria) < 2:
+        problems.append("at least 2 acceptance criteria are required")
+    if not any(c.get("case") in ("error", "edge") for c in criteria):
+        problems.append("at least 1 acceptance criterion must declare case: error or edge")
+
     requirement_ids = {r.get("id") for r in material.get("functional_requirements", [])}
     requirement_ids |= {r.get("id") for r in material.get("non_functional_requirements", [])}
     for criterion in material.get("acceptance_criteria", []):
@@ -413,6 +422,11 @@ def validate(package, state):
     for question in package.get("open_questions", []):
         if not question.get("risk"):
             problems.append(f"open question {question.get('id')} carries no risk")
+
+    for slot, definition in state.get("slots", {}).items():
+        if (definition.get("disposable") and not slot_is_closed(package, slot)
+                and not slot_is_dismissed(state, slot)):
+            problems.append(f"checklist '{slot}' needs addressed or n/a with a reason")
 
     # §6.5 criterion 1 — mechanical. Silence is not coverage.
     for slot in state.get("required_slots", []):
@@ -456,6 +470,7 @@ def cmd_init(args):
 
     state = {
         "slug": slug,
+        "mode": args.mode,
         "state": "INIT",
         "registry_version": registry["registry_version"],
         "slot_order": order,
@@ -483,6 +498,8 @@ def cmd_init(args):
     transition(state, "INTERVIEWING")
 
     package = new_package(slug, correlation_id(slug, at), state["project"])
+    apply_interview_budget(state, package)
+    refresh_open_list(state, package)
     save_package(slug, package)
     save_state(state)
 
@@ -513,18 +530,61 @@ def load_profile(path):
         fail(6, f"{candidate} is not valid JSON: {exc}")
 
 
+def refresh_open_list(state, package):
+    """Rebuild disposable coverage after each answer; never retain a stale checklist."""
+    state["open_slots"] = [slot for slot in state["slot_order"]
+                           if slot not in DERIVED_SLOTS and slot != "evidence"
+                           and not slot_is_closed(package, slot)
+                           and not slot_is_dismissed(state, slot)]
+    state["checklist"] = {
+        slot: ("addressed" if slot_is_closed(package, slot) else
+               "n/a: " + state["dismissed"][slot]["reason"]
+               if slot_is_dismissed(state, slot) else "open")
+        for slot, definition in state["slots"].items()
+        if definition.get("disposable")}
+
+
+def apply_interview_budget(state, package):
+    """Defaults are explicit assumptions, never fabricated PO decisions or non-goals."""
+    if state.get("state") != "INTERVIEWING":
+        return False
+    mode = state.get("mode", "full")
+    limit = state.get("limits", DEFAULT_LIMITS)["max_po_questions"]
+    if mode == "short":
+        limit = min(limit, 3)
+    exhausted = state.get("po_questions_asked", 0) >= limit
+    if mode not in ("assumptions", "skip") and not exhausted:
+        return False
+    reason = ("question budget reached" if exhausted else mode + " interview mode")
+    for slot in state["slot_order"]:
+        if slot in DERIVED_SLOTS or slot == "evidence":
+            continue
+        if slot_is_closed(package, slot) or slot_is_dismissed(state, slot):
+            continue
+        default = state["slots"][slot].get("default", "unexamined; no commitment assumed")
+        state.setdefault("dismissed", {})[slot] = {
+            "reason": f"{reason}; stated default: {default}", "at": now()}
+        package["material"]["assumptions"].append({
+            "text": f"{slot}: {default} ({reason})", "validated": False})
+    state["interview_gate"] = reason
+    return True
+
+
 def decide_next(state, package):
     """What happens next, and who does it. Never a guess.
 
     Returns the record printed by `next`. The host agent obeys it; it does not
     choose. That is the determinism boundary in one function.
     """
+    apply_interview_budget(state, package)
+    refresh_open_list(state, package)
     closed = [s for s in state["slot_order"] if slot_is_closed(package, s)]
     coverage = {"closed": len(closed),
                 "deferred": len(state.get("dismissed", {})),
                 "total": len(state["slot_order"])}
     base = {"state": state["state"], "coverage": coverage,
-            "po_questions_asked": state["po_questions_asked"]}
+            "po_questions_asked": state["po_questions_asked"],
+            "open_slots": state["open_slots"], "checklist": state["checklist"]}
 
     if state["state"] == "PUBLISHED":
         return {**base, "action": "done"}
@@ -539,7 +599,11 @@ def decide_next(state, package):
     # for research once the *required* slots are closed or deferred; optional
     # ones are the reviewer's to fill, which is what their closable_by says.
     # Letting them block would mean the loop never reaches a review at all.
-    for slot_id in state["slot_order"]:
+    interview_order = state["slot_order"]
+    if state.get("mode") == "short":
+        interview_order = sorted(interview_order,
+                                 key=lambda s: -state["slots"][s].get("uncertainty", 0))
+    for slot_id in interview_order:
         definition = state["slots"][slot_id]
         if definition.get("class") == "derived" or slot_id in DERIVED_SLOTS:
             continue
@@ -587,6 +651,8 @@ def cmd_next(args):
     state = load_state(args.slug)
     package = load_package(args.slug)
     answer = decide_next(state, package)
+    save_state(state)
+    save_package(args.slug, package)
     if args.json:
         print(canonical_json(answer))
     else:
@@ -636,7 +702,12 @@ def cmd_answer(args):
                     "Silence is not coverage.")
         state.setdefault("dismissed", {})[slot] = {"reason": args.reason, "at": now()}
         journal(args.slug, {"event": "dismiss", "slot": slot, "reason": args.reason})
+        if args.source == "po":
+            state["po_questions_asked"] += 1
+        apply_interview_budget(state, package)
+        refresh_open_list(state, package)
         save_state(state)
+        save_package(args.slug, package)
         print(f"{slot}: dismissed on the record")
         return
 
@@ -670,6 +741,8 @@ def cmd_answer(args):
 
     journal(args.slug, {"event": "answer", "slot": slot, "source": args.source})
     transition(state, "INTERVIEWING")
+    apply_interview_budget(state, package)
+    refresh_open_list(state, package)
     save_state(state)
     save_package(args.slug, package)
     print(f"{slot}: recorded from {args.source}")
@@ -1185,6 +1258,8 @@ def build_parser():
     p = sub.add_parser("init", help="start a session from a raw idea")
     p.add_argument("--slug", help="name the session; derived from the idea if omitted")
     p.add_argument("--idea-file", required=True)
+    p.add_argument("--mode", choices=("full", "short", "assumptions", "skip"),
+                   default="full")
     p.add_argument("--profile")
     p.add_argument("--registry")
     p.add_argument("--at", help="fix the timestamp, for reproducible runs")

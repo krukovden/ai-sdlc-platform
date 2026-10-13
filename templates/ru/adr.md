@@ -1,6 +1,7 @@
 ---
 type: adr
 status: proposed
+scope: medium
 route: feature
 standard: "1.0"
 cid: <тот же идентификатор корреляции, что у фичи>

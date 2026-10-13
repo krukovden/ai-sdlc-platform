@@ -176,6 +176,10 @@ def publish(board, profile, session, plan, planning, remote="origin", base=None,
         fail(6, "the profile has no project_id; the PBIs have nowhere to go")
 
     planning.check_adr_unchanged(board, profile, session)
+    try:
+        planning.require_coverage(session, plan, planning.load_adr(session))
+    except planning.PlanError as exc:
+        fail(exc.code, exc.message)
 
     by_key = {p["key"]: p for p in plan["pbis"]}
     order = planning.topological(planning.build_graph(plan["pbis"]))

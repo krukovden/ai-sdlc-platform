@@ -15,71 +15,301 @@
     "answers for free."
   ],
   "slots": [
-    {"id": "problem", "class": "product_decision", "depends_on": [],
-     "required": true, "closable_by": ["po"],
-     "closes_when": "the problem and whose it is are stated without naming a solution"},
-
-    {"id": "outcome", "class": "product_decision", "depends_on": ["problem"],
-     "required": true, "closable_by": ["po"],
-     "closes_when": "the difference in the world after this ships is stated"},
-
-    {"id": "users", "class": "fact", "depends_on": ["problem"],
-     "required": true, "closable_by": ["source", "reviewer", "po"],
-     "lookup_first": ["project_documents", "project_memory"],
-     "closes_when": "the people affected are named, not described as 'users'"},
-
-    {"id": "scope", "class": "product_decision", "depends_on": ["problem", "outcome"],
-     "required": true, "closable_by": ["po"],
-     "closes_when": "what is being built is stated as product behaviour"},
-
-    {"id": "non_goals", "class": "product_decision", "depends_on": ["scope"],
-     "required": true, "closable_by": ["po"],
-     "closes_when": "what is deliberately not being done is listed",
-     "_why_required": "An empty non-goals list is the single most common discovery defect. It is rejected, never defaulted."},
-
-    {"id": "functional_requirements", "class": "product_decision", "depends_on": ["scope"],
-     "required": true, "closable_by": ["po", "reviewer"],
-     "closes_when": "at least one FR-n exists and each is a statement about behaviour"},
-
-    {"id": "non_functional_requirements", "class": "recommendation",
-     "depends_on": ["functional_requirements"], "required": false,
-     "closable_by": ["reviewer", "po"],
-     "lookup_first": ["project_documents", "dependency_manifest"],
-     "closes_when": "stated with numbers, or dismissed on the record"},
-
-    {"id": "constraints", "class": "fact", "depends_on": ["scope"],
-     "required": false, "closable_by": ["source", "reviewer"],
-     "lookup_first": ["dependency_manifest", "project_documents", "git_log"],
-     "closes_when": "the technical and organisational limits are known"},
-
-    {"id": "assumptions", "class": "ambiguity", "depends_on": ["scope"],
-     "required": false, "closable_by": ["reviewer", "po"],
-     "closes_when": "each assumption is marked validated with evidence, or left explicit"},
-
-    {"id": "dependencies", "class": "fact", "depends_on": ["functional_requirements"],
-     "required": false, "closable_by": ["source", "reviewer"],
-     "lookup_first": ["dependency_manifest", "repository", "project_memory"],
-     "closes_when": "what this needs from elsewhere is known"},
-
-    {"id": "acceptance_criteria", "class": "product_decision",
-     "depends_on": ["functional_requirements"], "required": true,
-     "closable_by": ["po", "reviewer"],
-     "closes_when": "someone could write a test from each one without asking what was meant"},
-
-    {"id": "success_metrics", "class": "product_decision", "depends_on": ["outcome"],
-     "required": false, "closable_by": ["po"],
-     "closes_when": "a metric, its baseline and its target are stated"},
-
-    {"id": "evidence", "class": "fact", "depends_on": [],
-     "required": false, "closable_by": ["source"], "derived": false,
-     "closes_when": "never asked as a question; filled by the evidence command"},
-
-    {"id": "decision_trace", "class": "derived", "depends_on": [],
-     "required": false, "closable_by": ["script"],
-     "closes_when": "written by the script from Product Owner answers only"},
-
-    {"id": "open_questions", "class": "derived", "depends_on": [],
-     "required": false, "closable_by": ["script"],
-     "closes_when": "written by the script from what remains unresolved"}
+    {
+      "id": "problem",
+      "class": "product_decision",
+      "depends_on": [],
+      "required": true,
+      "closable_by": [
+        "po"
+      ],
+      "closes_when": "the problem and whose it is are stated without naming a solution",
+      "uncertainty": 100
+    },
+    {
+      "id": "outcome",
+      "class": "product_decision",
+      "depends_on": [
+        "problem"
+      ],
+      "required": true,
+      "closable_by": [
+        "po"
+      ],
+      "closes_when": "the difference in the world after this ships is stated",
+      "uncertainty": 90
+    },
+    {
+      "id": "users",
+      "class": "fact",
+      "depends_on": [
+        "problem"
+      ],
+      "required": true,
+      "closable_by": [
+        "source",
+        "reviewer",
+        "po"
+      ],
+      "lookup_first": [
+        "project_documents",
+        "project_memory"
+      ],
+      "closes_when": "the people affected are named, not described as 'users'",
+      "uncertainty": 0
+    },
+    {
+      "id": "scope",
+      "class": "product_decision",
+      "depends_on": [
+        "problem",
+        "outcome"
+      ],
+      "required": true,
+      "closable_by": [
+        "po"
+      ],
+      "closes_when": "what is being built is stated as product behaviour",
+      "uncertainty": 80
+    },
+    {
+      "id": "non_goals",
+      "class": "product_decision",
+      "depends_on": [
+        "scope"
+      ],
+      "required": true,
+      "closable_by": [
+        "po"
+      ],
+      "closes_when": "what is deliberately not being done is listed",
+      "_why_required": "An empty non-goals list is the single most common discovery defect. It is rejected, never defaulted.",
+      "uncertainty": 0
+    },
+    {
+      "id": "functional_requirements",
+      "class": "product_decision",
+      "depends_on": [
+        "scope"
+      ],
+      "required": true,
+      "closable_by": [
+        "po",
+        "reviewer"
+      ],
+      "closes_when": "at least one FR-n exists and each is a statement about behaviour",
+      "uncertainty": 0
+    },
+    {
+      "id": "non_functional_requirements",
+      "class": "recommendation",
+      "depends_on": [
+        "functional_requirements"
+      ],
+      "required": false,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "lookup_first": [
+        "project_documents",
+        "dependency_manifest"
+      ],
+      "closes_when": "stated with numbers, or dismissed on the record",
+      "uncertainty": 0
+    },
+    {
+      "id": "constraints",
+      "class": "fact",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "closable_by": [
+        "source",
+        "reviewer"
+      ],
+      "lookup_first": [
+        "dependency_manifest",
+        "project_documents",
+        "git_log"
+      ],
+      "closes_when": "the technical and organisational limits are known",
+      "uncertainty": 0
+    },
+    {
+      "id": "assumptions",
+      "class": "ambiguity",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "closes_when": "each assumption is marked validated with evidence, or left explicit",
+      "uncertainty": 0
+    },
+    {
+      "id": "dependencies",
+      "class": "fact",
+      "depends_on": [
+        "functional_requirements"
+      ],
+      "required": false,
+      "closable_by": [
+        "source",
+        "reviewer"
+      ],
+      "lookup_first": [
+        "dependency_manifest",
+        "repository",
+        "project_memory"
+      ],
+      "closes_when": "what this needs from elsewhere is known",
+      "uncertainty": 0
+    },
+    {
+      "id": "acceptance_criteria",
+      "class": "product_decision",
+      "depends_on": [
+        "functional_requirements"
+      ],
+      "required": true,
+      "closable_by": [
+        "po",
+        "reviewer"
+      ],
+      "closes_when": "someone could write a test from each one without asking what was meant",
+      "uncertainty": 0
+    },
+    {
+      "id": "success_metrics",
+      "class": "product_decision",
+      "depends_on": [
+        "outcome"
+      ],
+      "required": false,
+      "closable_by": [
+        "po"
+      ],
+      "closes_when": "a metric, its baseline and its target are stated",
+      "uncertainty": 0
+    },
+    {
+      "id": "evidence",
+      "class": "fact",
+      "depends_on": [],
+      "required": false,
+      "closable_by": [
+        "source"
+      ],
+      "derived": false,
+      "closes_when": "never asked as a question; filled by the evidence command",
+      "uncertainty": 0
+    },
+    {
+      "id": "decision_trace",
+      "class": "derived",
+      "depends_on": [],
+      "required": false,
+      "closable_by": [
+        "script"
+      ],
+      "closes_when": "written by the script from Product Owner answers only",
+      "uncertainty": 0
+    },
+    {
+      "id": "open_questions",
+      "class": "derived",
+      "depends_on": [],
+      "required": false,
+      "closable_by": [
+        "script"
+      ],
+      "closes_when": "written by the script from what remains unresolved",
+      "uncertainty": 0
+    },
+    {
+      "id": "observability",
+      "class": "recommendation",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "disposable": true,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "default": "unexamined; no additional requirement assumed",
+      "closes_when": "addressed with evidence or dismissed n/a with a reason",
+      "uncertainty": 0
+    },
+    {
+      "id": "security",
+      "class": "recommendation",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "disposable": true,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "default": "unexamined; no additional requirement assumed",
+      "closes_when": "addressed with evidence or dismissed n/a with a reason",
+      "uncertainty": 0
+    },
+    {
+      "id": "migration",
+      "class": "recommendation",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "disposable": true,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "default": "unexamined; no additional requirement assumed",
+      "closes_when": "addressed with evidence or dismissed n/a with a reason",
+      "uncertainty": 0
+    },
+    {
+      "id": "cost",
+      "class": "recommendation",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "disposable": true,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "default": "unexamined; no additional requirement assumed",
+      "closes_when": "addressed with evidence or dismissed n/a with a reason",
+      "uncertainty": 0
+    },
+    {
+      "id": "performance",
+      "class": "recommendation",
+      "depends_on": [
+        "scope"
+      ],
+      "required": false,
+      "disposable": true,
+      "closable_by": [
+        "reviewer",
+        "po"
+      ],
+      "default": "unexamined; no additional requirement assumed",
+      "closes_when": "addressed with evidence or dismissed n/a with a reason",
+      "uncertainty": 0
+    }
   ]
 }

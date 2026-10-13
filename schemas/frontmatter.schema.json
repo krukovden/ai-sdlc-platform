@@ -25,7 +25,7 @@
       ]
     },
     "route": {
-      "description": "How many gates this work passes: feature — three, small-feature — two (no ADR is written), bug — one. Process metadata, not a plan, which is why it lives in the header and not in a section.",
+      "description": "How many gates this work passes: feature \u2014 three, small-feature \u2014 two (no ADR is written), bug \u2014 one. Process metadata, not a plan, which is why it lives in the header and not in a section.",
       "enum": [
         "feature",
         "small-feature",
@@ -46,13 +46,16 @@
       "minLength": 1
     },
     "parent": {
-      "description": "Identifier of the issue this artifact hangs from — the feature, for an ADR, a PBI and its agent attachment. The IDE prefix is this project's team key.",
+      "description": "Identifier of the issue this artifact hangs from \u2014 the feature, for an ADR, a PBI and its agent attachment. The IDE prefix is this project's team key.",
       "type": "string",
       "pattern": "^IDE-[0-9]+$"
     },
     "scope": {
-      "description": "Which level a decision was taken at. Absent means the feature level, which is every ADR the architect writes. 'project' marks the one ADR that describes the whole system: it hangs from the epic rather than a feature, and feature-level ADRs link to it and record only their delta.",
+      "description": "Feature ADR rewrite size; project retains its existing whole-system meaning.",
       "enum": [
+        "small",
+        "medium",
+        "large",
         "project"
       ]
     },
@@ -138,6 +141,11 @@
           "type"
         ],
         "not": {
+          "properties": {
+            "scope": {
+              "const": "project"
+            }
+          },
           "required": [
             "scope"
           ]
@@ -150,7 +158,8 @@
           "route",
           "standard",
           "cid",
-          "parent"
+          "parent",
+          "scope"
         ],
         "properties": {
           "route": {

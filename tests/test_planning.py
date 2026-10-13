@@ -63,7 +63,10 @@ def pbi(key, paths, depends_on=None, sections=("1",), parallel_with=None, **extr
         "result": f"После {key} наблюдаемое поведение появляется целиком.",
         "acceptance_criteria": [
             {"id": "AC-1", "text": "нет новых падений относительно базы точки ветвления",
-             "evidence": f"tests/test_{key}.py::test_it"}],
+             "witness": {"evidence": f"tests/test_{key}.py::test_it"}}],
+        "tasks": [{"key": key + "-1", "title": "Extend the slice",
+                   "not_done_if": "The observable result is absent",
+                   "existing": [], "deliverables": ["Slice implemented"]}],
         "adr_sections": list(sections),
         "paths": list(paths),
         "where_to_look": [f"src/{key}/ — отсюда начинать"],
@@ -483,6 +486,10 @@ class PublishingCase(PlanningTestCase):
         board = board or StubBoard(issues=[feature_issue(status="In Planning")])
         git = git or FakeGit()
         session = session if session is not None else self.session
+        planning.save_adr(session, ADR)
+        session["coverage_review"] = {
+            "adr_hash": planning.content_hash(planning.load_adr(session)),
+            "plan_hash": planning.content_hash(planning.canonical_json(payload))}
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             result = publish_planning.publish(board, PROFILE, session, payload,
@@ -687,7 +694,7 @@ class ArtifactTests(PlanningTestCase):
     def test_acceptance_criteria_appear_in_the_card_and_nowhere_else(self):
         card, brief = self.rendered()
         self.assertIn("AC-1", card)
-        self.assertIn("Evidence: tests/test_A.py::test_it", card)
+        self.assertIn('Witness: {"evidence":"tests/test_A.py::test_it"}', card)
         self.assertNotIn("AC-1", brief)
         self.assertNotIn("Критерии приёмки", brief)
 

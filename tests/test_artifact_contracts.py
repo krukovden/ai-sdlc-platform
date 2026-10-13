@@ -90,7 +90,7 @@ def required_headings(config):
 
 
 FEATURE = {"type": "feature", "route": "feature", "standard": "1.0", "cid": "abc"}
-FEATURE_ADR = {"type": "adr", "status": "proposed", "route": "feature",
+FEATURE_ADR = {"scope": "medium", "type": "adr", "status": "proposed", "route": "feature",
                "standard": "1.0", "cid": "abc", "parent": "IDE-42"}
 PROJECT_ADR = {"type": "adr", "scope": "project", "status": "proposed",
                "standard": "1.0", "cid": "abc"}

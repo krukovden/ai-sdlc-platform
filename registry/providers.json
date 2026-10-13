@@ -22,6 +22,15 @@
       "shown to the human — it does not stop the run."
     ]
   },
+  "planner": {
+    "name": "claude",
+    "_note": [
+      "Which model cuts the plan in /idp-planning. Recorded on the session at",
+      "init, so `finalize` compares the coverage reviewer against a fact written",
+      "when the plan was cut and not against a name typed at the end.",
+      "`init --planner <name>` overrides it for one session."
+    ]
+  },
   "reviewer": {
     "_note_alternatives": [
       "The alternative pass of /idp-design deliberately reuses this section",

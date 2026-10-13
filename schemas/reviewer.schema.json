@@ -4,78 +4,239 @@
   "title": "Independent reviewer output",
   "description": "Enforced by codex exec --output-schema, and by the same schema when the Claude fallback is used. The reviewer is a different model from the one running the interview: a model reviewing its own draft agrees with itself. Written for strict structured output: every object lists every one of its properties in `required` and forbids additional ones, and anything optional is optional by being nullable rather than by being absent. A provider therefore always emits the key; our own validator reads an absent nullable key as null, so a response typed by hand stays valid.",
   "type": "object",
-  "required": ["verdict", "resolved", "gaps", "contradictions", "alternatives"],
+  "required": [
+    "verdict",
+    "resolved",
+    "gaps",
+    "contradictions",
+    "alternatives",
+    "rubric"
+  ],
   "additionalProperties": false,
   "properties": {
-    "verdict": {"enum": ["sufficient", "gaps-found"]},
+    "verdict": {
+      "enum": [
+        "sufficient",
+        "gaps-found"
+      ]
+    },
     "resolved": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "object",
-        "required": ["question_id", "answer", "evidence", "confidence"],
+        "required": [
+          "question_id",
+          "answer",
+          "evidence",
+          "confidence"
+        ],
         "additionalProperties": false,
         "properties": {
-          "question_id": {"type": "string"},
-          "answer": {"type": "string", "minLength": 1},
+          "question_id": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1
+          },
           "evidence": {
-            "type": ["array", "null"],
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "object",
-              "required": ["uri", "quote"],
+              "required": [
+                "uri",
+                "quote"
+              ],
               "additionalProperties": false,
-              "properties": {"uri": {"type": "string"}, "quote": {"type": "string"}}
+              "properties": {
+                "uri": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                }
+              }
             }
           },
           "confidence": {
-            "enum": ["evidence-backed", "model-inference"],
+            "enum": [
+              "evidence-backed",
+              "model-inference"
+            ],
             "description": "Mandatory. Only an evidence-backed resolution may close a slot without the Product Owner seeing it; a model inference is shown to them as its own section."
           }
         }
       }
     },
     "gaps": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "object",
-        "required": ["lens", "slot", "gap", "why_it_matters", "severity",
-                     "suggested_question", "class"],
+        "required": [
+          "lens",
+          "slot",
+          "gap",
+          "why_it_matters",
+          "severity",
+          "suggested_question",
+          "class"
+        ],
         "additionalProperties": false,
         "properties": {
-          "lens": {"enum": ["edge-cases", "failure-modes", "non-functional",
-                            "data-and-migration", "permissions-and-security",
-                            "operations-and-rollout", "contradictions"]},
-          "slot": {"type": ["string", "null"]},
-          "gap": {"type": "string", "minLength": 1},
-          "why_it_matters": {"type": ["string", "null"]},
-          "severity": {"enum": ["high", "medium", "low"]},
-          "suggested_question": {"type": ["string", "null"]},
-          "class": {"type": ["string", "null"],
-                    "enum": ["product_decision", "fact", "risk", "ambiguity", null]}
+          "lens": {
+            "enum": [
+              "edge-cases",
+              "failure-modes",
+              "non-functional",
+              "data-and-migration",
+              "permissions-and-security",
+              "operations-and-rollout",
+              "contradictions",
+              "falsifiability",
+              "unambiguous-outcomes",
+              "explicit-absence",
+              "observability",
+              "quantified-success",
+              "reversibility"
+            ]
+          },
+          "slot": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gap": {
+            "type": "string",
+            "minLength": 1
+          },
+          "why_it_matters": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "suggested_question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "product_decision",
+              "fact",
+              "risk",
+              "ambiguity",
+              null
+            ]
+          }
         }
       }
     },
     "contradictions": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "object",
-        "required": ["between", "explanation"],
+        "required": [
+          "between",
+          "explanation"
+        ],
         "additionalProperties": false,
         "properties": {
-          "between": {"type": "array", "items": {"type": "string"}, "minItems": 2},
-          "explanation": {"type": "string"}
+          "between": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2
+          },
+          "explanation": {
+            "type": "string"
+          }
         }
       }
     },
     "alternatives": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "object",
-        "required": ["to", "proposal", "tradeoff"],
+        "required": [
+          "to",
+          "proposal",
+          "tradeoff"
+        ],
         "additionalProperties": false,
         "properties": {
-          "to": {"type": "string"},
-          "proposal": {"type": "string"},
-          "tradeoff": {"type": ["string", "null"]}
+          "to": {
+            "type": "string"
+          },
+          "proposal": {
+            "type": "string"
+          },
+          "tradeoff": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "rubric": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "counterfactuals",
+        "absence",
+        "reversibility",
+        "failure-modes"
+      ],
+      "properties": {
+        "counterfactuals": {
+          "type": "string",
+          "minLength": 1
+        },
+        "absence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reversibility": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failure-modes": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

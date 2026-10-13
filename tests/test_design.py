@@ -71,9 +71,11 @@ cid: fp_abc123def456
 
 DECISIONS = [
     {"id": "D-1", "decision": "состояние сессии — один JSON на фичу",
+     "rejected_option_breaks": "Separate records lose atomic updates",
      "reversibility": "hard-to-reverse",
      "why": "это модель хранения, откат требует миграции"},
     {"id": "D-2", "decision": "имя внутреннего хелпера — render_adr",
+     "rejected_option_breaks": "Public names expose an internal helper",
      "reversibility": "cheap-to-reverse",
      "why": "не выходит за модуль, откат — переименование"},
 ]
@@ -107,7 +109,8 @@ def alternative(decision_id="D-1", name="через адаптер", addresses=N
 
 
 def critic_response(gaps=1):
-    return {"verdict": "gaps-found" if gaps else "sufficient",
+    return {"rubric": {name: "ran clean" for name in design.CRITIC_DIMENSIONS},
+            "verdict": "gaps-found" if gaps else "sufficient",
             "gaps": [{"lens": "failure-modes", "slot": None,
                       "gap": f"не описан отказ провайдера {n}",
                       "why_it_matters": "тихий пропуск",
@@ -251,7 +254,7 @@ class DesignTestCase(ScriptTestCase):
         self.run_cli("init", self.identifier, "--at", "2026-08-18T00:00:00Z")
 
     def draft(self, sections=None):
-        self.run_cli("draft", "--sections-file",
+        self.run_cli("draft", "--scope", "medium", "--sections-file",
                      self.write_json("sections.json", sections or SECTIONS))
 
     def register(self, decisions=None):
@@ -543,7 +546,8 @@ class DecisionRegistryTests(DesignTestCase):
 
 def many_decisions(count):
     return [{"id": f"D-{n}", "decision": f"решение {n}",
-             "reversibility": "hard-to-reverse",
+             "rejected_option_breaks": "Separate records lose atomic updates",
+     "reversibility": "hard-to-reverse",
              "why": "публичный контракт за пределами модуля"}
             for n in range(1, count + 1)]
 

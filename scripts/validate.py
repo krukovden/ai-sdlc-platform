@@ -426,7 +426,7 @@ def lint_name(artifact_type, header):
     required.
     """
     scope = (header or {}).get("scope")
-    return f"{artifact_type}-{scope}" if scope else artifact_type
+    return f"{artifact_type}-{scope}" if scope == "project" else artifact_type
 
 
 def load_lint_config(artifact_type, lint_dir=None):

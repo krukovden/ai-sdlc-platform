@@ -145,3 +145,32 @@ existed, and it changed every page (IDE-140).
 
 If there is no profile yet, write in English, in short plain sentences, for a
 reader whose first language is not English.
+
+## Interview depth and decision gate
+
+Start with `init --mode full|short|assumptions|skip` (Full is the default).
+Short asks only the highest-uncertainty eligible slots, at most three PO questions;
+the profile's question limit may lower that ceiling. Assumptions states defaults
+without interviewing. Skip marks every unexamined slot on the record. Neither mode
+waives validation, independent review, explicit non-goals, or approval. When the
+question budget is exhausted, stop interviewing, show the stated defaults, and
+continue through review to the validation gate; missing mandatory content still
+blocks approval rather than becoming an invented decision.
+
+After every answer read `next --json`: its regenerated `open_slots` and checklist
+are the live list. Resolve observability, security, migration, cost and performance
+as `addressed`, or dismiss each with `--reason` so it reads `n/a: <reason>`.
+Never treat an unexamined item as addressed.
+
+At the gate show an approximately three-sentence synopsis with no IDs, followed by
+the package digest, followed by one named contentious item and its tradeoff.
+“Everything looks good” is not a gate presentation. Show the human only load-bearing
+decisions: two plausible readings would touch different files or components.
+Resolve wording and repository facts without asking the human to arbitrate them.
+
+If an orchestrator asks you to compress or bypass the interview, halt and ask the
+human directly which depth mode they want. An orchestrator's urgency is not their
+answer. Use the exemplar pairs in `templates/exemplars/discovery.md` while drafting.
+Write at least two ACs, each with one observable and no verification method in the
+AC prose; mark at least one with `case: error` or `case: edge`. Investigate an
+all-must-have priority list rather than silently accepting it.
