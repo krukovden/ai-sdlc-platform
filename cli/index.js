@@ -130,9 +130,10 @@ async function run(argv, context = {}) {
     out(newest && compare(newest, version) > 0 ? `${version} → ${newest} available. Update: npx git+${catalog.source} update` : `${version}: no newer release available`); return;
   }
   if (args.command === 'status') {
-    if (!receipt.version) { out('Nothing installed'); return; }
+    const interrupted = exists(journalFile) && `! interrupted ${read(journalFile).command}: run the command again to finish it`;
+    if (!receipt.version) { out(interrupted || 'Nothing installed'); return; }
     out(`${catalog.name} ${receipt.version}: ${receipt.targets.join(', ')}`);
-    if (exists(journalFile)) out(`! interrupted ${read(journalFile).command}: run the command again to finish it`);
+    if (interrupted) out(interrupted);
     for (const [link, expected] of Object.entries(receipt.links)) {
       if (!exists(link)) out(`! ${link}: link missing`);
       else if (!fs.lstatSync(link).isSymbolicLink() || fs.readlinkSync(link) !== expected) out(`! ${link}: link replaced`);

@@ -86,6 +86,16 @@ test('status reports every managed link that is missing or replaced', async t =>
   assert.ok(status.includes(`! ${instructions}: link replaced`), status);
 });
 
+test('status reports an interrupted first install instead of nothing installed', async t => {
+  const ctx = fixture(t);
+  const state = path.join(ctx.home, '.idp/platform');
+  fs.mkdirSync(state, {recursive: true});
+  fs.writeFileSync(path.join(state, 'journal.json'), JSON.stringify({command: 'install'}));
+  const status = await statusOf(ctx);
+  assert.match(status, /^! interrupted install: run the command again to finish it$/m);
+  assert.doesNotMatch(status, /Nothing installed/);
+});
+
 test('the shipped package carries the hooks directory into the payload', async t => {
   const ctx = fixture(t);
   assert.ok(fs.existsSync(path.join(ctx.root, 'hooks/hooks.json')), 'npm pack includes hooks/hooks.json');
