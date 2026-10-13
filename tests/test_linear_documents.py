@@ -143,9 +143,11 @@ class DocCommandTests(ScriptTestCase):
 class IssueDocuments:
     """One issue's documents, and the three mutations attaching may send."""
 
-    def __init__(self, documents=()):
+    def __init__(self, documents=(), refuse_delete=False, lose_create=False):
         self.documents = [dict(d) for d in documents]
         self.mutations = []
+        self.refuse_delete = refuse_delete
+        self.lose_create = lose_create
 
     def __call__(self, token, document, variables=None):
         if "IssueDocuments" in document:
@@ -160,10 +162,16 @@ class IssueDocuments:
                         "url": d["url"], "slugId": d["slugId"]}}}
         if "documentDelete" in document:
             self.mutations.append(("delete", variables["id"]))
+            if self.refuse_delete:
+                return {"documentDelete": {"success": False}}
             self.documents = [d for d in self.documents if d["id"] != variables["id"]]
             return {"documentDelete": {"success": True}}
         if "documentCreate" in document:
             self.mutations.append(("create", variables["input"]["title"]))
+            if not self.lose_create:
+                self.documents.append({"id": "doc-new", "title": variables["input"]["title"],
+                                       "slugId": "new", "url": "https://linear.app/d/new",
+                                       "content": variables["input"]["content"]})
             return {"documentCreate": {"success": True, "document": {
                 "url": "https://linear.app/d/new", "slugId": "new"}}}
         if "query Issue" in document:
@@ -210,6 +218,24 @@ class ReplaceOnAttachTests(ScriptTestCase):
         fake = IssueDocuments()
         self.attach(fake, "first")
         self.assertEqual(fake.mutations, [("create", self.TITLE)])
+
+    def test_a_refused_delete_fails_loudly_instead_of_reporting_success(self):
+        fake = IssueDocuments([adr("IDE-1", "same", "s1"), adr("IDE-1", "same", "s2")],
+                              refuse_delete=True)
+        message = self.assert_exits(linear.EXIT.UNAVAILABLE, self.attach, fake, "same")
+        self.assertIn("refused to delete", message)
+        self.assertIn("FIX:", message)
+
+    def test_identical_content_with_duplicates_still_ends_with_exactly_one(self):
+        fake = IssueDocuments([adr("IDE-1", "same", "s1"), adr("IDE-1", "same", "s2")])
+        answer = self.attach(fake, "same")
+        self.assertEqual(len(fake.documents), 1)
+        self.assertTrue(answer["changed"])
+
+    def test_a_document_that_does_not_appear_after_the_write_is_a_failure(self):
+        fake = IssueDocuments(lose_create=True)
+        message = self.assert_exits(linear.EXIT.UNAVAILABLE, self.attach, fake, "first")
+        self.assertIn("carries 0 documents", message)
 
 
 if __name__ == "__main__":
