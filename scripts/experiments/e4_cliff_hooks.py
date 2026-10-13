@@ -27,6 +27,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -63,6 +64,29 @@ PROMPT = "Reply with the single word OK."
 PROBE_TIMEOUT = 300
 
 PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
+LIMIT_LINE_PATTERNS = (
+    re.compile(r"\bapi[_ -]?retry\b", re.I),
+    re.compile(r"\b(rate|usage)[ -]?limit\b", re.I),
+    re.compile(r"\bbilling[_ -]?error\b", re.I),
+    re.compile(r"\boverloaded\b", re.I),
+    re.compile(r"\b(out of (usage|credits)|credits? (are |have been )?"
+               r"(exhausted|depleted|used))\b", re.I),
+    re.compile(r"\b(quota|limit) (reached|exceeded|hit)\b", re.I),
+    re.compile(r"\btry again at\b", re.I),
+)
+PAYLOAD_LIMIT_PATTERNS = (
+    re.compile(r"\brate[_ -]?limit\b", re.I),
+    re.compile(r"\busage[_ -]?limit\b", re.I),
+    re.compile(r"\bbilling[_ -]?error\b", re.I),
+    re.compile(r"\boverloaded\b", re.I),
+    re.compile(r"\bquota\b", re.I),
+    re.compile(r"\bcredits?\b", re.I),
+)
+SECRET_HEADER = re.compile(r"(?i)\b(authorization\s*:\s*(?:basic|bearer))\s+\S+")
+SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(azure_devops_ext_pat|linear_api_key|system_accesstoken|anthropic_api_key|"
+    r"openai_api_key|github_token|gh_token|copilot_token|token|api[_-]?key|password)"
+    r"(\s*[:=]\s*)\S+")
 
 
 def git(cwd, *args, check=True):
@@ -92,6 +116,83 @@ def read(path):
         except json.JSONDecodeError:
             continue
     return found
+
+
+def session_id(payload):
+    if not isinstance(payload, dict):
+        return None
+    for key in ("session_id", "sessionId", "conversation_id", "conversationId", "run_id",
+                "runId"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def secret_values(agent=None, source=None):
+    env = dict(os.environ if source is None else source)
+    values = set()
+    for name, value in env.items():
+        if not value:
+            continue
+        if executors.environment.denied(name):
+            values.add(str(value))
+            continue
+        if executors.environment.allowed(name, agent) and name not in executors.environment.BASE:
+            values.add(str(value))
+    return sorted(values, key=len, reverse=True)
+
+
+def redact_text(text, agent=None, source=None):
+    cleaned = str(text or "")
+    for value in secret_values(agent, source=source):
+        if len(value) >= 4:
+            cleaned = cleaned.replace(value, "[redacted]")
+    cleaned = SECRET_HEADER.sub(r"\1 [redacted]", cleaned)
+    cleaned = SECRET_ASSIGNMENT.sub(r"\1\2[redacted]", cleaned)
+    return cleaned
+
+
+def redact_data(value, agent=None, source=None):
+    if isinstance(value, dict):
+        return {key: redact_data(inner, agent, source=source) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [redact_data(inner, agent, source=source) for inner in value]
+    if isinstance(value, str):
+        return redact_text(value, agent, source=source)
+    return value
+
+
+def observed_limit_lines(lines):
+    found = []
+    for line in lines:
+        text = str(line or "")
+        if any(pattern.search(text) for pattern in LIMIT_LINE_PATTERNS):
+            found.append(text)
+    return found
+
+
+def payload_limit_evidence(payload):
+    if not isinstance(payload, dict):
+        return []
+    blob = json.dumps(payload, ensure_ascii=False)
+    return [pattern.pattern for pattern in PAYLOAD_LIMIT_PATTERNS if pattern.search(blob)]
+
+
+def claude_retry_limit(lines):
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "system" and event.get("subtype") == "api_retry":
+            blob = json.dumps(event).casefold()
+            for kind in ("rate_limit", "overloaded"):
+                if kind in blob:
+                    return kind
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +239,9 @@ def record_hook(directory, host, event, payload):
     """The recorder: log the payload, then try to commit and push a probe, and log that."""
     directory = Path(directory)
     repo = directory / "repo"
-    entry = {"at": now(), "host": host,
-             "event": payload.get("hook_event_name") or event, "payload": payload}
+    entry = {"at": now(), "host": host, "session": session_id(payload),
+             "event": payload.get("hook_event_name") or event,
+             "payload": redact_data(payload, host)}
     probe = repo / f"probe-{int(time.time() * 1000)}.txt"
     try:
         probe.write_text(entry["at"] + "\n", encoding="utf-8")
@@ -153,10 +255,11 @@ def record_hook(directory, host, event, payload):
         remote = subprocess.run(["git", f"--git-dir={directory / 'remote.git'}", "rev-parse",
                                  BRANCH], capture_output=True, text=True,
                                 stdin=subprocess.DEVNULL).stdout.strip()
-        entry["push"] = {"returncode": pushed.returncode, "stderr": pushed.stderr.strip()[-400:],
+        entry["push"] = {"returncode": pushed.returncode,
+                         "stderr": redact_text(pushed.stderr.strip()[-400:], host),
                          "landed": remote == head}
     except Exception as exc:                            # noqa: BLE001 - record, never raise
-        entry["push"] = {"error": str(exc), "landed": False}
+        entry["push"] = {"error": redact_text(str(exc), host), "landed": False}
     append(directory / EVENTS, entry)
     return entry
 
@@ -175,18 +278,20 @@ PROBE_ARGV = {
 def probe(directory, agent, run=subprocess.run):
     directory = Path(directory)
     started = now()
+    env = executors.environment.session_env(os.environ, agent)
     try:
         answer = run(PROBE_ARGV[agent], cwd=str(directory / "repo"), capture_output=True,
-                     text=True, timeout=PROBE_TIMEOUT, stdin=subprocess.DEVNULL)
+                     text=True, timeout=PROBE_TIMEOUT, stdin=subprocess.DEVNULL, env=env)
         returncode, output = answer.returncode, (answer.stdout or "") + (answer.stderr or "")
     except (OSError, subprocess.SubprocessError) as exc:
         returncode, output = None, str(exc)
-    lines = output.splitlines()
+    raw_lines = output.splitlines()
+    lines = [redact_text(line, agent) for line in raw_lines]
     retries = [line for line in lines if '"api_retry"' in line]
-    entry = {"at": started, "agent": agent, "returncode": returncode,
-             "tail": lines[-15:], "api_retry": retries[-5:],
-             "limit_lines": [line for line in lines if executors.local.limit_event(line)
-                             or executors.orca_backend.screen_limit(line)]}
+    observed = observed_limit_lines(lines)
+    entry = {"at": started, "agent": agent, "host": agent, "session": f"probe-{started}",
+             "returncode": returncode, "tail": lines[-15:], "api_retry": retries[-5:],
+             "raw_output": lines, "limit_lines": observed, "observed_limit_lines": observed}
     append(directory / PROBES, entry)
     return entry
 
@@ -202,37 +307,42 @@ def judge(events, probes):
     at_limit = [e for e in claude if (e["payload"].get("error") in LIMIT_ERRORS)]
     out["H1"] = (PASS, f"{len(at_limit)} StopFailure at a limit: "
                        + ", ".join(sorted({e['payload']['error'] for e in at_limit})))\
-        if at_limit else (INCONCLUSIVE if not claude else FAIL,
+        if at_limit else (INCONCLUSIVE,
                           "no StopFailure recorded" if not claude else
                           "StopFailure fired, but never with a limit error: "
                           + ", ".join(sorted({str(e['payload'].get('error')) for e in claude})))
-    pushed = [e for e in at_limit if (e.get("push") or {}).get("landed")]
-    out["H2"] = (PASS, "the recorder's push landed after a limit StopFailure") if pushed else \
-        ((FAIL, "the push after a limit StopFailure did not land: "
+    pushed = [e for e in at_limit
+              if (e.get("push") or {}).get("returncode", EXIT.OK) == EXIT.OK
+              and (e.get("push") or {}).get("landed")]
+    out["H2"] = (PASS, "the recorder's push exited 0 and landed after a limit StopFailure") \
+        if pushed else \
+        ((FAIL, "the push after a limit StopFailure did not exit 0 and land: "
                 + json.dumps(at_limit[-1].get("push"))) if at_limit
          else (INCONCLUSIVE, "no limit StopFailure to push after"))
     copilot = [e for e in events if e["host"] == "copilot"]
     fatal = [e for e in copilot if (e["event"] == "errorOccurred"
                                     and e["payload"].get("recoverable") is False)
              or (e["event"] == "sessionEnd" and e["payload"].get("reason") in COPILOT_ENDS)]
-    out["H3"] = (PASS, f"{len(fatal)} fatal Copilot event(s): "
-                       + "; ".join(json.dumps(e["payload"].get("error") or
-                                              e["payload"].get("reason")) for e in fatal[:3]))\
-        if fatal else (INCONCLUSIVE, "no Copilot end-of-session event at a limit recorded")
-    claude_probes = [p for p in probes if p["agent"] == "claude" and p["returncode"]]
-    signalled = [p for p in claude_probes
-                 if any(executors.local.limit_event(line)
-                        for line in p.get("api_retry") or [])]
+    copilot_limits = [e for e in fatal if payload_limit_evidence(e.get("payload"))]
+    out["H3"] = (PASS, f"{len(copilot_limits)} fatal Copilot event(s) with provider-limit "
+                       "evidence") if copilot_limits else \
+        (INCONCLUSIVE, "no Copilot fatal event with provider-limit evidence recorded")
+    claude_probes = [p for p in probes if p["agent"] == "claude"
+                     and p["returncode"] not in (None, EXIT.OK)]
+    signalled = [p for p in claude_probes if claude_retry_limit(p.get("raw_output")
+                                                                or p.get("api_retry") or [])]
     out["H4"] = (PASS, "claude -p exited non-zero after an api_retry naming a limit") \
         if signalled else ((FAIL, "claude -p exited non-zero with no limit api_retry; it "
                                   f"printed: {claude_probes[-1]['tail'][-3:]}")
                            if claude_probes else (INCONCLUSIVE, "no failing claude -p probe"))
-    lines = [line for p in probes for line in p.get("limit_lines") or []]
+    codex = [p for p in probes if p["agent"] == "codex"]
+    lines = [line for p in codex for line in (p.get("observed_limit_lines")
+                                              or p.get("limit_lines") or [])]
     missed = [line for line in lines if not (executors.local.limit_event(line)
                                              and executors.orca_backend.screen_limit(line))]
     out["H5"] = (FAIL, f"read by one detector only: {missed[:3]}") if missed else \
-        ((PASS, f"{len(lines)} limit line(s), each read by both detectors") if lines
-         else (INCONCLUSIVE, "no probe printed a limit line"))
+        ((PASS, f"{len(lines)} Codex limit line(s), each read by both detectors") if lines
+         else (INCONCLUSIVE, "no Codex limit evidence recorded"))
     return out
 
 

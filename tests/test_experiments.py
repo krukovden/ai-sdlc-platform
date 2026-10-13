@@ -10,6 +10,7 @@ flags. Whether the real board behaves is what the human run is for.
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,10 +30,13 @@ import experiment_common as common  # noqa: E402
 
 e2 = load_script("e2_claim_race", EXPERIMENTS)
 e3 = load_script("e3_attachment_roundtrip", EXPERIMENTS)
+e4 = load_script("e4_cliff_hooks", EXPERIMENTS)
 e7 = load_script("e7_mentions", EXPERIMENTS)
 EXIT = common.EXIT
 
 FLAGS = ["--org", "contoso", "--project", "Scratch", "--i-understand-this-writes"]
+CODEX_LIMIT = ("You've hit your usage limit. Upgrade to Pro or try again at "
+               "Oct 13th, 2026 12:12 AM")
 
 
 class Args:
@@ -132,6 +136,90 @@ class Results(unittest.TestCase):
             for word in ("Hypothes", "**n.**", "Pass rule", "Stop rule"):
                 self.assertIn(word, text, name)
             self.assertTrue(text.rstrip().endswith("## Results"), name)
+
+
+class CliffHooks(unittest.TestCase):
+
+    SENTINELS = {
+        "claude": ("ANTHROPIC_API_KEY", "claude-secret"),
+        "codex": ("OPENAI_API_KEY", "codex-secret"),
+        "copilot": ("GITHUB_TOKEN", "copilot-secret"),
+    }
+
+    def test_probe_uses_a_session_environment_and_redacts_persisted_output(self):
+        for agent, (allowed_name, allowed_value) in self.SENTINELS.items():
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "repo").mkdir()
+                seen = {}
+
+                def fake_run(argv, **kw):
+                    seen["env"] = kw["env"]
+                    return subprocess.CompletedProcess(
+                        argv, EXIT.NO,
+                        stdout=("Authorization: Bearer board-secret\n"
+                                f"{allowed_name}={allowed_value}\n"),
+                        stderr="AZURE_DEVOPS_EXT_PAT=board-secret\n")
+
+                source = {
+                    "PATH": os.environ.get("PATH", ""),
+                    "HOME": os.environ.get("HOME", str(Path(tmp))),
+                    "AZURE_DEVOPS_EXT_PAT": "board-secret",
+                    "ANTHROPIC_API_KEY": "claude-secret",
+                    "OPENAI_API_KEY": "codex-secret",
+                    "GITHUB_TOKEN": "copilot-secret",
+                }
+                with mock.patch.dict(os.environ, source, clear=True):
+                    entry = e4.probe(tmp, agent, run=fake_run)
+                self.assertNotIn("AZURE_DEVOPS_EXT_PAT", seen["env"])
+                self.assertEqual(seen["env"][allowed_name], allowed_value)
+                for denied in {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN"} - {allowed_name}:
+                    self.assertNotIn(denied, seen["env"])
+                dumped = "\n".join(entry["tail"] + entry["raw_output"])
+                self.assertNotIn("board-secret", dumped)
+                self.assertNotIn(allowed_value, dumped)
+
+    def test_judging_requires_host_specific_limit_evidence(self):
+        claude_retry = json.dumps({"type": "system", "subtype": "api_retry", "error": "rate_limit"})
+        events = [
+            {"host": "claude", "session": "claude-1", "event": "StopFailure",
+             "payload": {"error": "rate_limit", "session_id": "claude-1"},
+             "push": {"returncode": EXIT.OK, "landed": True}},
+            {"host": "copilot", "session": "copilot-1", "event": "errorOccurred",
+             "payload": {"recoverable": False, "error": {"message": "usage limit exceeded"},
+                         "session_id": "copilot-1"}},
+        ]
+        probes = [
+            {"agent": "claude", "returncode": EXIT.NO, "tail": ["boom"], "api_retry": [],
+             "raw_output": [claude_retry], "observed_limit_lines": []},
+            {"agent": "codex", "returncode": EXIT.NO, "tail": [], "api_retry": [],
+             "raw_output": [CODEX_LIMIT], "observed_limit_lines": [CODEX_LIMIT]},
+        ]
+        results = e4.judge(events, probes)
+        self.assertEqual({h: v for h, (v, _) in results.items()},
+                         {"H1": "PASS", "H2": "PASS", "H3": "PASS", "H4": "PASS",
+                          "H5": "PASS"})
+
+    def test_missing_copilot_or_codex_limit_evidence_is_inconclusive(self):
+        claude_retry = json.dumps({"type": "system", "subtype": "api_retry", "error": "rate_limit"})
+        events = [
+            {"host": "claude", "session": "claude-1", "event": "StopFailure",
+             "payload": {"error": "rate_limit", "session_id": "claude-1"},
+             "push": {"returncode": EXIT.OK, "landed": True}},
+            {"host": "copilot", "session": "copilot-1", "event": "sessionEnd",
+             "payload": {"reason": "abort", "session_id": "copilot-1"}},
+        ]
+        probes = [{"agent": "claude", "returncode": EXIT.NO, "tail": ["boom"], "api_retry": [],
+                   "raw_output": [claude_retry], "observed_limit_lines": []}]
+        results = e4.judge(events, probes)
+        self.assertEqual((results["H3"][0], results["H5"][0]), ("INCONCLUSIVE", "INCONCLUSIVE"))
+        verdict, _ = e4.render(results)
+        self.assertEqual(verdict, "INCONCLUSIVE")
+
+    def test_h2_requires_exit_zero_and_a_landed_push(self):
+        events = [{"host": "claude", "session": "claude-1", "event": "StopFailure",
+                   "payload": {"error": "rate_limit", "session_id": "claude-1"},
+                   "push": {"returncode": EXIT.NO, "landed": True}}]
+        self.assertEqual(e4.judge(events, [])["H2"][0], "FAIL")
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +464,19 @@ class AttachmentRoundTrip(unittest.TestCase):
         self.assertTrue(all(c["match"] for c in cases))
         self.assertEqual(replaced["relations_after"], 1)
         self.assertEqual(e3.verdict_of(cases, replaced), e3.PASS)
+
+    def test_missing_the_original_relation_is_inconclusive(self):
+        verdict = e3.verdict_of(
+            [{"match": True}],
+            {"relations_before": 0, "relations_after": 1, "old_relation_gone": True,
+             "download_match": True},
+        )
+        self.assertEqual(verdict, e3.INCONCLUSIVE)
+        self.assertIn("INCONCLUSIVE",
+                      e3.render([{"case": "x", "match": True, "bytes_sent": 1, "bytes_got": 1}],
+                                {"relations_before": 0, "relations_after": 1,
+                                 "old_relation_gone": True, "download_match": True},
+                                verdict, "7"))
 
     def test_a_changed_byte_is_found_by_hash(self):
         cases, replaced = e3.run(FakeScratch(mangle=lambda t: t.replace("\r\n", "\n")))

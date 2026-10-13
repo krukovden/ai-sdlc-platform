@@ -22,7 +22,7 @@ The event under test is a real usage or rate limit. Hitting one costs a session'
 
 1. `python3 scripts/experiments/e4_cliff_hooks.py setup --dir <scratch>` creates a scratch git repository with a bare remote, checks out `pbi/e4-probe/g1`, and writes recorder hooks into it: `.claude/settings.local.json` (`StopFailure`) and `.github/hooks/e4.json` (`errorOccurred`, `sessionEnd`, and no `sessionStart`). Each recorder appends the event's payload to `<scratch>/events.jsonl`, then commits a probe file and pushes, and appends the push's exit code and the remote's head.
 2. Open `claude` (interactive) in the scratch directory and work until the limit stops a turn. Do the same with `copilot`.
-3. While still at the limit, run `e4_cliff_hooks.py probe --dir <scratch> --agent claude` (and `--agent codex`, `--agent copilot`): one headless turn per agent, recording its exit code, the last lines it printed, and every `api_retry` event.
+3. While still at the limit, run `e4_cliff_hooks.py probe --dir <scratch> --agent claude` (and `--agent codex`, `--agent copilot`): one headless turn per agent, launched through the same per-agent session environment boundary the runner uses, recording its exit code, the full raw output with credential-looking text redacted, the last lines it printed, and every `api_retry` event.
 4. `e4_cliff_hooks.py record --dir <scratch>` evaluates the hypotheses below and appends a dated block under **Results**. Commit this file; the results are the record, and the facts move into the project's facts file.
 
 **n.** One real limit per host (Claude interactive, Claude headless, Copilot, Codex). A limit is expensive; a repeat is welcome, never required.
@@ -31,10 +31,10 @@ The event under test is a real usage or rate limit. Hitting one costs a session'
 
 - H1 PASS: at least one `StopFailure` payload with `error` in the limit set. FAIL: the session hit the limit (the TUI said so) and no `StopFailure` was recorded.
 - H2 PASS: the recorder's push after that `StopFailure` exited 0 and the remote's head is the probe commit. FAIL: it did not.
-- H3 PASS: an `errorOccurred` with `recoverable: false` or a `sessionEnd` with `reason` error/timeout/abort at the limit. FAIL: Copilot hit the limit and neither was recorded.
+- H3 PASS: an `errorOccurred` with `recoverable: false`, or a `sessionEnd` with `reason` error/timeout/abort, **and** the payload's own error text names a provider limit. Without that limit evidence the result is INCONCLUSIVE.
 - H4 PASS: the headless Claude probe exited non-zero and its stream carried an `api_retry` naming `rate_limit` or `overloaded`. FAIL: it exited non-zero with no such event (layer 3 would count a crash, not pause the card).
-- H5 PASS: every limit line a probe printed is read as a limit by both detectors. FAIL: any limit line is not.
-- INCONCLUSIVE for a host: the limit never hit during the run. Say so; do not write PASS.
+- H5 PASS: Codex produced at least one independently identified usage-limit line, and every such line is read as a limit by both detectors. FAIL: any independently observed Codex limit line is not. Without Codex limit evidence the result is INCONCLUSIVE.
+- INCONCLUSIVE for a host: the limit never hit during the run, or the run produced no independent proof that it did. Say so; do not write PASS.
 
 **Stop rule.** One recorded limit per host. Never retry a host to turn a FAIL into a PASS; a second run is a new observation, recorded beside the first.
 
