@@ -63,4 +63,45 @@ section is complete; it does not require every agent to reach `orca`.
 
 ## Result
 
-(filled in after the run)
+Probe run from a terminal made with `orca terminal create`, Run
+`run_0e0298fbf957`, trace and classes in `tests/fixtures/orca/e6-run/`
+(`trace.jsonl` = every verb's argv, exit code, stdout; `classes.jsonl` = one
+line per agent). Static facts: `worker-start --help` lists claude, codex,
+cursor, antigravity, muse, zcode, opencode, opencode2; the catalog compiled into
+Orca.app also holds copilot, gemini, grok, droid and about 40 more TUI agents.
+Binaries on this machine: claude, codex, copilot, gemini. Not installed:
+cursor-agent, opencode, grok.
+
+| Agent | On this machine | Class | What Orca returned |
+| -- | -- | -- | -- |
+| claude | installed | `orca` | E5: launches, `worker_done` arrives, `--model haiku` honoured (`launch.effective`) |
+| codex | installed | `orca-limit` | `worker-start` exit 0 (`ready`, `input_accepted`), no `worker_done` in 120 s; terminal preview: *"Approaching rate limits — Switch to gpt-6-luna for lower credit usage? › 1. Switch … 2. Keep current model … enter select"*. `observation.agentWait` was **null**: Orca did not recognise this screen as a wait. Launchable, provider limit hit. |
+| copilot | installed | `orca-blocked` | `worker-start` exit 1, `result.state: failed`, `failedStage: agent_readiness`, `lastError: "Agent startup blocked: agent-trust-workspace"`. It launches through Orca but parks on the folder-trust prompt; the failed start still owns a terminal (`recovery: … worker-release --dispatch …`). |
+| gemini | installed | `subprocess-only` here | `error.code: agent_unconfigured` — "Agent launcher gemini is disabled or unavailable". The binary exists; this Orca install has the launcher off. |
+| cursor | not installed | `subprocess-only` | exit 1, `failedStage: dispatch_input`, `lastError: agent_not_in_foreground` |
+| opencode | not installed | `subprocess-only` | exit 1, `failedStage: agent_readiness`, `lastError: timeout` (60 s) |
+| grok | not installed | `subprocess-only` | same as cursor; not in the profile's agent enum anyway |
+
+Two shapes of failure, which the backend must tell apart:
+
+1. `ok: false` with `error.code` (here `agent_unconfigured`; E5 also saw
+   `nested_worker_depth_exceeded`, `task_not_startable`, `invalid_argument`).
+2. `ok: true`, exit 1, `result.state: "failed"` with `failedStage` and
+   `lastError`. The exit code is the signal; `ok` is not.
+
+Cleanup: the 5 non-claude launches left 5 terminals (4 `reclaimable`, 1 stopped
+codex). All released with the receipt's own `worker-release` argv
+(`counts: {released: 5}`); the probe's terminal was closed.
+
+**Verdict.** Orca launches claude and codex; copilot launches but needs a
+one-time folder trust; gemini, cursor, opencode and grok go through
+`subprocess` (gemini because its Orca launcher is disabled here, the other
+three because they are not installed). The backend therefore decides per
+agent, per session, never per run: an agent Orca cannot start is remembered for
+the rest of the run and goes through `subprocess`. Copilot's trust prompt is a
+`blocked` with a FIX, not a silent fall-through, because the prompt is real and
+a human can answer it once.
+
+Deviations: none from the pre-registration (6 launches: 3 installed, 3 absent;
+n = 1 each, no retries). The cost was one rate-limited codex screen and nothing
+else; copilot and gemini never reached a model.
