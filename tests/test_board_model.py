@@ -386,6 +386,23 @@ class ReapTests(ScriptTestCase):
                          "unchanged")
         self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
 
+    def test_a_resume_after_a_crash_between_the_owner_tag_and_claim_comment_starts_a_new_clock(self):
+        board = self.claimed()
+        tags.pause(board, "1", A)
+        board.advance(61)
+        board.crash_after(1)
+        with self.assertRaises(Crash):
+            lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        board.disarm()
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 1)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "unchanged")
+        claims = lease.events(board.list_comments("1"), lease.CLAIM)
+        self.assertEqual([c["key"] for c in claims],
+                         [f"claim:{A}:{tags.DESIGN}:g0",
+                          f"claim:{A}:{tags.DESIGN}:g0:r{board.cards['1']['rev']}"])
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
     def test_a_claim_after_a_release_is_a_new_sign_of_life(self):
         board = self.claimed()
         self.assertEqual(tags.release(board, "1", A)["outcome"], "written")

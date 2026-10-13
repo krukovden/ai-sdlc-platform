@@ -340,8 +340,23 @@ def _claim_key(board, identifier, run, phase, result):
         candidate = f"{base}:r{result.get('rev')}"
         if any(event.get("key") == candidate for event in prior):
             return candidate, n
+        if _missing_claim_for_current_hold(board, identifier, prior[-1]):
+            return candidate, n
         return prior[-1]["key"], n
     return base, n
+
+
+def _missing_claim_for_current_hold(board, identifier, latest):
+    """Whether the owner tag moved after the latest claim comment of this hold.
+
+    A crash can land after the owner-tag write and before the claim comment.
+    Retrying that hold is `unchanged`, but the board's last card change is now
+    newer than the previous claim comment, so the current acquisition still
+    needs its own claim event.
+    """
+    changed = parse_time(board.read_card(identifier).get("changed_at"))
+    commented = parse_time(latest.get("created_at"))
+    return changed is not None and commented is not None and changed > commented
 
 
 def generation(board, identifier):
