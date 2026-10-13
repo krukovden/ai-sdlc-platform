@@ -1860,7 +1860,11 @@ class AdoScenarioRunner:
             raise AdoScenarioFailure("engineering-catalog ado-board is not installed")
         result = self.run_logged(
             "Discover engineering-catalog state map",
-            ["node", str(script), "states", "discover", "--json", "--non-interactive"],
+            ["node", str(script), "states", "discover", "--json", "--non-interactive",
+             # A process with several states in one category needs an explicit
+             # pick per type; IDP_ADO_STATE_CHOICES is a JSON list of "Type:bucket=State".
+             *[arg for choice in json.loads(os.environ.get("IDP_ADO_STATE_CHOICES") or "[]")
+               for arg in ("--choose", str(choice))]],
             cwd=self.world.repo,
             timeout=240,
         )
