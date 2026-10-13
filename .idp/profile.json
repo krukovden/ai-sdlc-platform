@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "board": "linear",
   "team_key": "IDE",
   "token_path": "~/.feature-discovery/linear-token",

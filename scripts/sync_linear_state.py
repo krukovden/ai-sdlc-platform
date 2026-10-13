@@ -523,16 +523,29 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                  fix="retry; if it keeps failing, check the key may comment on this team")
         return result["comment"]["url"]
 
+    def list_attachments(self, identifier):
+        """The documents hanging from one issue: id, title, slugId, url, content."""
+        q = """
+        query IssueDocuments($id: String!) {
+          issue(id: $id) { id documents(first: 50) { nodes { id title slugId url content } } }
+        }
+        """
+        issue = query(self.token, q, {"id": identifier})["issue"]
+        if not issue:
+            fail(EXIT.INVALID, f"no issue {identifier}",
+                 fix="check the identifier; `board.py list` shows what exists")
+        return issue["documents"]["nodes"]
+
     def attach_document(self, title, content, identifier=None, project_id=None):
-        payload = {"title": title, "content": content}
         if identifier:
-            payload["issueId"] = self.get_issue(identifier)["id"]
-        elif project_id:
-            payload["projectId"] = project_id
-        else:
+            return self._attach_to_issue(identifier, title, content)
+        if not project_id:
             fail(EXIT.INVALID, "a document needs an issue or a project to hang from",
                  fix="pass an issue identifier, or a project id")
+        return self._create_document({"title": title, "content": content,
+                                      "projectId": project_id})
 
+    def _create_document(self, payload):
         mutation = """
         mutation Doc($input: DocumentCreateInput!) {
           documentCreate(input: $input) { success document { url slugId } }
@@ -546,6 +559,52 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         # deriving one by slicing a url is the kind of guess that works until
         # somebody renames a document.
         return result["document"]
+
+    def _attach_to_issue(self, identifier, title, content):
+        """A document with this title on this issue is **replaced**, never joined.
+
+        Two ADRs side by side leave nothing to say which one was approved
+        (IDE-147). Older duplicates are deleted, and every delete is checked;
+        identical content is left alone, so attaching twice changes nothing.
+        The postcondition is read back, not assumed: exactly one document with
+        this title, carrying this content.
+        """
+        same = [d for d in self.list_attachments(identifier) if d["title"] == title]
+        changed = False
+        if same:
+            keep = same[0]
+            for duplicate in same[1:]:
+                dropped = query(self.token, """
+                mutation Drop($id: String!) { documentDelete(id: $id) { success } }
+                """, {"id": duplicate["id"]})["documentDelete"]
+                if not dropped.get("success"):
+                    fail(EXIT.UNAVAILABLE, f"Linear refused to delete a duplicate of '{title}' "
+                                           f"on {identifier} (document {duplicate['id']})",
+                         fix="delete the extra document by hand, or retry once the key may "
+                             "delete documents; until then the issue carries two of them")
+                changed = True
+            if keep.get("content") != content:
+                result = query(self.token, """
+                mutation Replace($id: String!, $input: DocumentUpdateInput!) {
+                  documentUpdate(id: $id, input: $input) { success document { url slugId } }
+                }
+                """, {"id": keep["id"], "input": {"content": content}})["documentUpdate"]
+                if not result["success"]:
+                    fail(EXIT.INVALID, f"Linear refused to replace '{title}'",
+                         fix="retry; if it keeps failing, check the key may edit documents")
+                changed = True
+        else:
+            self._create_document({"title": title, "content": content,
+                                   "issueId": self.get_issue(identifier)["id"]})
+            changed = True
+
+        after = [d for d in self.list_attachments(identifier) if d["title"] == title]
+        if len(after) != 1 or after[0].get("content") != content:
+            fail(EXIT.UNAVAILABLE, f"after attaching '{title}', {identifier} carries "
+                                   f"{len(after)} documents with that title"
+                                   + ("" if len(after) != 1 else ", and not the content sent"),
+                 fix="look at the issue's documents, keep the right one, then retry")
+        return {"url": after[0]["url"], "slugId": after[0]["slugId"], "changed": changed}
 
     def list_documents(self, project_id):
         q = """

@@ -36,6 +36,25 @@ def load_script(name, directory=None):
     return module
 
 
+def load_package(directory, alias):
+    """Import a package directory under scripts/ by path, once per process.
+
+    The executors are a package because their backends import each other; a
+    package loaded by path needs its search location, or a relative import
+    inside it has nowhere to look.
+    """
+    existing = sys.modules.get(alias)
+    if existing is not None:
+        return existing
+    path = Path(directory)
+    spec = importlib.util.spec_from_file_location(
+        alias, path / "__init__.py", submodule_search_locations=[str(path)])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 board = load_script("board")
 linear = load_script("sync_linear_state")
 

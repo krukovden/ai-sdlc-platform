@@ -36,6 +36,16 @@ so it is not the record.
     design.py publish   --id <IDE-nn> --approver <who>
     design.py adr-path
 
+The session directory is a **cache** (IDE-147, *Local state is a cache*). After a
+takeover on another machine it does not exist, and that is never an error: a
+command that finds no state.json, or a corrupt one, starts the session again
+from the card — and from the last ADR on the card, when the runner put one in
+the session's context — and says so in the journal.
+
+Under the runner the card is never read from the board. The runner claims it,
+pre-fetches it into `$IDP_CONTEXT_DIR/card.json` and starts this session with no
+board credential; only the runner writes to the board.
+
 Exit codes, from IDE-69 §3 — the same as board.py and discovery.py, none new:
     0  success
     2  provider or board unavailable — a human must act
@@ -89,6 +99,10 @@ ALTERNATIVES_PER_ROUND = 2
 # answer. A default would answer for them, silently, in the direction that
 # costs nothing today.
 REVERSIBILITY = ["hard-to-reverse", "cheap-to-reverse"]
+
+# What the runner pre-fetched for a session that holds no board credential.
+CONTEXT_ENV = "IDP_CONTEXT_DIR"
+CARD_ENV = "IDP_CARD"
 
 # IDE-69 §5. A floor, not a quota: a feature that touches no storage does not
 # get a storage model, it gets a row saying so and why. The list itself lives in
@@ -215,9 +229,13 @@ def set_current(identifier):
 
 
 def current_identifier():
-    if not CURRENT.exists():
-        return None
-    return CURRENT.read_text(encoding="utf-8").strip() or None
+    if CURRENT.exists():
+        named = CURRENT.read_text(encoding="utf-8").strip()
+        if named:
+            return named
+    # A session the runner started names its card; a missing pointer file is
+    # the cache going missing, not the session.
+    return os.environ.get(CARD_ENV, "").strip() or None
 
 
 def write_atomic(path, text):
@@ -239,13 +257,31 @@ def journal(identifier, event):
 
 
 def load_state(identifier):
+    """The session's state; rebuilt from the card when the cache is gone or broken.
+
+    A missing or corrupt state.json is never exit 3 or 4. Those are the codes a
+    runner reads as "refused" and "start a fresh session", and a takeover on a
+    machine without this directory would loop between them for ever — which is
+    exactly the wedge IDE-147 records from CRAP. So the session starts again
+    from the card, keeping a corrupt file beside it for whoever wants to look.
+    """
     path = session_dir(identifier) / "state.json"
-    if not path.exists():
-        fail(EXIT.CONFLICT, f"no design session for {identifier}. Run: design.py init {identifier}")
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        fail(EXIT.INVALID, f"{path} is corrupt: {exc}")
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            os.replace(path, path.with_suffix(".json.corrupt"))
+            return rebuild(identifier, f"state.json was corrupt ({exc})")
+    return rebuild(identifier, "no state.json on this machine")
+
+
+def rebuild(identifier, why):
+    """Start the session again from the card. Never claims: whoever started it did."""
+    state = new_session(identifier, claim=False)
+    journal(identifier, {"event": "rebuilt", "why": why})
+    print(f"{identifier}: the local session was rebuilt from the card ({why})",
+          file=sys.stderr)
+    return state
 
 
 def save_state(state):
@@ -309,6 +345,9 @@ def open_card(identifier):
     The single seam onto the board. Nothing above this line knows a tracker by
     name, and a test replaces this one function.
     """
+    context = os.environ.get(CONTEXT_ENV, "").strip()
+    if context:
+        return card_from_context(Path(context), identifier)
     module = load_board_module()
     try:
         profile, _, board = module.open_board()
@@ -320,6 +359,30 @@ def open_card(identifier):
     except Exception as exc:                       # noqa: BLE001 - deliberate
         fail(EXIT.UNAVAILABLE, f"the board could not be reached: {exc}")
     return board, profile, issue, answer
+
+
+def card_from_context(directory, identifier):
+    """The card as the runner pre-fetched it. There is no board here, by design."""
+    path = directory / "card.json"
+    try:
+        card = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(EXIT.UNAVAILABLE, f"the runner's context {path} cannot be read: {exc}. "
+             "FIX: re-run the phase through run.py, which writes it")
+    issue = card.get("issue") or {}
+    if identifier and issue.get("identifier") != identifier:
+        fail(EXIT.INVALID, f"the runner's context is for {issue.get('identifier')}, not "
+             f"{identifier}. FIX: work on the card this session was started for")
+    return None, card.get("profile") or {}, issue, card.get("answer") or {}
+
+
+def previous_adr():
+    """The last ADR on the card, when the runner put one in the context."""
+    context = os.environ.get(CONTEXT_ENV, "").strip()
+    if not context:
+        return None
+    path = Path(context) / "adr.md"
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 def architect_model(override=None):
@@ -784,6 +847,18 @@ def cmd_init(args):
               file=sys.stderr)
         return
 
+    state = new_session(identifier, claim=not args.no_claim, architect=args.architect,
+                        at=args.at)
+    if args.no_claim:
+        print("--no-claim: the card was not moved; nothing was written to the board",
+              file=sys.stderr)
+    print(f"{identifier}  {state['feature_hash']}")
+    print(f"session: {directory}", file=sys.stderr)
+
+
+def new_session(identifier, claim=True, architect=None, at=None):
+    """A fresh session on a card in the design phase: what `init` does, and a rebuild."""
+    directory = session_dir(identifier)
     board, profile, issue, answer = open_card(identifier)
     header = state_module().parse_machine_header(issue.get("description"))
 
@@ -808,16 +883,13 @@ def cmd_init(args):
                 "from its ready position and resumes from its active one.")
 
     claimed = False
-    if args.no_claim:
-        print("--no-claim: the card was not moved; nothing was written to the board",
-              file=sys.stderr)
-    elif answer["position"] == "ready":
+    if claim and answer["position"] == "ready":
         # IDE-71's claim: Ready for Design -> In Design. Without it the resolver
         # keeps telling every parallel agent to start the same card.
         board.start_phase(identifier, "design")
         claimed = True
 
-    at = args.at or now()
+    at = at or now()
     state = {
         "schema_version": SCHEMA_VERSION,
         "produced_by": PRODUCED_BY,
@@ -828,7 +900,7 @@ def cmd_init(args):
         "supersedes": None,
         "state": "INIT",
         "created_at": at,
-        "architect_model": architect_model(args.architect),
+        "architect_model": architect_model(architect),
         "feature_hash": feature_hash(issue.get("description")),
         "sections": {},
         "decisions": [],
@@ -846,6 +918,7 @@ def cmd_init(args):
         "degradations": [],
         "budget_forced": False,
         "redraft_required": False,
+        "scope": None,
     }
     directory.mkdir(parents=True, exist_ok=True)
     journal(identifier, {"event": "init", "identifier": identifier, "at": at,
@@ -855,12 +928,21 @@ def cmd_init(args):
     save_state(state)
     set_current(identifier)
 
-    print(f"{identifier}  {state['feature_hash']}")
-    print(f"session: {directory}", file=sys.stderr)
+    previous = previous_adr()
+    if previous is not None:
+        # Restart the sub-phase from the last artifact on the card: the
+        # architect starts from what was sent back, not from a blank page.
+        write_atomic(directory / "previous-adr.md", previous)
+        state["previous_adr"] = "sha256:" + hashlib.sha256(
+            previous.encode("utf-8")).hexdigest()
+        save_state(state)
+    return state
 
 
 def state_module():
-    return load_board_module().state
+    # The resolver alone, not the board front door: a session under the runner
+    # reads its card from the context and must not need what opens a board.
+    return load_sibling(SCRIPTS / "state.py", "idp_state")
 
 
 def describe_phase(answer):
@@ -1385,6 +1467,10 @@ def cmd_publish(args):
     what, the record is a comment we write ourselves. Discovery already does
     exactly this — same block, same reason.
     """
+    if os.environ.get(CONTEXT_ENV, "").strip():
+        fail(EXIT.FORBIDDEN, "this session runs under the runner and holds no board "
+             "credential; the runner attaches the ADR itself. FIX: run "
+             "`run.py report --code 0 --reason \"ADR ready\"` instead")
     state = load_state(args.id)
     if state["state"] != "AWAITING_APPROVAL":
         fail(EXIT.CONFLICT, f"{state['identifier']} is {state['state']}, not AWAITING_APPROVAL. "

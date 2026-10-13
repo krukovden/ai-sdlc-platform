@@ -48,6 +48,7 @@ class FakeBoard(phases.PhaseMixin):
         self.cards = {}
         self.comments = {}
         self.attachments = {}
+        self.uploads = 0
         self.clock = now or datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)
         # Whether posting a comment moves `/rev` on Azure DevOps is experiment
         # 2 of IDE-147, unmeasured. Both answers are modelled so the claim is
@@ -192,12 +193,28 @@ class FakeBoard(phases.PhaseMixin):
         return None
 
     def attach_document(self, title, content, identifier=None, project_id=None):
+        """Replace a document of the same title on the same card, as both adapters do.
+
+        Identical bytes already there are not a side effect at all: attaching
+        twice changes nothing, which is what lets a resumed phase re-attach.
+        """
         host = str(identifier or "project")
-        slug = f"att-{sum(len(v) for v in self.attachments.values()) + 1}"
-        self.attachments.setdefault(host, []).append(
-            {"slugId": slug, "title": title, "content": content})
+        documents = self.attachments.setdefault(host, [])
+        same = [d for d in documents if d["title"] == title]
+        if len(same) == 1 and same[0]["content"] == content:
+            return {"url": f"https://fake/attachments/{same[0]['slugId']}",
+                    "slugId": same[0]["slugId"], "title": title, "changed": False}
+        self.uploads += 1
+        slug = f"att-{self.uploads}"
+        documents[:] = [d for d in documents if d["title"] != title]
+        documents.append({"slugId": slug, "title": title, "content": content})
         self._effect(("attach", host, title))
-        return {"url": f"https://fake/attachments/{slug}", "slugId": slug, "title": title}
+        return {"url": f"https://fake/attachments/{slug}", "slugId": slug, "title": title,
+                "changed": True}
+
+    def list_attachments(self, identifier):
+        return [dict(d, url=f"https://fake/attachments/{d['slugId']}")
+                for d in self.attachments.get(str(identifier), [])]
 
     def list_documents(self, project_id=None):
         return [dict(d, issue=host) for host, docs in self.attachments.items() for d in docs]

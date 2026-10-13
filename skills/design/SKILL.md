@@ -122,6 +122,21 @@ get a storage model. But a **skip without a reason is not a skip, it is a
 forgotten artifact**, and the script refuses it. A contract that found no place
 in the standard set gets its own section and its own row.
 
+## Running under the runner
+
+When `run.py` started this session, it already claimed the card and put it in
+`$IDP_CONTEXT_DIR`; there is no board credential here and none is needed. Do
+not `publish`: when `next` says `await_approval`, end with
+
+```bash
+python3 scripts/run.py report --code 0 --reason "ADR ready"
+```
+
+and the runner validates the ADR, attaches it and hands the card to review. If
+a human has to decide something first, report `--code 2` with the question as
+the reason. A missing `~/.idp/design/...` directory is not an error: the
+session rebuilds from the card.
+
 ## Exit codes
 
 | code | meaning |

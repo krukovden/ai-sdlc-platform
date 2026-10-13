@@ -288,6 +288,9 @@ def load_schema(path=None):
 SCHEMA_KEYWORDS = frozenset({
     "const", "enum", "type", "minLength", "pattern", "properties", "required",
     "additionalProperties", "allOf", "anyOf", "not", "if", "then", "else",
+    # The project profile's schema (IDE-147) needs these as well: lists, counts
+    # and maps whose keys are free but whose values are not.
+    "items", "minItems", "minimum",
     # Documentation, not validation: carried by the schema, ignored on purpose.
     "$schema", "$id", "$comment", "title", "description", "examples",
 })
@@ -297,8 +300,32 @@ def satisfies(value, schema):
     return not check_schema(value, schema, "header")
 
 
+_TYPE_WORDS = {"string": "a string", "object": "a mapping", "array": "a list",
+               "integer": "an integer", "number": "a number", "boolean": "true or false",
+               "null": "null"}
+
+
+def _is_type(value, name):
+    """JSON Schema's type names over Python values. A bool is not an integer."""
+    if name == "string":
+        return isinstance(value, str)
+    if name == "object":
+        return isinstance(value, dict)
+    if name == "array":
+        return isinstance(value, list)
+    if name == "boolean":
+        return isinstance(value, bool)
+    if name == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if name == "null":
+        return value is None
+    return True
+
+
 def check_schema(value, schema, path="header", skip=frozenset()):
-    """Validate against the draft-2020-12 subset the frontmatter schema uses.
+    """Validate against the draft-2020-12 subset the frontmatter and profile schemas use.
 
     A second, smaller copy of the idea that lives in the Discovery reviewer -
     on purpose. That one has no allOf, no if/then and no pattern, and it lives
@@ -329,12 +356,24 @@ def check_schema(value, schema, path="header", skip=frozenset()):
         return problems
 
     declared = schema.get("type")
-    if declared == "string" and not isinstance(value, str):
-        problems.append((path, f"{path}: expected a string"))
-        return problems
-    if declared == "object" and not isinstance(value, dict):
-        problems.append((path, f"{path}: expected a mapping"))
-        return problems
+    if declared is not None:
+        names = declared if isinstance(declared, list) else [declared]
+        if not any(_is_type(value, name) for name in names):
+            problems.append((path, f"{path}: expected {' or '.join(_TYPE_WORDS.get(n, n) for n in names)}"))
+            return problems
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        if minimum is not None and value < minimum:
+            problems.append((path, f"{path}: {value} is below the minimum of {minimum}"))
+
+    if isinstance(value, list):
+        minimum = schema.get("minItems")
+        if minimum is not None and len(value) < minimum:
+            problems.append((path, f"{path}: needs at least {minimum} items"))
+        if "items" in schema:
+            for index, item in enumerate(value):
+                problems += check_schema(item, schema["items"], f"{path}[{index}]", skip)
 
     if isinstance(value, str):
         minimum = schema.get("minLength")
@@ -350,11 +389,16 @@ def check_schema(value, schema, path="header", skip=frozenset()):
             if field not in value:
                 problems.append((f"{path}.{field}",
                                  f"{path}: required field {field!r} is missing"))
-        if schema.get("additionalProperties") is False:
+        extra = schema.get("additionalProperties")
+        if extra is False:
             for field in value:
                 if field not in properties:
                     problems.append((f"{path}.{field}",
                                      f"{path}: {field!r} is not a field of the standard"))
+        elif isinstance(extra, dict):
+            for field in value:
+                if field not in properties:
+                    problems += check_schema(value[field], extra, f"{path}.{field}", skip)
         for field, subschema in properties.items():
             if field not in value:
                 continue

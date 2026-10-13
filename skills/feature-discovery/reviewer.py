@@ -25,7 +25,6 @@ is worth nothing.
 
 import json
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -224,22 +223,42 @@ def load_providers(path=None):
     return json.loads(candidate.read_text(encoding="utf-8"))
 
 
-BOARD_CREDENTIAL = re.compile(
-    r"(^LINEAR_|^AZURE_DEVOPS_|^ADO_|_PAT$|^PAT$|^SYSTEM_ACCESSTOKEN$|"
-    r"(TOKEN|SECRET|PASSWORD)$)", re.IGNORECASE)
-# Keys a model CLI needs to answer at all; they are not board credentials.
-MODEL_KEYS = re.compile(r"^(OPENAI|ANTHROPIC|GEMINI|GOOGLE|CODEX|CLAUDE)_", re.IGNORECASE)
+def _environment_rules():
+    """The platform's one environment allowlist, in scripts/executors/environment.py.
+
+    A reviewer started from here and a worker started by the runner are both
+    model processes, and both must hold no board credential; two lists for that
+    would drift, and the first sign would be a token in a reviewer's env.
+    """
+    import importlib.util
+    import sys
+    alias = "idp_executor_environment"
+    existing = sys.modules.get(alias)
+    if existing is not None:
+        return existing
+    path = REPO_ROOT / "scripts" / "executors" / "environment.py"
+    spec = importlib.util.spec_from_file_location(alias, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def provider_environment(environ=None):
-    """The environment a model subprocess gets: ours, minus every board credential.
+def provider_environment(environ=None, name=None, agent=None):
+    """The environment a model subprocess gets: an allowlist, with no board credential.
 
     A reviewer sees a prompt built from artifacts; it has no business holding
-    the key that can write to the board.
+    the key that can write to the board. Only the provider's own agent's
+    sign-in keys pass — its `agent` field in providers.json, or the agent its
+    `name` starts with. A provider naming neither is refused with a FIX
+    (ReviewerError), never handed every agent's keys.
     """
     source = os.environ if environ is None else environ
-    return {name: value for name, value in source.items()
-            if MODEL_KEYS.match(name) or not BOARD_CREDENTIAL.search(name)}
+    rules = _environment_rules()
+    try:
+        return rules.provider_env(source, name, agent)
+    except rules.UnknownAgent as exc:
+        raise ReviewerError(f"{exc.message}\nFIX: {exc.fix}")
 
 
 def run_provider(spec, prompt, schema_name, timeout=300):
@@ -251,10 +270,10 @@ def run_provider(spec, prompt, schema_name, timeout=300):
     """
     command = [part.replace("{schema}", str(SCHEMAS / schema_name))
                for part in spec["command"]]
+    env = provider_environment(name=spec.get("name"), agent=spec.get("agent"))
     try:
         result = subprocess.run(command, input=prompt, capture_output=True,
-                                text=True, timeout=timeout,
-                                env=provider_environment())
+                                text=True, timeout=timeout, env=env)
     except FileNotFoundError:
         raise ReviewerError(f"provider '{spec.get('name')}' is not installed")
     except subprocess.TimeoutExpired:

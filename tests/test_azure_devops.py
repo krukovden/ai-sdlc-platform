@@ -36,7 +36,7 @@ PROFILE = {
     "team_key": "IdeaHub",
     "workspace": "contoso",
     "project_id": "Contoso Platform",
-    "epic_id": "10",
+    "documents_item": "10",
 }
 
 
@@ -57,6 +57,7 @@ class FakeAz:
         self.items = {str(k): v for k, v in (items or {}).items()}
         self.next_id = next_id
         self.attachment_url = "https://dev.azure.com/contoso/_apis/wit/attachments/att-1"
+        self.uploads = {}        # attachment id -> the text uploaded under it
         self.access_token = "bearer-from-az"
         self.wikis = {"Contoso.wiki"}
         self.pages = {}
@@ -180,8 +181,13 @@ class FakeAz:
         path = url.split("/_apis/", 1)[1] if "/_apis/" in url else url
         if path.startswith("wit/attachments"):
             if method == "POST":
-                return {"id": "att-1", "url": self.attachment_url}
-            return "downloaded markdown"
+                number = len(self.uploads) + 1
+                slug = f"att-{number}"
+                self.uploads[slug] = body.decode("utf-8")
+                return {"id": slug, "url": self.attachment_url if number == 1
+                        else self.attachment_url.replace("att-1", slug)}
+            slug = path.split("?")[0].rsplit("/", 1)[-1]
+            return self.uploads.get(slug, "downloaded markdown")
         if path.startswith("wit/workitemtypes"):
             return ({"value": []}, "Mon, 12 Oct 2026 04:00:00 GMT") if want_date \
                 else {"value": []}
@@ -245,6 +251,8 @@ class FakeAz:
                         if name == "System.Tags" else operation["value"])
             elif field == "/relations/-":
                 item.setdefault("relations", []).append(operation["value"])
+            elif field.startswith("/relations/") and operation["op"] == "remove":
+                del item["relations"][int(field.rsplit("/", 1)[-1])]
         return item
 
     def rest_matching(self, method, fragment):
@@ -1022,8 +1030,9 @@ class AttachmentTests(ScriptTestCase):
             azure.Board("pat-secret", PROFILE).attach_document("02 · history", "x",
                                                                identifier="42")
         patch = json.loads(fake.rest_calls[-1]["body"].decode("utf-8"))
-        self.assertEqual(patch[0]["value"]["rel"], "AttachedFile")
-        self.assertEqual(patch[0]["value"]["attributes"]["comment"], "02 · history")
+        added = [op for op in patch if op["op"] == "add"]
+        self.assertEqual(added[0]["value"]["rel"], "AttachedFile")
+        self.assertEqual(added[0]["value"]["attributes"]["comment"], "02 · history")
         self.assertEqual(fake.rest_calls[-1]["content_type"],
                          "application/json-patch+json")
 
@@ -1066,15 +1075,113 @@ class AttachmentTests(ScriptTestCase):
         patch = fake.rest_matching("PATCH", "wit/workitems/10")
         self.assertEqual(len(patch), 1)
 
-    def test_a_project_level_document_without_an_epic_is_a_configuration_failure(self):
-        profile = {k: v for k, v in PROFILE.items() if k != "epic_id"}
+    def test_a_project_level_document_without_a_host_is_a_configuration_failure(self):
+        profile = {k: v for k, v in PROFILE.items() if k != "documents_item"}
         fake = FakeAz()
         with stub(fake):
             message = self.assert_exits(6, azure.Board(None, profile).attach_document,
                                         "registry", "x", project_id="Contoso Platform")
-        self.assertIn("epic_id", message)
+        self.assertIn("documents_item", message)
+        self.assertNotIn("epic_id", message)
         self.assertEqual(fake.calls, [])
         self.assertEqual(fake.rest_calls, [])
+
+    # -- a document replaces its namesake (IDE-147) -------------------------
+
+    def attached(self, fake, identifier="42"):
+        return [r for r in fake.items[identifier]["relations"] if r["rel"] == "AttachedFile"]
+
+    def test_a_second_document_with_the_same_title_replaces_the_first(self):
+        fake = FakeAz(work_item())
+        with stub(fake):
+            handle = azure.Board("pat-secret", PROFILE)
+            handle.attach_document("IDE-1 · 00 · ADR", "first\n", identifier="42")
+            second = handle.attach_document("IDE-1 · 00 · ADR", "second\n",
+                                            identifier="42")
+            relations = self.attached(fake)
+            self.assertEqual(len(relations), 1)
+            self.assertEqual(relations[0]["url"].rsplit("/", 1)[-1], second["slugId"])
+            self.assertEqual(fake.uploads[second["slugId"]], "second\n")
+        patch = json.loads(fake.rest_matching("PATCH", "wit/workitems/42")[-1]["body"])
+        self.assertEqual([op["op"] for op in patch], ["test", "remove", "add"])
+
+    def test_the_same_bytes_attached_twice_upload_nothing_the_second_time(self):
+        fake = FakeAz(work_item())
+        with stub(fake):
+            handle = azure.Board("pat-secret", PROFILE)
+            handle.attach_document("IDE-1 · 00 · ADR", "same\n", identifier="42")
+            before = len(fake.rest_matching("POST", "wit/attachments"))
+            again = handle.attach_document("IDE-1 · 00 · ADR", "same\n", identifier="42")
+        self.assertFalse(again["changed"])
+        self.assertEqual(len(fake.rest_matching("POST", "wit/attachments")), before)
+        self.assertEqual(len(self.attached(fake)), 1)
+
+    def test_old_duplicates_are_all_removed_and_other_titles_are_kept(self):
+        items = work_item()
+        items["42"]["relations"] = [
+            {"rel": "AttachedFile", "url": "https://x/_apis/wit/attachments/old-1",
+             "attributes": {"comment": "IDE-1 · 00 · ADR"}},
+            {"rel": "AttachedFile", "url": "https://x/_apis/wit/attachments/other",
+             "attributes": {"comment": "IDE-1 · 01 · History"}},
+            {"rel": "AttachedFile", "url": "https://x/_apis/wit/attachments/old-2",
+             "attributes": {"name": "IDE-1 · 00 · ADR.md"}},
+        ]
+        fake = FakeAz(items)
+        with stub(fake):
+            azure.Board("pat-secret", PROFILE).attach_document("IDE-1 · 00 · ADR", "new\n",
+                                                               identifier="42")
+        titles = sorted(azure._relation_title(r) for r in self.attached(fake))
+        self.assertEqual(titles, ["IDE-1 · 00 · ADR", "IDE-1 · 01 · History"])
+
+    def test_a_card_that_moved_between_the_read_and_the_write_is_read_again(self):
+        fake = FakeAz(work_item())
+        original = fake.patch_work_item
+        moved = []
+
+        def once_moved(path, body, conflict=False):
+            if not moved:
+                moved.append(path)
+                fake.items["42"]["rev"] += 1          # somebody else wrote
+            return original(path, body, conflict)
+
+        fake.patch_work_item = once_moved
+        with stub(fake):
+            azure.Board("pat-secret", PROFILE).attach_document("t", "x\n", identifier="42")
+        self.assertEqual(len(fake.rest_matching("PATCH", "wit/workitems/42")), 2)
+        self.assertEqual(len(self.attached(fake)), 1)
+
+    # -- through the validated profile, the only way a real run gets one ----
+
+    def test_the_test_profile_is_one_the_validated_loader_accepts(self):
+        board.check_profile(PROFILE)
+
+    def test_a_validated_profile_reaches_the_project_level_document_path(self):
+        import tempfile
+        from pathlib import Path
+        from support import chdir, write_profile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            write_profile(root, **PROFILE)
+            with chdir(root):
+                loaded = board.load_profile()
+        fake = FakeAz(work_item("10"))
+        with stub(fake):
+            azure.Board("pat-secret", loaded).attach_document(
+                "registry", "x", project_id="Contoso Platform")
+        self.assertEqual(len(fake.rest_matching("PATCH", "wit/workitems/10")), 1)
+
+    def test_a_profile_still_carrying_epic_id_is_refused_with_the_rename(self):
+        import tempfile
+        from pathlib import Path
+        from support import chdir, write_profile
+        legacy = dict(PROFILE, epic_id=PROFILE["documents_item"])
+        del legacy["documents_item"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            write_profile(root, **legacy)
+            with chdir(root):
+                message = self.assert_exits(board.EXIT.CONFIG, board.load_profile)
+        self.assertIn("rename 'epic_id' to 'documents_item'", message)
 
     def test_documents_are_listed_from_the_relations_of_the_work_items(self):
         items = work_item("10")

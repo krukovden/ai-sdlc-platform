@@ -43,7 +43,9 @@ expired PAT, which `az login` cannot renew (IDE-130).
     workspace         the organization: `contoso` or `https://dev.azure.com/contoso`
     project_id        the Azure DevOps *project name* — ADO has no project uuid here
     team_key          the team, as `az devops team show` knows it
-    epic_id           work item that carries project-level attachments (IDE-76)
+    documents_item    the work item that carries project-level attachments: Azure
+                      DevOps has no project documents. Replaces `epic_id`, which
+                      the profile refuses since IDE-147
     area_path         optional, stamped on every work item this platform creates
     iteration_path    optional, likewise
     work_item_types   optional map: {"feature": "Feature", "pbi": "Product Backlog Item"}
@@ -1163,59 +1165,100 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
         Azure DevOps has no documents, only files.
 
-        Project-level documents hang from the epic named by the profile
-        (IDE-76: the epic carries the feature registry and Tried & Rejected).
-        Without that key there is nowhere for them to go, and that is a
-        configuration failure, not a malformed request.
+        Project-level documents hang from the work item the profile names as
+        `documents_item` — the epic, usually (IDE-76). Without that key there
+        is nowhere for them to go, and that is a configuration failure, not a
+        malformed request. `epic_id` was the old name and the profile refuses
+        it (IDE-147).
         """
         host = identifier
         if not host:
-            host = self.profile.get("epic_id")
+            host = self.profile.get(DOCUMENTS_ITEM)
             if not host:
-                fail(EXIT.CONFIG, "the profile has no 'epic_id'. Azure DevOps has no project-level "
-                                  "documents; the epic carries them as attachments (IDE-76). Add "
-                                  "the epic's work item id, then re-run.",
-                     fix="add 'epic_id' — the work item id of the project's epic — to .idp/profile.json, then re-run")
+                fail(EXIT.CONFIG, f"the profile has no '{DOCUMENTS_ITEM}'. Azure DevOps has no "
+                                  "project-level documents; a work item carries them as "
+                                  "attachments (IDE-76).",
+                     fix=f"add '{DOCUMENTS_ITEM}' — the id of the work item that carries the "
+                         "project's documents, usually its epic — to .idp/profile.json, then re-run")
 
         work_item_id = str(_as_id(host))
         project = self._project(project_id)
         name = attachment_name(title)
 
-        # Straight over REST, and no temporary file: `az devops invoke` parses
-        # `--in-file` as JSON before sending it, so Markdown never survived the
-        # trip (IDE-137). The body below is bytes and reaches the service as it
-        # was written.
-        uploaded = self._rest("wit/attachments", method="POST",
-                              body=content.encode("utf-8"),
-                              content_type="application/octet-stream",
-                              query={"fileName": name}, project=project) or {}
-        attachment_url = uploaded.get("url")
-        if not attachment_url:
-            fail(EXIT.UNAVAILABLE, f"Azure DevOps accepted no attachment for '{title}'",
-                 fix="retry the upload; if it keeps failing, check the attachment size and the token's Work Items (Read & Write) scope")
+        # **A document with this title replaces the one already there** (IDE-147).
+        # This used to append a relation every time, which left two ADRs side by
+        # side after a redesign and nothing to say which one was approved. The
+        # removal of the old relation and the link of the new one are one patch,
+        # fenced on the revision they were decided on; identical bytes already
+        # attached are not uploaded again, so attaching twice changes nothing.
+        for _ in range(ATTACH_ATTEMPTS):
+            item = self._show(work_item_id, expand="relations")
+            rev = item.get("rev")
+            same = [(index, relation)
+                    for index, relation in enumerate(item.get("relations") or [])
+                    if (relation.get("rel") or "") == "AttachedFile"
+                    and _relation_title(relation) == title]
+            if len(same) == 1:
+                slug = (same[0][1].get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+                existing = self._rest(f"wit/attachments/{urllib.parse.quote(slug)}",
+                                      query={"download": "true"}, project=project,
+                                      parse_json=False)
+                if existing == content:
+                    return {"url": same[0][1].get("url"), "title": title,
+                            "slugId": slug, "changed": False}
 
-        patch = json.dumps([{
-            "op": "add",
-            "path": "/relations/-",
-            "value": {
-                "rel": "AttachedFile",
-                "url": attachment_url,
-                "attributes": {"comment": title},
-            },
-        }]).encode("utf-8")
-        # This one would have survived the CLI — it really is JSON — but keeping
-        # the three attachment calls on one door beats remembering which is the
-        # exception.
-        self._rest(f"wit/workitems/{work_item_id}", method="PATCH", body=patch,
-                   content_type="application/json-patch+json", project=project)
+            # Straight over REST, and no temporary file: `az devops invoke`
+            # parses `--in-file` as JSON before sending it, so Markdown never
+            # survived the trip (IDE-137). The body below is bytes and reaches
+            # the service as it was written.
+            uploaded = self._rest("wit/attachments", method="POST",
+                                  body=content.encode("utf-8"),
+                                  content_type="application/octet-stream",
+                                  query={"fileName": name}, project=project) or {}
+            attachment_url = uploaded.get("url")
+            if not attachment_url:
+                fail(EXIT.UNAVAILABLE, f"Azure DevOps accepted no attachment for '{title}'",
+                     fix="retry the upload; if it keeps failing, check the attachment size and the token's Work Items (Read & Write) scope")
 
-        # `{url, slugId}`, because that is what the Linear adapter answers and
-        # what `board.py doc` and `board.py memory record` index into. Returning
-        # a bare string here made both of them fail on the line after the upload
-        # they had just been fixed to perform.
-        return {"url": attachment_url, "title": title,
-                "slugId": str(uploaded.get("id")
-                              or attachment_url.rstrip("/").rsplit("/", 1)[-1])}
+            operations = [{"op": "test", "path": "/rev", "value": rev}] if rev else []
+            # Highest index first, so every removal leaves the indices still to
+            # be removed where they were.
+            operations += [{"op": "remove", "path": f"/relations/{index}"}
+                           for index, _ in sorted(same, key=lambda pair: -pair[0])]
+            operations.append({
+                "op": "add",
+                "path": "/relations/-",
+                "value": {
+                    "rel": "AttachedFile",
+                    "url": attachment_url,
+                    "attributes": {"comment": title},
+                },
+            })
+            # This one would have survived the CLI — it really is JSON — but
+            # keeping the three attachment calls on one door beats remembering
+            # which is the exception.
+            answer = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
+                                body=json.dumps(operations).encode("utf-8"),
+                                content_type="application/json-patch+json",
+                                project=project, conflict=True)
+            if answer is CONFLICT:
+                continue          # the card moved under us: read it again
+
+            # `{url, slugId}`, because that is what the Linear adapter answers
+            # and what `board.py doc` and `board.py memory record` index into.
+            # Returning a bare string here made both of them fail on the line
+            # after the upload they had just been fixed to perform.
+            return {"url": attachment_url, "title": title, "changed": True,
+                    "replaced": len(same),
+                    "slugId": str(uploaded.get("id")
+                                  or attachment_url.rstrip("/").rsplit("/", 1)[-1])}
+        fail(EXIT.UNAVAILABLE, f"work item {work_item_id} kept changing while '{title}' was "
+                               f"being attached; gave up after {ATTACH_ATTEMPTS} reads",
+             fix="retry once nobody else is editing the work item")
+
+    def list_attachments(self, identifier):
+        """The documents attached to one work item: slugId, title, url."""
+        return self._attachments_of(identifier)
 
     def _attachments_of(self, identifier):
         item = self._show(identifier, expand="relations")
@@ -1246,7 +1289,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         """
         project = self._project(project_id)
         documents = []
-        epic = self.profile.get("epic_id")
+        epic = self.profile.get(DOCUMENTS_ITEM)
         if epic:
             documents.extend(self._attachments_of(epic))
 
@@ -1312,7 +1355,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                  fix="check the attachment id; `board.py doc --list` shows what is attached")
 
         title = slug
-        epic = self.profile.get("epic_id")
+        epic = self.profile.get(DOCUMENTS_ITEM)
         if epic:
             for document in self._attachments_of(epic):
                 if document["slugId"] == slug:
@@ -1553,6 +1596,19 @@ def _wiki_parts(address, title=None):
         fail(EXIT.INVALID, f"the wiki address {address!r} names a wiki but no page",
              fix="add the page path after the wiki name: <wiki>/<page path>")
     return identifier, "/" + path.strip("/")
+
+
+ATTACH_ATTEMPTS = 3
+
+# The profile key naming the work item project-level documents hang from. It
+# outlives the feature registry on the epic: IDE-147 moves that registry to
+# memory/index.md, and whatever project-level documents remain still need a host.
+DOCUMENTS_ITEM = "documents_item"
+
+
+def _relation_title(relation):
+    attributes = relation.get("attributes") or {}
+    return document_title(attributes.get("comment") or attributes.get("name") or "")
 
 
 def attachment_name(title):
