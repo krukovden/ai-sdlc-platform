@@ -646,6 +646,20 @@ def validate_plan(plan, session, adr_text):
                                 f"{', '.join(available) or 'no headings at all'}")})
 
     for pbi in pbis:
+        for task in pbi.get("tasks", []):
+            for path in task.get("existing", []) + task.get("delete", []):
+                normalize_path(path)
+                if not any(paths_overlap(path, declared) for declared in pbi["paths"]):
+                    problems.append({"code": 3, "message":
+                        f"Task {task['key']}: {path} must be included in the PBI declared paths"})
+            for reuse in task.get("reuse", []):
+                normalize_path(reuse["path"])
+                if reuse["action"] == "supersede" and reuse["path"] not in task.get("delete", []):
+                    problems.append({"code": 3, "message":
+                        f"Task {task['key']}: supersede {reuse['path']} needs a deletion deliverable"})
+                if reuse["action"] == "extend" and reuse["path"] not in task["existing"]:
+                    problems.append({"code": 3, "message":
+                        f"Task {task['key']}: extend {reuse['path']} must be listed in existing"})
         for message in check_separation(pbi):
             problems.append({"code": 3, "message": message})
 
@@ -722,7 +736,7 @@ def render_card(session, pbi, brief_url=None):
              words.heading("criteria", language), ""]
     for criterion in pbi["acceptance_criteria"]:
         lines.append(f"- **{criterion['id']}** — {criterion['text']}")
-        lines.append(f"  Evidence: {criterion['evidence']}")
+        lines.append("  Witness: " + canonical_json(criterion["witness"]))
     lines += ["", words.phrase("feature-branch", language, branch=session["branch"]),
               words.phrase("adr-sections", language,
                            sections=", ".join(pbi.get("adr_sections") or [])), "",
@@ -742,6 +756,14 @@ def render_brief(session, pbi):
         lines.append("- " + words.phrase("do-not-touch", language, pointer=pointer))
     for pointer in pbi.get("constraints") or []:
         lines.append("- " + words.phrase("constraint", language, pointer=pointer))
+
+    for task in pbi.get("tasks", []):
+        lines.append(f"- {task['key']}: {task['title']}")
+        lines.append(f"  NOT DONE if: {task['not_done_if']}")
+        lines.append("  existing: " + ", ".join(task["existing"]))
+        lines.append("  Deliverables: " + "; ".join(task["deliverables"]))
+        for path in task.get("delete", []):
+            lines.append(f"  Delete: {path}")
 
     lines.append("- " + words.phrase("work-in-branch", language,
                                      branch=session["branch"]))
@@ -1140,6 +1162,79 @@ def cmd_graph(args):
     return report
 
 
+def coverage_difference(report, pbis):
+    """The model extracts semantics; the script owns the lossless set difference."""
+    constraints = report["constraints"]
+    ids = [constraint["id"] for constraint in constraints]
+    if len(ids) != len(set(ids)):
+        raise PlanError(3, "coverage report repeats a constraint id")
+    known = {pbi["key"] for pbi in pbis}
+    covered = set()
+    for row in report["coverage"]:
+        if row["constraint"] not in ids or not row["pbis"] or not set(row["pbis"]) <= known:
+            raise PlanError(3, "coverage report references an unknown constraint or PBI")
+        covered.add(row["constraint"])
+    return sorted(set(ids) - covered)
+
+
+def check_coverage(plan, adr_text, planner_model, providers=None, runner=None):
+    reviewer = load_reviewer()
+    config = providers if providers is not None else reviewer.load_providers()
+    independent = {"reviewer": {}}
+    for role in ("primary", "fallback"):
+        provider = config.get("reviewer", {}).get(role, {})
+        identity = provider.get("model", provider.get("name", ""))
+        if (identity and identity.casefold() != planner_model.casefold()
+                and provider.get("name", "").casefold() != planner_model.casefold()):
+            independent["reviewer"][role] = provider
+    prompt = (
+        "Independently extract EVERY load-bearing constraint from the ADR, including "
+        "quantifiers, enumerations and each table row. Give each a stable id, exact "
+        "source quote and source line. Then map each constraint to PBIs that actually "
+        "deliver it; a section reference alone is not coverage. Leave missing constraints "
+        "out of coverage. Never omit a constraint because no PBI covers it.\nADR:\n"
+        + adr_text + "\nPBIs:\n" + canonical_json(plan))
+    kwargs = {"providers": independent, "schema_name": "plan-coverage.schema.json"}
+    if runner is not None:
+        kwargs["runner"] = runner
+    report, mode, failures = reviewer.review(prompt, **kwargs)
+    if report is None:
+        raise PlanError(3, "independent planning coverage review unavailable: " + "; ".join(failures))
+    if not report["constraints"]:
+        raise PlanError(3, "coverage review extracted no load-bearing ADR constraints")
+    source_lines = adr_text.splitlines()
+    for constraint in report["constraints"]:
+        line = constraint["line"]
+        if line > len(source_lines) or constraint["quote"] not in source_lines[line - 1]:
+            raise PlanError(3, "coverage constraint has no matching ADR source quote")
+    missing = coverage_difference(report, plan["pbis"])
+    if missing:
+        raise PlanError(3, "ADR constraints missing from PBIs: " + ", ".join(missing))
+    return {"report": report, "mode": mode, "planner_model": planner_model,
+            "adr_hash": content_hash(adr_text), "plan_hash": content_hash(canonical_json(plan))}
+
+
+def require_coverage(session, plan, adr_text):
+    record = session.get("coverage_review") or {}
+    if (record.get("adr_hash") != content_hash(adr_text)
+            or record.get("plan_hash") != content_hash(canonical_json(plan))):
+        raise PlanError(3, "plan requires independent coverage finalize for the current ADR and plan")
+
+
+def cmd_finalize(args):
+    session = load_session(args.id)
+    plan = load_plan(session)
+    adr_text = load_adr(session)
+    problems, _, _ = accept_plan(session, plan, adr_text)
+    enforce(problems)
+    result = check_coverage(plan, adr_text, args.planner_model)
+    session["coverage_review"] = result
+    save_session(session)
+    journal(session, {"event": "coverage", **result})
+    print("plan finalized: every extracted ADR constraint is covered")
+    return result
+
+
 def cmd_validate(args):
     session = load_session(args.id)
     plan = load_plan(session)
@@ -1234,6 +1329,11 @@ def main(argv=None):
     p.add_argument("id")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("finalize", help="independent ADR-to-plan coverage check")
+    p.add_argument("id")
+    p.add_argument("--planner-model", required=True)
+    p.set_defaults(func=cmd_finalize)
 
     p = sub.add_parser("render", help="render the card and the brief")
     p.add_argument("id")

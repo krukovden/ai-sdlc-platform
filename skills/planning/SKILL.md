@@ -184,3 +184,25 @@ existed, and it changed every page (IDE-140).
 
 If there is no profile yet, write in English, in short plain sentences, for a
 reader whose first language is not English.
+
+## Witnesses, tasks and coverage finalize
+
+Every acceptance criterion has `witness`, exactly one of `{"evidence": "observed
+proof"}`, `{"command": "pointed probe", "timeout": 30}`, or `{"manual": "why human
+judgment is necessary and what to observe"}`. Timeout is a positive integer in
+seconds. A witness is a pointed probe, not a test-suite run, and never restates a
+gate's command. Preserve criteria against the verified branch-point baseline.
+
+Every PBI has `tasks`. Each task names `key`, `title`, `not_done_if`, `existing`
+(files to extend, an empty list only for new work), and concrete `deliverables`.
+Optional `reuse` entries name `action: extend|supersede` and `path`; every supersede
+must also list that path in `delete`, an explicit deletion deliverable. Extending
+an existing implementation takes precedence over recreating it beside itself.
+
+Before publication run `planning.py finalize <id> --planner-model <actual model>`.
+The independent provider extracts every load-bearing ADR constraint, including
+quantifiers, enumerations and table rows, and maps it to the PBIs. The script checks
+source quotes and computes the set difference. Missing constraints, malformed
+reports, and unavailable independent review block finalize. Fix the plan and repeat;
+never claim a section reference alone proves coverage. The result is bound to both
+the ADR and plan hashes, so edits require another finalize.
