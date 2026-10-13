@@ -459,19 +459,24 @@ def set_phase(board, identifier, to, run=None):
     return _write(board, identifier, decide)
 
 
-def release(board, identifier, run):
-    """Drop our own owner tag and leave the phase where it is. `run.py stop`."""
+def release(board, identifier, run, status=None):
+    """Drop our own owner tag and leave the phase where it is. `run.py stop`.
+
+    `status` moves the card in the same revision — a merged PBI goes to done as
+    its owner tag comes off, so no reader ever sees a done PBI still held, or a
+    released one still in progress.
+    """
     run = check_run_id(run)
 
     def decide(card):
         tags = card.get("tags") or []
         owner = owner_of(tags)
         if owner is None:
-            return tags, None
+            return tags, status
         if run_of(owner) != run:
             raise _Conflict(f"{identifier} is held by '{owner}', not by '{run}'.",
                             "nothing to release; leave the card to its owner")
-        return without_idp(tags, owner_tag(owner)), None
+        return without_idp(tags, owner_tag(owner)), status
 
     return _write(board, identifier, decide)
 
