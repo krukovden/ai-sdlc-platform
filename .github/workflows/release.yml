@@ -29,6 +29,13 @@ jobs:
           node-version: 20
       - uses: actions/setup-python@v5
         with:
+          python-version: "3.11"
+      - name: Python 3.11 can parse every script
+        # The supported floor: Debian bookworm ships 3.11, and 3.12-only syntax
+        # (PEP 701 f-strings) parses fine on the newer Python the suites use.
+        run: python -m compileall -q -x '(^|/)(\.git|node_modules)/' .
+      - uses: actions/setup-python@v5
+        with:
           python-version: "3.12"
       - name: Tests
         run: |

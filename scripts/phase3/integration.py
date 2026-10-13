@@ -1128,11 +1128,11 @@ class Integration:
                         f"{self.hand_off_text(pr, self.branch, main)} and the QA Testing PBI "
                         f"{qa['id']} is with the human.")
         dev.journal.upload()
+        merge_how = ("merge the feature branch by hand into "
+                     if pr.get("mode") == BRANCH_ONLY else "merge the pull request into ")
         lease.post_event(self.board, self.feature, HANDED, f"{HANDED}:{self.feature}:{head}",
                          text=(f"Phase 3 is done at `{head[:12]}`. QA Testing ({qa['id']}) "
-                               f"is with the human: close it and "
-                               f"{'merge the feature branch by hand into '
-                                 if pr.get('mode') == BRANCH_ONLY else 'merge the pull request into '}"
+                               f"is with the human: close it and {merge_how}"
                                f"`{main}` when the feature is done; otherwise file Bugs under "
                                f"this Feature and set `{tags.DEVELOPMENT}`."),
                          head=head, qa=qa["id"])
