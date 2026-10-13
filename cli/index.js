@@ -57,6 +57,22 @@ function recoveryDecision(current, expected, options) {
   if (options['keep-local']) return 'keep-local';
   throw new Error('Local edits preserved; use --keep-local or --overwrite');
 }
+function normalizeJournal(journal, state) {
+  const legacy = journal.expected || {};
+  const samePayload = journal.payload === journal.discardRoot;
+  const staging = path.join(state, 'staging');
+  const place = Array.isArray(journal.place) ? journal.place : [];
+  const normalized = {...journal};
+  normalized.sourceExpected = normalized.sourceExpected || legacy;
+  normalized.targetExpected = normalized.targetExpected || Object.fromEntries(place.map(file => [file, samePayload ? (legacy[file] ?? null) : null]));
+  normalized.placedHash = normalized.placedHash || Object.fromEntries(place.map(file => {
+    const source = path.join(staging, file);
+    if (exists(source)) return [file, fileHash(source)];
+    const target = path.join(normalized.payload, file);
+    return [file, fileHash(target)];
+  }));
+  return normalized;
+}
 function hooksDir(base) { return path.join(base, '.idp', 'hooks'); }
 function stableHooks(state) {
   return {statusline: path.join(state, 'bin', 'statusline.py'),
@@ -100,11 +116,27 @@ function matchesCopilot(entry, event) {
     && typeof entry.bash === 'string'
     && new RegExp(`^python3 "(.+/scripts/hooks/cliff_handoff\\.py|.+/bin/cliff_handoff\\.py)" --host copilot --event ${event}$`).test(entry.bash);
 }
-function ownedCopilotHooks(data) {
-  return data && data.version === 1 && data.hooks && Array.isArray(data.hooks.errorOccurred)
-    && Array.isArray(data.hooks.sessionEnd) && data.hooks.errorOccurred.length === 1
-    && data.hooks.sessionEnd.length === 1 && matchesCopilot(data.hooks.errorOccurred[0], 'errorOccurred')
-    && matchesCopilot(data.hooks.sessionEnd[0], 'sessionEnd');
+function rewriteCopilotEntries(data, state, command) {
+  if (!(data && data.version === 1 && data.hooks && typeof data.hooks === 'object')) return false;
+  let changed = false;
+  const cliff = stableHooks(state).cliff;
+  for (const [event, name] of [['errorOccurred', 'errorOccurred'], ['sessionEnd', 'sessionEnd']]) {
+    const entries = Array.isArray(data.hooks[event]) ? data.hooks[event] : null;
+    if (!entries) continue;
+    const kept = [];
+    for (const entry of entries) {
+      if (!matchesCopilot(entry, name)) {
+        kept.push(entry);
+        continue;
+      }
+      changed = true;
+      if (command === 'uninstall') continue;
+      kept.push({type: 'command', timeoutSec: 120, bash: `python3 "${cliff}" --host copilot --event ${name}`});
+    }
+    if (kept.length) data.hooks[event] = kept;
+    else delete data.hooks[event];
+  }
+  return changed;
 }
 function syncCopilotHooks(base, state, command) {
   for (const directory of [path.join(base, '.copilot', 'hooks'), path.join(base, '.github', 'hooks')]) {
@@ -113,16 +145,13 @@ function syncCopilotHooks(base, state, command) {
       const file = path.join(directory, name);
       let data;
       try { data = read(file); } catch { continue; }
-      if (!ownedCopilotHooks(data)) continue;
-      if (command === 'uninstall') {
+      if (!rewriteCopilotEntries(data, state, command)) continue;
+      if (command === 'uninstall' && !Object.keys(data.hooks).length) {
         fs.rmSync(file, {force: true});
         prune(path.dirname(file), directory);
         continue;
       }
-      const cliff = stableHooks(state).cliff;
-      const next = {version: 1, hooks: {errorOccurred: [{type: 'command', timeoutSec: 120, bash: `python3 "${cliff}" --host copilot --event errorOccurred`}],
-        sessionEnd: [{type: 'command', timeoutSec: 120, bash: `python3 "${cliff}" --host copilot --event sessionEnd`}]}};
-      fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n');
+      fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
     }
   }
 }
@@ -134,6 +163,7 @@ function syncHostRegistrations(base, state, command) {
 // remaining step is made durable, and only then do live paths change. Each step is idempotent, so a
 // run that finds a journal simply finishes it. The previous payload is deleted after the receipt commits.
 function settle(state, base, journal, options = {}) {
+  journal = normalizeJournal(journal, state);
   const staging = path.join(state, 'staging'), receiptFile = path.join(state, 'receipt.json');
   for (const file of journal.place) {
     const source = path.join(staging, file);
@@ -172,10 +202,20 @@ function settle(state, base, journal, options = {}) {
   else { fs.rmSync(receiptFile, {force: true}); fs.rmSync(path.join(state, 'freshness.json'), {force: true}); }
   for (const file of journal.discard) {
     const absolute = path.join(journal.discardRoot, file);
+    if (!exists(absolute)) continue;
     const decision = recoveryDecision(fileHash(absolute), journal.sourceExpected[file] ?? null, options);
     if (decision === 'keep-local') {
       if (!journal.receipt) continue;
       if (journal.payload === journal.discardRoot) continue;
+      const target = path.join(journal.payload, file);
+      const sourceHash = fileHash(absolute), targetHash = fileHash(target);
+      if (targetHash === null || targetHash === journal.placedHash[file]) {
+        write(target, fs.readFileSync(absolute));
+        fs.chmodSync(target, fs.lstatSync(absolute).mode);
+        removeBytecode(absolute, base);
+        fs.rmSync(absolute, {force: true}); prune(path.dirname(absolute), base);
+      }
+      continue;
     }
     removeBytecode(absolute, base);
     fs.rmSync(absolute, {force: true}); prune(path.dirname(absolute), base);
@@ -217,7 +257,7 @@ async function run(argv, context = {}) {
   const base = args.local ? cwd : home, state = path.join(base, '.idp/platform');
   const receiptFile = path.join(state, 'receipt.json'), journalFile = path.join(state, 'journal.json');
   if (['install', 'update', 'uninstall'].includes(args.command) && exists(journalFile)) {
-    const pending = read(journalFile);
+    const pending = normalizeJournal(read(journalFile), state);
     settle(state, base, pending, args);
     out(`Finished an interrupted ${pending.command}`);
   }
@@ -312,11 +352,12 @@ async function run(argv, context = {}) {
   for (const file of Object.keys(receipt.files)) sourceExpected[file] = fileHash(path.join(receipt.payload, file));
   const targetExpected = {};
   if (!uninstalling) for (const file of place) targetExpected[file] = fileHash(path.join(payload, file));
+  const placedHash = Object.fromEntries(place.map(file => [file, fileHash(path.join(staging, file))]));
   const discard = receipt.payload ? Object.keys(receipt.files).filter(file => {
     if (kept.has(file) && (uninstalling || samePayload)) return false;
     return !(samePayload && !uninstalling && desired[file]);
   }) : [];
-  const journal = {command: args.command, payload, place, sourceExpected, targetExpected, fromLinks: receipt.links, toLinks: links, discard, discardRoot: receipt.payload,
+  const journal = {command: args.command, payload, place, sourceExpected, targetExpected, placedHash, fromLinks: receipt.links, toLinks: links, discard, discardRoot: receipt.payload,
     receipt: uninstalling ? null : {version: pkg.version, source: catalog.source, payload, targets: activeTargets, files: hashes, links}};
   durable(journalFile, JSON.stringify(journal, null, 2) + '\n');
   settle(state, base, journal, args);

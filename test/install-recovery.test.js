@@ -250,6 +250,34 @@ test('keep-local recovery does not overwrite a post-link edit in the new payload
   assert.match(await statusOf(ctx), /skills\/design\/SKILL.md: missing or edited locally/);
 });
 
+test('keep-local recovery carries a post-interruption source edit forward instead of deleting it', async t => {
+  const ctx = fixture(t);
+  await run(['install'], ctx);
+  sync(NEXT, ctx.root);
+  const receipt = receiptOf(ctx);
+  const staged = path.join(stateDirOf(ctx), 'staging', 'skills/design/SKILL.md');
+  const installed = path.join(receipt.payload, 'skills/design/SKILL.md');
+  const original = fs.renameSync;
+  let fired = false;
+  fs.renameSync = function (from, to) {
+    if (from === staged && to === path.join(stateDirOf(ctx), NEXT, 'skills/design/SKILL.md')) {
+      fired = true;
+      throw new Error('injected first placement');
+    }
+    return original.call(this, from, to);
+  };
+  try { await assert.rejects(run(['update', '--keep-local'], ctx), /injected first placement/); } finally { fs.renameSync = original; }
+  assert.ok(fired);
+  const linked = path.join(ctx.home, '.claude/skills/design/SKILL.md');
+  fs.appendFileSync(linked, '\nsource edit after interruption\n');
+  await run(['update', '--keep-local'], ctx);
+  const oldPayload = path.join(stateDirOf(ctx), CURRENT, 'skills/design/SKILL.md');
+  const newPayload = path.join(stateDirOf(ctx), NEXT, 'skills/design/SKILL.md');
+  const oldText = fs.existsSync(oldPayload) ? fs.readFileSync(oldPayload, 'utf8') : '';
+  const newText = fs.existsSync(newPayload) ? fs.readFileSync(newPayload, 'utf8') : '';
+  assert.ok(/source edit after interruption\n$/.test(oldText) || /source edit after interruption\n$/.test(newText), {oldText, newText});
+});
+
 test('interactive yes approvals finish the initial settlement they approved', async t => {
   const script = `
 const path = require('node:path');
@@ -285,6 +313,30 @@ const {sync} = require(${JSON.stringify(path.join(__dirname, '..', 'cli', 'versi
   assert.equal(child.status, 0, child.stderr || child.stdout);
 });
 
+test('clean replay treats an already deleted old file as completed work', async t => {
+  const ctx = fixture(t);
+  await run(['install'], ctx);
+  sync(NEXT, ctx.root);
+  const journalFile = path.join(stateDirOf(ctx), 'journal.json');
+  const receiptFile = path.join(stateDirOf(ctx), 'receipt.json');
+  const original = fs.renameSync;
+  let fired = false;
+  fs.renameSync = function (from, to) {
+    if (to === receiptFile) {
+      fired = true;
+      throw new Error('injected receipt commit');
+    }
+    return original.call(this, from, to);
+  };
+  try { await assert.rejects(run(['update', '--yes'], ctx), /injected receipt commit/); } finally { fs.renameSync = original; }
+  assert.ok(fired);
+  const journal = json(journalFile);
+  const discard = path.join(journal.discardRoot, journal.discard[0]);
+  fs.rmSync(discard, {force: true});
+  await run(['update', '--yes'], ctx);
+  await assertConsistent(ctx, NEXT);
+});
+
 test('uninstall ignores an unmanaged newer payload directory', async t => {
   const ctx = fixture(t);
   await run(['install', '--target', 'orca'], ctx);
@@ -295,6 +347,34 @@ test('uninstall ignores an unmanaged newer payload directory', async t => {
   await run(['uninstall', '--target', 'all'], ctx);
   assert.equal(fs.existsSync(path.join(foreign, 'foreign.txt')), true);
   assert.equal(fs.existsSync(path.join(stateDirOf(ctx), 'receipt.json')), false);
+});
+
+test('mixed Copilot hook files keep unrelated hooks on update and uninstall', async t => {
+  const ctx = fixture(t);
+  await run(['install', '--target', 'all'], ctx);
+  const receipt = receiptOf(ctx);
+  const cliffScript = path.join(receipt.payload, 'scripts/hooks/cliff_handoff.py');
+  const hooksDir = path.join(ctx.home, '.copilot/hooks');
+  fs.mkdirSync(hooksDir, {recursive: true});
+  const copilotFile = path.join(hooksDir, 'mixed.json');
+  const mixed = JSON.parse(execFileSync('python3', [cliffScript, '--print-config', 'copilot'], {
+    env: {...process.env, HOME: ctx.home},
+    encoding: 'utf8',
+  }));
+  mixed.hooks.errorOccurred[0].bash = `python3 "${cliffScript}" --host copilot --event errorOccurred`;
+  mixed.hooks.sessionEnd[0].bash = `python3 "${cliffScript}" --host copilot --event sessionEnd`;
+  mixed.hooks.preToolUse = [{type: 'command', timeoutSec: 5, bash: 'echo keep-me'}];
+  mixed.note = 'keep metadata';
+  fs.writeFileSync(copilotFile, JSON.stringify(mixed, null, 2) + '\n');
+  sync(NEXT, ctx.root);
+  await run(['update', '--yes'], ctx);
+  const updated = json(copilotFile);
+  assert.equal(updated.note, 'keep metadata');
+  assert.equal(updated.hooks.preToolUse[0].bash, 'echo keep-me');
+  await run(['uninstall', '--target', 'all'], ctx);
+  const after = json(copilotFile);
+  assert.equal(after.note, 'keep metadata');
+  assert.deepEqual(after.hooks, {preToolUse: [{type: 'command', timeoutSec: 5, bash: 'echo keep-me'}]});
 });
 
 test('manual hook registrations survive update and are cleaned up on uninstall', async t => {
@@ -347,6 +427,30 @@ test('manual hook registrations survive update and are cleaned up on uninstall',
   await run(['uninstall', '--target', 'all'], ctx);
   assert.equal(json(settings).statusLine, path.join(ctx.home, 'wrapped-statusline.sh'));
   assert.equal(fs.existsSync(copilotFile), false);
+});
+
+test('legacy interrupted journals still recover under the current CLI', async t => {
+  const ctx = fixture(t);
+  await run(['install'], ctx);
+  sync(NEXT, ctx.root);
+  const receiptFile = path.join(stateDirOf(ctx), 'receipt.json');
+  const journalFile = path.join(stateDirOf(ctx), 'journal.json');
+  const original = fs.renameSync;
+  let fired = false;
+  fs.renameSync = function (from, to) {
+    if (to === receiptFile) { fired = true; throw new Error('injected receipt commit'); }
+    return original.call(this, from, to);
+  };
+  try { await assert.rejects(run(['update', '--keep-local'], ctx), /injected receipt commit/); } finally { fs.renameSync = original; }
+  assert.ok(fired);
+  const pending = json(journalFile);
+  const legacy = {...pending, expected: pending.sourceExpected};
+  delete legacy.sourceExpected;
+  delete legacy.targetExpected;
+  delete legacy.placedHash;
+  fs.writeFileSync(journalFile, JSON.stringify(legacy, null, 2) + '\n');
+  await run(['update', '--keep-local'], ctx);
+  await assertConsistent(ctx, NEXT);
 });
 
 // --- recoverable update transaction -------------------------------------------------------

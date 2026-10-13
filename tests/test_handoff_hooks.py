@@ -443,6 +443,28 @@ class LayerOneTests(unittest.TestCase):
         statusline.uninstall(settings, self.state, out=io.StringIO())
         self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["statusLine"], orca)
 
+    def test_stable_launcher_is_owned_and_uninstalls_restore_the_wrapped_line(self):
+        settings = self.root / "settings.json"
+        wrapped = {"type": "command", "command": "/bin/sh ~/.orca/agent-hooks/claude-statusline.sh"}
+        launcher = "/opt/idp/.idp/platform/bin/statusline.py"
+        settings.write_text(json.dumps({"statusLine": wrapped}), encoding="utf-8")
+        statusline.install(settings, self.state, script=launcher, out=io.StringIO())
+        installed = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(installed["statusLine"]["command"], f'python3 "{launcher}"')
+        statusline.uninstall(settings, self.state, out=io.StringIO())
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["statusLine"], wrapped)
+
+    def test_stable_launcher_reinstall_is_idempotent_and_keeps_the_original_wrapped_line(self):
+        settings = self.root / "settings.json"
+        wrapped = {"type": "command", "command": "/bin/sh ~/.orca/agent-hooks/claude-statusline.sh"}
+        launcher = "/opt/idp/.idp/platform/bin/statusline.py"
+        settings.write_text(json.dumps({"statusLine": wrapped}), encoding="utf-8")
+        statusline.install(settings, self.state, script=launcher, out=io.StringIO())
+        statusline.install(settings, self.state, script=launcher, out=io.StringIO())
+        self.assertEqual(statusline.wrapped(self.state), wrapped)
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["statusLine"]["command"],
+                         f'python3 "{launcher}"')
+
     def test_the_watch_fires_once_at_the_threshold(self):
         statusline.show(self.frame(89), self.state)
         self.assertIsNone(watch.check({"session_id": "s-1"}, self.state, {}))

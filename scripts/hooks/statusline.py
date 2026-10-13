@@ -165,7 +165,10 @@ def show(raw, state, run=subprocess.run):
 # ---------------------------------------------------------------------------
 
 def ours(entry):
-    return MARK in (command_of(entry) or "")
+    command = command_of(entry) or ""
+    return (MARK in command
+            or command == f'python3 "{launcher()}"'
+            or command.endswith('/.idp/platform/bin/statusline.py"'))
 
 
 def install(settings_path, state, script=None, out=sys.stdout):
