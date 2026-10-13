@@ -318,6 +318,41 @@ class SessionOutcomeTests(RunnerTestCase):
         self.assertIn(tags.BLOCKED, board.cards[FEATURE]["tags"])
         self.assertTrue(lease.events(board.list_comments(FEATURE), lease.BLOCK))
 
+    def test_lost_supervision_is_not_an_attempt_and_does_not_start_another_session(self):
+        board = new_board()
+
+        class Holding(ScriptedExecutor):
+            def __init__(self, *steps, **kwargs):
+                super().__init__(*steps, **kwargs)
+                self.design_starts = 0
+                self.reconnects = 0
+
+            def run_role(self, role, card, worktree, prompt, context=None, author=None,
+                         choice=None):
+                if role == "design":
+                    self.design_starts += 1
+                    if self.design_starts == 1:
+                        who = run.executors.roles.as_choice(choice) if choice else self.choice
+                        code = self.finish(role, card, who, None, crashed=False)
+                        self.last["unsettled"] = True
+                        self.last["crashed"] = False
+                        return code
+                return super().run_role(role, card, worktree, prompt, context=context,
+                                        author=author, choice=choice)
+
+            def reconnect(self, role, card, worktree, prompt, context=None, author=None,
+                          choice=None):
+                self.reconnects += 1
+                return super().run_role(role, card, worktree, prompt, context=context,
+                                        author=author, choice=choice)
+
+        holding = Holding(self.session())
+        code = self.runner(board, executor=holding).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.DONE)
+        self.assertEqual(holding.design_starts, 1)
+        self.assertEqual(holding.reconnects, 1)
+        self.assertFalse(lease.events(board.list_comments(FEATURE), run.ATTEMPT))
+
     def test_a_crash_is_an_attempt_and_the_next_session_carries_on(self):
         board = new_board()
         code = self.runner(board, lambda *a: None, self.session()).run_feature(FEATURE)

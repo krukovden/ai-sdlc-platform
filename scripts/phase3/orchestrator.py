@@ -211,6 +211,7 @@ class Development:
         self.route_name = None
         self.header = {}
         self.launches = {}
+        self.supervision_holds = {}
         self.infra = set()
         self.integration = Integration(self)
 
@@ -401,10 +402,30 @@ class Development:
                 run_py=self.runner.run_py,
                 feedback=(f"\nThe last attempt was refused by the runner's checks: "
                           f"{feedback}\nFix exactly that.") if feedback else "")
-            code = self.session("design", feature, worktree, prompt,
-                                {"IDP_CONTEXT_DIR": str(context),
-                                 "PLANNING_HOME": str(self.planning_home)})
+            if (self.executor.last or {}).get("unsettled"):
+                code = self.reconnect_session(
+                    "design", feature, worktree, prompt,
+                    {"IDP_CONTEXT_DIR": str(context),
+                     "PLANNING_HOME": str(self.planning_home)})
+            else:
+                code = self.session("design", feature, worktree, prompt,
+                                    {"IDP_CONTEXT_DIR": str(context),
+                                     "PLANNING_HOME": str(self.planning_home)})
             last = self.executor.last or {}
+            while last.get("unsettled"):
+                # Not an attempt and not a pause: another run must not start a
+                # second planning session while this dispatch may still be writing.
+                stop = getattr(self.runner, "stopping", lambda card: None)(feature)
+                if stop:
+                    confirm = getattr(self.executor, "confirm_stopped", None)
+                    if confirm is not None and confirm(feature):
+                        return self.pause_card(feature, stop), None
+                self.sleep(INFRA_BACKOFF[0])
+                code = self.reconnect_session(
+                    "design", feature, worktree, prompt,
+                    {"IDP_CONTEXT_DIR": str(context),
+                     "PLANNING_HOME": str(self.planning_home)})
+                last = self.executor.last or {}
             if last.get("launch_failed", False):
                 launches += 1
                 if launches <= len(INFRA_BACKOFF):
@@ -698,7 +719,8 @@ class Development:
         choice = claim["choice"]
         self.busy[choice.agent] = self.busy.get(choice.agent, 0) + 1
         self.running[pbi] = {"item": item, "claim": claim, "wt": wt, "choice": choice,
-                             "worker": claim["worker"]}
+                             "worker": claim["worker"], "prompt": prompt,
+                             "env": {"IDP_CONTEXT_DIR": str(context)}}
         env = {"IDP_CONTEXT_DIR": str(context)}
 
         def work():
@@ -730,6 +752,8 @@ class Development:
         code, last = answer
         last = last or {}
         item, claim, wt = job["item"], job["claim"], job["wt"]
+        if last.get("unsettled"):
+            return self.hold_supervision(job, last)
         if last.get("launch_failed", False):
             return self.launch_failed(item, claim, wt, last)
         if last.get("crashed") and last.get("limit"):
@@ -746,6 +770,49 @@ class Development:
         return self.after_session(item, claim, wt)
 
     # -- outcomes ---------------------------------------------------------------
+
+    def hold_supervision(self, job, last):
+        """The worker's liveness is unknown. Keep the slot; reconnect, never replace."""
+        pbi = job["item"]["id"]
+        agent = job["choice"].agent
+        self.running[pbi] = job
+        self.busy[agent] = self.busy.get(agent, 0) + 1
+        stop = getattr(self.runner, "stopping", lambda card: None)(self.feature)
+        if stop:
+            confirm = getattr(self.executor, "confirm_stopped", None)
+            if confirm is not None and confirm(pbi):
+                self.running.pop(pbi, None)
+                self.busy[agent] = max(0, self.busy.get(agent, 0) - 1)
+                return
+        n = self.supervision_holds.get(pbi, 0)
+        self.supervision_holds[pbi] = n + 1
+        self.sleep(INFRA_BACKOFF[min(n, len(INFRA_BACKOFF) - 1)])
+        self.resubmit_supervision(job)
+
+    def resubmit_supervision(self, job):
+        pbi = job["item"]["id"]
+        wt, choice = job["wt"], job["choice"]
+
+        def work():
+            reconnect = getattr(self.executor, "reconnect", None)
+            if reconnect is None:
+                return EXIT.HANDOFF, self.executor.last
+            code = reconnect("worker", pbi, wt.path, job.get("prompt") or "",
+                             context=job.get("env"), choice=choice)
+            return code, self.executor.last
+
+        self.pool.submit(pbi, work)
+
+    def reconnect_session(self, role, card, worktree, prompt, context):
+        """Wait on the dispatch already running. A missing one is not a new start."""
+        reconnect = getattr(self.executor, "reconnect", None)
+        if reconnect is None:
+            return EXIT.HANDOFF
+        try:
+            return reconnect(role, card, worktree, prompt, context=context)
+        except runner_executors().ResolutionError as exc:
+            tags.release(self.board, self.feature, self.run_id)
+            raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
 
     def launch_failed(self, item, claim, wt, last):
         """The agent never started: infrastructure, not the work. Never an attempt.

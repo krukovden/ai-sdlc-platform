@@ -451,9 +451,24 @@ class Integration:
                 return dev.block_feature(f"{phase} did not produce a usable answer in "
                                          f"{MAX_ATTEMPTS} attempts; the last reason: "
                                          f"{feedback or 'no answer'}"), None
-            code = dev.session(role, self.feature, worktree, prompt_for(feedback),
-                               {"IDP_CONTEXT_DIR": str(context)})
+            context_env = {"IDP_CONTEXT_DIR": str(context)}
+            if (dev.executor.last or {}).get("unsettled"):
+                code = dev.reconnect_session(role, self.feature, worktree,
+                                             prompt_for(feedback), context_env)
+            else:
+                code = dev.session(role, self.feature, worktree, prompt_for(feedback),
+                                   context_env)
             last = dev.executor.last or {}
+            while last.get("unsettled"):
+                stop = getattr(dev.runner, "stopping", lambda card: None)(self.feature)
+                if stop:
+                    confirm = getattr(dev.executor, "confirm_stopped", None)
+                    if confirm is not None and confirm(self.feature):
+                        return dev.pause_card(self.feature, stop), None
+                dev.sleep(INFRA_BACKOFF[0])
+                code = dev.reconnect_session(role, self.feature, worktree,
+                                             prompt_for(feedback), context_env)
+                last = dev.executor.last or {}
             if last.get("launch_failed", False):
                 # Infrastructure: retried with backoff, then paused; never an attempt.
                 launches += 1

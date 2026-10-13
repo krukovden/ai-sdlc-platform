@@ -468,10 +468,18 @@ class Runner:
                                                f"{MAX_ATTEMPTS} attempts; the last reason: "
                                                f"{feedback or 'no ADR came out'}")
                 stop = self.stopping(feature)
-                if stop:
+                if stop and self._supervision_released(feature):
                     return self.pause(feature, stop)
-                code = self.design_session(feature, base, feedback)
+                if (self.executor.last or {}).get("unsettled"):
+                    code = self.reconnect_design(feature, base, feedback)
+                else:
+                    code = self.design_session(feature, base, feedback)
                 last = self.executor.last or {}
+                if last.get("unsettled"):
+                    # The worker may still be editing. Not an attempt, and not a pause:
+                    # a pause would let another run start a second session.
+                    self.sleep(INFRA_BACKOFF[0])
+                    continue
                 if last.get("launch_failed", False):
                     # The agent never started: infrastructure, never an attempt.
                     # Retried with backoff, then paused for any run to take.
@@ -574,6 +582,32 @@ class Runner:
                               "a fresh session continues from its state.",
                          phase="design", round=round_, digest=digest, run=self.run_id)
         return True
+
+    def _supervision_released(self, feature):
+        """True when stop may pause: no worker is unaccounted for, or it has exited."""
+        if not (self.executor.last or {}).get("unsettled"):
+            return True
+        confirm = getattr(self.executor, "confirm_stopped", None)
+        return bool(confirm(feature)) if confirm is not None else False
+
+    def reconnect_design(self, feature, base, feedback):
+        """Wait on the design dispatch already running. Never starts another."""
+        worktree = Path(self.worktree_for(feature, "design", base))
+        reconnect = getattr(self.executor, "reconnect", None)
+        if reconnect is None:
+            return EXIT.HANDOFF
+        context = self.write_context(feature, worktree)
+        prompt = DESIGN_PROMPT.format(
+            feature=feature, skill=DESIGN_SKILL / "SKILL.md", context=context,
+            design_py=DESIGN_SKILL / "design.py", run_py=SCRIPT_DIR / "run.py",
+            feedback=f"\nThe last attempt was refused by the runner's checks: {feedback}\n"
+                     "Fix exactly that." if feedback else "")
+        try:
+            return reconnect("design", feature, worktree, prompt,
+                             context={"IDP_CONTEXT_DIR": str(context)})
+        except executors.ResolutionError as exc:
+            tags.release(self.board, feature, self.run_id)
+            raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
 
     def design_session(self, feature, base, feedback):
         worktree = Path(self.worktree_for(feature, "design", base))
