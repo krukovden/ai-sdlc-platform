@@ -96,7 +96,7 @@ class FakeAz:
     def make_item(self, fields):
         identifier = str(self.next_id)
         self.next_id += 1
-        self.items[identifier] = {"id": int(identifier), "fields": dict(fields),
+        self.items[identifier] = {"id": int(identifier), "rev": 1, "fields": dict(fields),
                                   "relations": []}
         return self.items[identifier]
 
@@ -129,6 +129,11 @@ class FakeAz:
             return self.make_item(fields)
         if head == ["boards", "work-item", "update"]:
             item = self.items[self.flag(args, "--id")]
+            if "--discussion" in args:
+                item.setdefault("comments", []).append(
+                    {"id": len(item.get("comments", [])) + 1,
+                     "text": self.flag(args, "--discussion"),
+                     "createdDate": "2026-10-12T03:00:00.0000000Z"})
             written = self.fields(args)
             if "System.Tags" in written:
                 # **This is the behaviour the old stub got wrong** (IDE-136).
@@ -162,10 +167,11 @@ class FakeAz:
 
     def rest(self, url, method="GET", body=None, content_type=None,
              authorization=None, timeout=None, parse_json=True, auth_hint=None,
-             extra_headers=None, soft=False, want_etag=False):
+             extra_headers=None, soft=False, want_etag=False, conflict=False,
+             want_date=False):
         """The REST door, addressed as `rest_call` is addressed."""
         kwargs = {"soft": soft, "want_etag": want_etag,
-                  "extra_headers": extra_headers or {}}
+                  "extra_headers": extra_headers or {}, "conflict": conflict}
         self.rest_calls.append({"url": url, "method": method, "body": body,
                                 "content_type": content_type,
                                 "authorization": authorization,
@@ -176,8 +182,14 @@ class FakeAz:
             if method == "POST":
                 return {"id": "att-1", "url": self.attachment_url}
             return "downloaded markdown"
+        if path.startswith("wit/workitemtypes"):
+            return ({"value": []}, "Mon, 12 Oct 2026 04:00:00 GMT") if want_date \
+                else {"value": []}
+        if path.startswith("wit/workItems") and "/comments" in path:
+            identifier = path.split("/")[2]
+            return {"comments": list(self.items[identifier].get("comments", []))}
         if path.startswith("wit/workitems"):
-            return self.patch_work_item(path, body)
+            return self.patch_work_item(path, body, conflict)
         if path.startswith("wiki/wikis"):
             return self.wiki(path, method, body, kwargs)
         raise AssertionError(f"unexpected REST call: {method} {url}")
@@ -200,7 +212,7 @@ class FakeAz:
                                  "remoteUrl": f"https://wiki/page{page_path}"}
         return self.pages[page_path]
 
-    def patch_work_item(self, path, body):
+    def patch_work_item(self, path, body, conflict=False):
         """Apply a JSON patch the way the service does, so a test sees the result.
 
         `replace` on a field replaces; `add` on `/relations/-` appends; `add` on
@@ -211,7 +223,17 @@ class FakeAz:
         item = self.items.get(identifier)
         if item is None or not body:
             return {"id": identifier}
-        for operation in json.loads(body.decode("utf-8")):
+        operations = json.loads(body.decode("utf-8"))
+        for operation in operations:
+            # `test` is checked before anything is applied: the service rejects
+            # the whole patch, which is what makes the claim a claim.
+            if operation["op"] == "test" and operation["path"] == "/rev" \
+                    and operation["value"] != item.get("rev"):
+                if conflict:
+                    return azure.CONFLICT
+                raise AssertionError("a failed test op reached a caller not ready for it")
+        item["rev"] = item.get("rev", 1) + 1
+        for operation in operations:
             field = operation.get("path", "")
             if field.startswith("/fields/"):
                 name = field[len("/fields/"):]
@@ -275,7 +297,8 @@ def work_item(identifier="42", title="Feature: offline search", state="New",
     }
     if parent:
         fields["System.Parent"] = int(parent)
-    return {identifier: {"id": int(identifier), "fields": fields, "relations": []}}
+    return {identifier: {"id": int(identifier), "rev": 1, "fields": fields,
+                         "relations": []}}
 
 
 @contextlib.contextmanager
@@ -418,14 +441,13 @@ class ExpiredLoginTests(ScriptTestCase):
 
         self.assertIn("! az login", message)
 
-    def test_the_hint_names_the_agents_own_token_file(self):
-        # Per-agent keys (IDE-100): the one that expired is the one to replace.
-        profile = dict(PROFILE, agents={"claude": "~/.idp/claude-pat",
-                                        "codex": "~/.idp/codex-pat"})
+    def test_the_hint_ignores_a_per_agent_map(self):
+        # The map no longer chooses a token (IDE-147), so naming one of its files
+        # would send the reader to replace a key this process never used.
+        profile = dict(PROFILE, agents={"codex": "~/.idp/codex-pat"})
         with mock.patch.dict(azure.os.environ, {"IDP_AGENT": "codex"}):
             hint = azure.Board("pat-secret", profile).auth_hint
-        self.assertIn("~/.idp/codex-pat", hint)
-        self.assertNotIn("~/.idp/claude-pat", hint)
+        self.assertNotIn("codex-pat", hint)
 
     def test_the_environment_is_named_when_that_is_where_the_token_came_from(self):
         hint = azure.Board("pat-secret", PROFILE).auth_hint
@@ -671,14 +693,17 @@ class MachineHeaderTests(ScriptTestCase):
         self.assertNotIn("sdlc:ready-for-design", tags)
         self.assertNotIn("sdlc:feature-package", tags)
 
-    def test_a_feature_on_a_route_with_design_still_gets_the_tag(self):
+    def test_creation_never_puts_a_phase_tag_on_the_card(self):
+        # A card enters a phase through the transition table, as one more fenced
+        # write — never as a side effect of being created (IDE-147).
         body = '---\ntype: feature\nroute: feature\n---\n'
         fake = FakeAz(work_item())
         with stub(fake):
             azure.Board("pat", PROFILE).create_issue(
                 title="t", body=body, status="New", project_id="Contoso Platform")
         tags = fake.fields(fake.matching("boards", "work-item", "create")[0])["System.Tags"]
-        self.assertIn("sdlc:ready-for-design", tags)
+        self.assertNotIn("idp:", tags)
+        self.assertNotIn("sdlc:ready-for-design", tags)
 
     def test_read_cid_reads_both_renderings_of_the_same_fact(self):
         self.assertEqual(azure.read_cid("---\ncid: fp_1\n---"), "fp_1")
@@ -710,7 +735,6 @@ class CreateTests(ScriptTestCase):
         tags = fake.fields(fake.matching("boards", "work-item", "create")[0])["System.Tags"]
 
         self.assertIn("sdlc:feature-package", tags)
-        self.assertIn("sdlc:ready-for-design", tags)
         self.assertIn("sdlc:cid=fp_abc123", tags)
 
     def test_the_criteria_are_not_repeated_in_the_description(self):
@@ -841,14 +865,23 @@ class T9ForAzureDevOps(ScriptTestCase):
         self.assertTrue(any("sdlc:cid=fp_abc123def456" in w for w in wiqls),
                         f"no cid query was issued; queries were {wiqls}")
 
-    def test_the_card_is_created_in_ready_for_design_and_tagged(self):
+    def test_the_card_is_created_tagged_and_then_put_in_design(self):
         fake = self.publish_twice()
         create = fake.matching("boards", "work-item", "create")[0]
         tags = fake.fields(create)["System.Tags"]
 
         self.assertIn("sdlc:feature-package", tags)
-        self.assertIn("sdlc:ready-for-design", tags)
         self.assertIn("sdlc:cid=fp_abc123def456", tags)
+        # The phase tag arrives through the writer, fenced, and survives the
+        # second run untouched.
+        final = fake.items["500"]["fields"]["System.Tags"]
+        self.assertIn("idp:design", final)
+        self.assertIn("sdlc:cid=fp_abc123def456", final)
+        fenced = [json.loads(c["body"].decode("utf-8")) for c in
+                  fake.rest_matching("PATCH", "wit/workitems/500")
+                  if b"System.Tags" in c["body"]]
+        self.assertEqual(len(fenced), 1, "the second run must not re-tag the card")
+        self.assertEqual(fenced[0][0]["op"], "test")
 
     def test_the_specification_is_attached_as_markdown(self):
         """IDE-87's criterion, and the one IDE-137 found could not pass as built."""
@@ -869,79 +902,76 @@ class T9ForAzureDevOps(ScriptTestCase):
 
     def test_republishing_leaves_the_status_alone(self):
         fake = self.publish_twice()
-        # The single --state call is the one that created the card. A second one
-        # would yank a card the design agent may already hold back into the queue.
+        # The design position is a tag, so publication never moves the state at
+        # all — and a re-run must not yank a card the design agent may already
+        # hold back into the queue.
         with_state = [c for c in fake.matching("boards", "work-item", "update")
                       if "--state" in c]
-        self.assertEqual(len(with_state), 1)
+        self.assertEqual(with_state, [])
+
+
+RUN = {"IDP_RUN_ID": "run-a"}
 
 
 class PhaseTests(ScriptTestCase):
 
-    def test_start_phase_claims_a_fresh_work_item_with_no_profile_at_all(self):
-        # The point of IDE-129: this is a stock work item on a stock process and
-        # an empty profile. Before, it needed all three phases overridden first.
-        fake = FakeAz(work_item(state="New"))
-        with stub(fake):
-            result = azure.Board(None, PROFILE).start_phase("42", "design")
-        self.assertIn("idp:in-design", result["labels"])
+    def board(self, profile=None):
+        return azure.Board(None, profile or PROFILE)
+
+    def test_start_phase_claims_a_waiting_feature_with_no_profile_at_all(self):
+        # A stock work item on a stock process and an empty profile: the phase is
+        # a tag, which needs no administrator (IDE-129, IDE-147).
+        fake = FakeAz(work_item(state="New", tags="idp:design"))
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            result = self.board().start_phase("42", "design")
+        self.assertIn("idp:owner:run-a", result["labels"])
+        self.assertIn("idp:design", result["labels"])
         self.assertTrue(result["changed"])
 
-    def test_a_card_in_the_wrong_status_is_refused_and_nothing_is_written(self):
-        fake = FakeAz(work_item(state="Closed"))
-        with stub(fake):
-            message = self.assert_exits(3, azure.Board(None, PROFILE).start_phase,
+    def test_a_card_in_another_phase_is_refused_and_nothing_is_written(self):
+        fake = FakeAz(work_item(state="New", tags="idp:qa"))
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            message = self.assert_exits(azure.EXIT.INVALID, self.board().start_phase,
                                         "42", "design")
         self.assertIn("Nothing was changed", message)
-        self.assertEqual(fake.writes, [])
+        self.assertIn("FIX:", message)
+        self.assertEqual(fake.rest_matching("PATCH", "wit/workitems"), [])
 
     def test_finishing_a_phase_nobody_started_is_refused_without_a_write(self):
-        fake = FakeAz(work_item(state="New"))
-        with stub(fake):
-            self.assert_exits(3, azure.Board(None, PROFILE).finish_phase, "42", "design")
-        self.assertEqual(fake.writes, [])
+        fake = FakeAz(work_item(state="New", tags="idp:design"))
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            self.assert_exits(azure.EXIT.INVALID, self.board().finish_phase, "42", "design")
+        self.assertEqual(fake.rest_matching("PATCH", "wit/workitems"), [])
 
-    def test_finishing_design_lands_on_the_human_gate(self):
-        fake = FakeAz(work_item(state="New", tags="idp:in-design"))
-        with stub(fake):
-            result = azure.Board(None, PROFILE).finish_phase("42", "design")
-        self.assertIn("idp:design-review", result["labels"])
+    def test_finishing_design_lands_on_the_human_gate_and_drops_the_owner(self):
+        fake = FakeAz(work_item(state="New", tags="idp:design; idp:owner:run-a"))
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            result = self.board().finish_phase("42", "design")
+        self.assertEqual([t for t in result["labels"] if t.startswith("idp:")],
+                         ["idp:design-review"])
 
-    def test_every_shipped_default_is_reachable_on_a_stock_process(self):
-        """A default nobody can reach is not a default, it is a precondition.
-
-        `Ready for Design` and `Blocked - Needs Design` are Linear statuses this
-        platform created by hand; no Azure DevOps process ships either, and no
-        `az` call can create one. Everything shipped here is therefore either a
-        state a stock process already has, or an `idp:` tag (IDE-129).
-        """
+    def test_every_shipped_pbi_default_is_a_state_a_stock_process_has(self):
         stock = {"new", "active", "resolved", "closed", "removed",
                  "in progress", "done", "proposed"}
-        for phase, positions in azure.PHASE_STATES.items():
-            for position, value in positions.items():
-                with self.subTest(phase=phase, position=position):
-                    marker = state.as_marker(value)
-                    if marker.get("tag"):
-                        self.assertTrue(marker["tag"].startswith("idp:"))
-                    else:
-                        self.assertIn(marker["status"].casefold(), stock)
+        for position, name in azure.DEFAULT_PBI_STATES.items():
+            with self.subTest(position=position):
+                self.assertIn(name.casefold(), stock)
 
-    def test_a_profile_maps_this_processs_own_status_names(self):
-        profile = dict(PROFILE, phases={"design": {"ready": "New", "active": "Active"}})
-        fake = FakeAz(work_item(state="New"))
+    def test_a_profile_maps_this_processs_own_pbi_states(self):
+        profile = dict(PROFILE, phases={"pbi": {"ready": "Approved", "active": "Committed"}})
+        fake = FakeAz(work_item(state="Approved", work_item_type="User Story", parent="7"))
         with stub(fake):
-            result = azure.Board(None, profile).start_phase("42", "design")
-        self.assertEqual(result["status"], "Active")
+            result = self.board(profile).start_phase("42", "pbi")
+        self.assertEqual(result["status"], "Committed")
 
-    def test_a_status_the_board_cannot_express_says_so_rather_than_looking_broken(self):
-        profile = dict(PROFILE, phases={"design": {"next": None}})
-        message = self.assert_exits(3, azure.Board(None, profile).phase_status,
-                                    "design", "next")
-        self.assertIn("sets it to null", message)
-        self.assertIn("comment", message)
+    def test_a_profile_that_maps_a_feature_phase_is_refused_with_a_fix(self):
+        profile = dict(PROFILE, phases={"design": {"ready": "New"}})
+        with self.assertRaises(state.PhaseMapError) as caught:
+            self.board(profile).phase_states()
+        self.assertIn("FIX:", str(caught.exception))
 
     def test_an_unknown_phase_lists_the_known_ones(self):
-        message = self.assert_exits(3, azure.Board(None, PROFILE).phase_status,
+        message = self.assert_exits(azure.EXIT.INVALID, self.board().phase_status,
                                     "discovery", "ready")
         for phase in ("design", "planning", "development", "pbi"):
             self.assertIn(phase, message)
@@ -1306,7 +1336,7 @@ class WriteRefusalTests(ScriptTestCase):
             def __call__(self, args, **kwargs):
                 if args[:3] == ["boards", "work-item", "update"]:
                     self.calls.append(list(args))
-                    azure.fail(2, "the service is unavailable")
+                    azure.fail(azure.EXIT.UNAVAILABLE, "the service is unavailable")
                 return super().__call__(args, **kwargs)
 
         fake = HalfBroken()
@@ -1329,8 +1359,8 @@ class WriteRefusalTests(ScriptTestCase):
 class StateResolverIntegrationTests(ScriptTestCase):
     """The resolver knows no tracker; it has to answer over this adapter too."""
 
-    def test_a_card_ready_for_design_asks_for_the_design_command(self):
-        fake = FakeAz(work_item(state="New"))
+    def test_a_card_waiting_in_design_asks_for_the_design_command(self):
+        fake = FakeAz(work_item(state="New", tags="idp:design"))
         with stub(fake):
             answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
 
@@ -1355,7 +1385,8 @@ class StateResolverIntegrationTests(ScriptTestCase):
         feature as a PBI; and because the route check was skipped for PBIs, a
         missing header became a wrong instruction with nothing on screen.
         """
-        fake = FakeAz(work_item(state="New", parent=2445, work_item_type="Feature"))
+        fake = FakeAz(work_item(state="New", parent=2445, work_item_type="Feature",
+                                tags="idp:design"))
         with stub(fake):
             answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
         self.assertEqual((answer["phase"], answer["position"]), ("design", "ready"))
@@ -1376,11 +1407,11 @@ class StateResolverIntegrationTests(ScriptTestCase):
         The route says which phases exist for this unit of work. That holds
         whether the card is a feature or a backlog item.
         """
-        # A card the board calls a User Story, carrying the tag that means
+        # A card the board calls a User Story, carrying the tags that mean
         # `design · active`, on a route with no design phase. The old guard let
         # it through and answered "an agent holds this card".
         item = work_item(state="New", parent=2445, work_item_type="User Story",
-                         tags="idp:in-design",
+                         tags="idp:design; idp:owner:run-1",
                          description="---\nroute: small-feature\n---\n")
         fake = FakeAz(item)
         with stub(fake):
@@ -1458,128 +1489,119 @@ class CredentialRoutingTests(ScriptTestCase):
         self.assertEqual(board.CREDENTIALS["linear"]["path"], board.DEFAULT_TOKEN_PATH)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ---------------------------------------------------------------------------
 
-MIXED_PHASES = dict(PROFILE, phases={
-    "design": {"ready": {"status": "New"},
-               "active": {"tag": "idp:in-design"},
-               "next": {"tag": "idp:design-review"}},
-    "planning": {"ready": "New", "active": "Active", "next": "Resolved"},
-})
 
+class FencedTagWriteTests(ScriptTestCase):
+    """The fenced tag write, as this adapter puts it on the wire.
 
-class TagCarriedPhaseTests(ScriptTestCase):
-    """A phase position carried by a tag, which is why this board needs the feature.
-
-    Azure DevOps states belong to the work item type: adding the nine means an
-    inherited process and an administrator. Tags need neither. What is pinned
-    here is our side — the argv, the refusals, and that the correlation id
-    survives a swap. Whether Azure DevOps attributes a `System.Tags` change to
-    an actor in the revision history is AC-6 on IDE-126 and can only be
-    answered against a live organization.
+    What is pinned is our side — the patch, the refusals, and that the
+    correlation id survives a swap. What status Azure DevOps gives a failed
+    `test /rev` is experiment 2 of IDE-147 and is answered only against a live
+    organization; the stub answers the way `CONFLICT_STATUSES` assumes.
     """
 
     def board_with(self, tags="", state="New"):
         fake = FakeAz(work_item(state=state, tags=tags))
-        handle, _ = make_board(MIXED_PHASES)
+        handle, _ = make_board(PROFILE)
         return handle, fake
 
-    def test_claiming_sets_the_tag_in_one_revision(self):
-        handle, fake = self.board_with()
-        with stub(fake):
-            result = handle.start_phase("42", "design")
-        self.assertIn("idp:in-design", result["labels"])
-        # One write, not two. Two would leave a window in which the work item
-        # has no position and a second agent reads it as unclaimed.
-        self.assertEqual(len(fake.rest_calls), 1)
-        self.assertEqual(fake.rest_calls[0]["method"], "PATCH")
+    def patches(self, fake):
+        return [json.loads(c["body"].decode("utf-8"))
+                for c in fake.rest_matching("PATCH", "wit/workitems")]
 
-    def test_the_old_phase_tag_is_gone_after_the_swap(self):
+    def test_a_claim_is_one_patch_and_it_tests_the_revision_first(self):
+        handle, fake = self.board_with(tags="idp:design")
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            result = handle.start_phase("42", "design")
+        self.assertIn("idp:owner:run-a", result["labels"])
+        patches = self.patches(fake)
+        self.assertEqual(len(patches), 1, "one revision, or a window opens")
+        self.assertEqual(patches[0][0], {"op": "test", "path": "/rev", "value": 1})
+        self.assertEqual(patches[0][1]["op"], "replace")
+        self.assertEqual(patches[0][1]["path"], "/fields/System.Tags")
+
+    def test_the_hand_off_leaves_one_phase_tag_and_keeps_the_correlation_id(self):
         """The outcome, not the call count — which is what IDE-126 AC-5 counted.
 
         `az boards work-item update --fields` sends `op: add`, and Azure DevOps
-        merges `System.Tags` on an add. The old tag survived every swap, the card
-        ended up carrying two, and `locate` raises on two by design: the work
-        item was wedged and only a person editing tags by hand could free it.
+        merges `System.Tags` on an add; the old tag survived every swap (IDE-136).
         """
-        handle, fake = self.board_with(tags="sdlc:cid=fp_abc123; idp:in-design")
-        with stub(fake):
+        handle, fake = self.board_with(tags="sdlc:cid=fp_abc123; idp:design; "
+                                            "idp:owner:run-a")
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
             handle.finish_phase("42", "design")
 
         after = _split_tags(fake.items["42"]["fields"]["System.Tags"])
-        self.assertEqual([t for t in after if t.startswith("idp:")],
-                         ["idp:design-review"])
-        # The correlation id lives in the same field, and idempotent publication
-        # finds work items by it.
+        self.assertEqual([t for t in after if t.startswith("idp:")], ["idp:design-review"])
         self.assertIn("sdlc:cid=fp_abc123", after)
 
-    def test_the_patch_replaces_rather_than_adds(self):
-        handle, fake = self.board_with(tags="idp:in-design")
-        with stub(fake):
-            handle.finish_phase("42", "design")
-        patch = json.loads(fake.rest_calls[0]["body"].decode("utf-8"))
-        self.assertEqual(patch[0]["op"], "replace")
-        self.assertEqual(patch[0]["path"], "/fields/System.Tags")
+    def test_a_lost_race_is_a_conflict_and_takes_nothing(self):
+        handle, fake = self.board_with(tags="idp:design")
+        real_show = fake.__call__
 
-    def test_the_correlation_id_survives_the_swap(self):
-        # Idempotent publication finds work items by this tag. Losing it here
-        # would break a subsystem that has nothing to do with phases.
-        handle, fake = self.board_with(tags="sdlc:cid=fp_abc123; idp:in-design")
-        with stub(fake):
-            result = handle.finish_phase("42", "design")
-        self.assertIn("sdlc:cid=fp_abc123", result["labels"])
-        self.assertIn("idp:design-review", result["labels"])
-        self.assertNotIn("idp:in-design", result["labels"])
+        def stale_show(args, **kwargs):
+            item = real_show(args, **kwargs)
+            if args[:3] == ["boards", "work-item", "show"] and not fake.raced:
+                # Another run claims between our read and our write.
+                fake.raced = True
+                answer = json.loads(json.dumps(item))
+                item["fields"]["System.Tags"] = "idp:design; idp:owner:run-b"
+                item["rev"] += 1
+                return answer
+            return item
+
+        fake.raced = False
+        with mock.patch.object(azure, "run_az", stale_show), \
+                mock.patch.object(azure, "rest_call", fake.rest), \
+                mock.patch.dict(azure.os.environ, RUN):
+            message = self.assert_exits(azure.EXIT.INVALID, handle.start_phase, "42", "design")
+        self.assertIn("got there first", message)
+        self.assertEqual(fake.items["42"]["fields"]["System.Tags"],
+                         "idp:design; idp:owner:run-b")
 
     def test_a_tag_decides_the_position_even_when_the_state_says_otherwise(self):
-        # The item never left 'New', which the map calls `ready`, but it carries
-        # the `next` tag. Starting design on it would start work somebody had
-        # already finished.
         handle, fake = self.board_with(tags="idp:design-review")
-        with stub(fake):
-            self.assert_exits(3, handle.start_phase, "42", "design")
-        self.assertEqual(fake.writes, [])
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            self.assert_exits(azure.EXIT.INVALID, handle.start_phase, "42", "design")
+        self.assertEqual(self.patches(fake), [])
 
     def test_two_phase_tags_are_refused_with_both_named_and_nothing_written(self):
-        handle, fake = self.board_with(tags="idp:in-design; idp:design-review")
-        with stub(fake):
-            message = self.assert_exits(3, handle.start_phase, "42", "design")
-        self.assertIn("idp:in-design", message)
+        handle, fake = self.board_with(tags="idp:design; idp:design-review")
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
+            message = self.assert_exits(azure.EXIT.INVALID, handle.start_phase, "42", "design")
+        self.assertIn("idp:design", message)
         self.assertIn("idp:design-review", message)
-        self.assertEqual(fake.writes, [])
+        self.assertIn("FIX:", message)
+        self.assertEqual(self.patches(fake), [])
 
-    def test_an_already_tagged_item_is_a_no_op(self):
-        handle, fake = self.board_with(tags="idp:in-design")
-        with stub(fake):
+    def test_an_item_this_run_already_holds_is_a_no_op(self):
+        handle, fake = self.board_with(tags="idp:design; idp:owner:run-a")
+        with stub(fake), mock.patch.dict(azure.os.environ, RUN):
             result = handle.start_phase("42", "design")
         self.assertFalse(result["changed"])
-        self.assertEqual(fake.writes, [])
+        self.assertEqual(self.patches(fake), [])
 
-    def test_a_phase_still_carried_by_states_behaves_exactly_as_before(self):
-        # Mixed maps are the expected shape here: keep New/Active/Resolved where
-        # they exist, tag the positions the process cannot express.
-        handle, fake = self.board_with()
+    def test_a_pbi_state_move_is_fenced_too(self):
+        fake = FakeAz(work_item(state="New", work_item_type="User Story", parent="7"))
+        handle, _ = make_board(PROFILE)
         with stub(fake):
-            handle.start_phase("42", "planning")
-        self.assertEqual(fake.flag(fake.writes[0], "--state"), "Active")
-        self.assertNotIn("--fields", fake.writes[0])
+            handle.start_phase("42", "pbi")
+        patch = self.patches(fake)[0]
+        self.assertEqual(patch[0]["op"], "test")
+        self.assertIn({"op": "replace", "path": "/fields/System.State", "value": "Active"},
+                      patch)
 
-    def test_a_tag_marker_no_longer_raises_where_a_status_was_assumed(self):
-        # Before IDE-126 this path called .casefold() on a dict: a crash in the
-        # claim protocol rather than a refusal, hit mid-handoff.
-        handle, fake = self.board_with(state="Closed")
+    def test_comments_come_back_with_the_servers_timestamps(self):
+        handle, fake = self.board_with(tags="idp:design")
         with stub(fake):
-            message = self.assert_exits(3, handle.start_phase, "42", "design")
-        self.assertIn("starts from 'New'", message)
+            handle.add_comment("42", "hello")
+            comments = handle.list_comments("42")
+            now = handle.server_now()
+        self.assertEqual(comments[0]["body"], "hello")
+        self.assertEqual(comments[0]["created_at"], "2026-10-12T03:00:00.0000000Z")
+        self.assertIn("2026", now)
 
-    def test_the_ready_for_design_tag_is_still_derived_from_a_status(self):
-        # tags_for compares a status name against the design/ready cell, which
-        # may now be a marker. It must read the status out of it, not stringify
-        # the whole dict.
-        handle, _ = make_board(MIXED_PHASES)
-        self.assertIn(azure.TAG_READY_FOR_DESIGN,
-                      handle.tags_for("---\ntype: feature\n---\n", "New", None))
+
+if __name__ == "__main__":
+    unittest.main()

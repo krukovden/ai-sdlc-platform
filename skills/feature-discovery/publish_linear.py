@@ -54,6 +54,23 @@ def describe_created_in(board):
     return board.describe_marker(created_in(board))
 
 
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_exit_codes", REPO_ROOT / "scripts" / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
@@ -103,14 +120,14 @@ def check_valid(package, discovery, root=None, profile=None):
                                              stage="final",
                                              root=root or Path.cwd())
     except validator.ConfigError as exc:
-        fail(6, f"the artifact checker is misconfigured: {exc}")
+        fail(EXIT.CONFIG, f"the artifact checker is misconfigured: {exc}")
 
     if not violations:
         return
     for violation in violations:
         print(f"  {violation.layer:9} {violation.rule:18} {violation.message}",
               file=sys.stderr)
-    fail(3, f"{len(violations)} problems in the rendered feature. Publishing it "
+    fail(EXIT.INVALID, f"{len(violations)} problems in the rendered feature. Publishing it "
             "would put them on the board, where the next reader has no way to "
             "tell a gap from a decision.")
 
@@ -127,11 +144,11 @@ def load_board():
 def load_package(path):
     candidate = Path(path)
     if not candidate.exists():
-        fail(3, f"no package at {candidate}")
+        fail(EXIT.INVALID, f"no package at {candidate}")
     try:
         return json.loads(candidate.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{candidate} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{candidate} is not valid JSON: {exc}")
 
 
 def check_publishable(package, discovery):
@@ -142,11 +159,11 @@ def check_publishable(package, discovery):
     """
     approval = package.get("approval")
     if not approval:
-        fail(4, "the package is not approved; publication is refused")
+        fail(EXIT.CONFLICT, "the package is not approved; publication is refused")
 
     current = discovery.content_hash(package["material"])
     if approval.get("content_hash") != current:
-        fail(7, "the material changed after approval: the recorded hash is "
+        fail(EXIT.INVALIDATED, "the material changed after approval: the recorded hash is "
                 f"{approval['content_hash']}, the package now hashes to {current}. "
                 "Re-approve before publishing.")
 
@@ -217,7 +234,7 @@ def title_for(package):
 def publish(board, profile, package, discovery, dry_run=False):
     project_id = profile.get("project_id")
     if not project_id:
-        fail(6, "the profile has no project_id; publication has nowhere to go")
+        fail(EXIT.CONFIG, "the profile has no project_id; publication has nowhere to go")
 
     body = discovery.render_markdown(package, profile) + "\n\n" + meta_block(package)
     title = title_for(package)

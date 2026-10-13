@@ -41,6 +41,23 @@ REPO_ROOT = SKILL_DIR.parent.parent
 META = re.compile(r"```idp-meta\s*\n(.*?)\n```", re.DOTALL)
 
 
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_exit_codes", REPO_ROOT / "scripts" / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
@@ -75,7 +92,7 @@ def remote_has_branch(branch, remote="origin", runner=run_git, cwd=None):
     code, out, err = runner(["ls-remote", "--heads", remote,
                              f"refs/heads/{branch}"], cwd)
     if code != 0:
-        fail(2, f"cannot reach remote '{remote}': {err or 'git ls-remote failed'}. "
+        fail(EXIT.UNAVAILABLE, f"cannot reach remote '{remote}': {err or 'git ls-remote failed'}. "
                 "The branch check is against the remote, so this is not something "
                 "to work around locally.")
     return bool(out.strip())
@@ -96,13 +113,13 @@ def default_base(remote="origin", runner=run_git, cwd=None):
     """
     code, out, err = runner(["ls-remote", "--symref", remote, "HEAD"], cwd)
     if code != 0:
-        fail(2, f"cannot reach remote '{remote}': {err or 'git ls-remote failed'}. "
+        fail(EXIT.UNAVAILABLE, f"cannot reach remote '{remote}': {err or 'git ls-remote failed'}. "
                 "The base branch is asked of the remote, so this is not something "
                 "to work around locally.")
     for line in out.splitlines():
         if line.startswith("ref:"):
             return line.split()[1].rsplit("/", 1)[-1]
-    fail(2, f"remote '{remote}' did not report a default branch. Pass --base "
+    fail(EXIT.UNAVAILABLE, f"remote '{remote}' did not report a default branch. Pass --base "
             "explicitly rather than letting the feature branch be cut from a guess.")
 
 
@@ -126,11 +143,11 @@ def ensure_branch(branch, remote="origin", base=None, runner=run_git, cwd=None):
     if code != 0 or not sha:
         code, sha, err = runner(["rev-parse", base], cwd)
     if code != 0 or not sha:
-        fail(2, f"cannot resolve the base '{base}': {err or 'git rev-parse failed'}")
+        fail(EXIT.UNAVAILABLE, f"cannot resolve the base '{base}': {err or 'git rev-parse failed'}")
 
     code, _, err = runner(["push", remote, f"{sha}:refs/heads/{branch}"], cwd)
     if code != 0:
-        fail(2, f"cannot create '{branch}' on '{remote}': {err or 'git push failed'}")
+        fail(EXIT.UNAVAILABLE, f"cannot create '{branch}' on '{remote}': {err or 'git push failed'}")
     return {"branch": branch, "created": True}
 
 
@@ -173,7 +190,7 @@ def publish(board, profile, session, plan, planning, remote="origin", base=None,
     """One branch, then every PBI as a card and a brief made by one action."""
     project_id = profile.get("project_id")
     if not project_id:
-        fail(6, "the profile has no project_id; the PBIs have nowhere to go")
+        fail(EXIT.CONFIG, "the profile has no project_id; the PBIs have nowhere to go")
 
     planning.check_adr_unchanged(board, profile, session)
     try:
@@ -251,17 +268,15 @@ def publish(board, profile, session, plan, planning, remote="origin", base=None,
 def hand_on(board, session):
     """Move the feature out of planning — unless somebody already did.
 
-    Idempotency reaches this far too. `finish_phase` refuses to move a card that
-    is not in `In Planning`, which is correct for a first run and wrong for a
-    second, so the second asks first instead of tripping over a refusal that
-    means nothing went wrong.
+    Idempotency reaches this far too, and it is the board's to answer:
+    `finish_phase` is one fenced write that comes back `changed: False` when the
+    card is already where planning leaves it. This used to compare the card's
+    status with the target position itself, which broke the day a position
+    became a tag marker (IDE-147); only the board knows what a position is.
     """
-    issue = board.get_issue(session["feature"])
-    target = board.phase_status("planning", "next")
-    if (issue.get("status") or "").casefold() == target.casefold():
-        print(f"{session['feature']} is already in '{target}'", file=sys.stderr)
-        return
-    board.finish_phase(session["feature"], "planning")
+    result = board.finish_phase(session["feature"], "planning")
+    if not result.get("changed", True):
+        print(f"{session['feature']} is already where planning leaves it", file=sys.stderr)
 
 
 def main(argv=None):
@@ -282,7 +297,7 @@ def main(argv=None):
 
     session = planning.load_session(args.id)
     if session["state"] not in ("VALIDATED", "BRANCHED", "PUBLISHED"):
-        fail(4, f"the session for {args.id} is in {session['state']}; publication "
+        fail(EXIT.CONFLICT, f"the session for {args.id} is in {session['state']}; publication "
                 "needs a validated plan. Run: planning.py validate")
     plan = planning.load_plan(session)
 

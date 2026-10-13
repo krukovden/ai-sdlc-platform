@@ -13,13 +13,15 @@ connected board and a resolved profile, and it asks them.
 """
 
 import re
+import sys
+from pathlib import Path
 
-# The route decides which phases a card passes through. Settled in IDE-90:
-# a feature carries three gates, a small feature two, a bug one.
+# The route decides which phases a card passes through. Settled in IDE-90 and
+# re-expressed as phases in IDE-147: every route ends at the human's QA.
 ROUTES = {
-    "feature":       ["design", "planning", "development"],
-    "small-feature": ["planning", "development"],
-    "bug":           ["development"],
+    "feature":       ["design", "planning", "development", "qa"],
+    "small-feature": ["planning", "development", "qa"],
+    "bug":           ["development", "qa"],
 }
 
 DEFAULT_ROUTE = "feature"
@@ -29,23 +31,29 @@ DEFAULT_ROUTE = "feature"
 NEXT_ACTION = {
     ("design", "ready"):       ("agent",  "/idp-design {id}"),
     ("design", "active"):      ("agent",  None),
-    ("design", "next"):        ("human",  "approve the ADR on the card, then it moves to Ready for Planning"),
+    ("design", "next"):        ("human",  "approve the ADR by setting idp:development "
+                                          "on {id}, or send it back with idp:design"),
     ("planning", "ready"):     ("agent",  "/idp-planning {id}"),
     ("planning", "active"):    ("agent",  None),
-    ("planning", "next"):      ("agent",  "/idp-development {id}"),
-    ("development", "ready"):  ("agent",  "/idp-development {id}"),
+    ("planning", "next"):      ("agent",  None),
+    ("development", "ready"):  ("agent",  "/idp-planning {id}"),
     ("development", "active"): ("agent",  None),
-    ("development", "next"):   ("human",  "approve the global pull request in git"),
+    ("development", "next"):   ("human",  "test the feature through its QA Testing PBI: "
+                                          "close it and merge the PR into main, or file "
+                                          "Bugs and set idp:development on {id}"),
+    ("qa", "ready"):           ("human",  "test the feature through its QA Testing PBI: "
+                                          "close it and merge the PR into main, or file "
+                                          "Bugs and set idp:development on {id}"),
+    ("qa", "next"):            ("human",  "merge the pull request into main"),
     ("pbi", "ready"):          ("agent",  "/idp-development {id}"),
     ("pbi", "active"):         ("agent",  None),
-    ("pbi", "next"):           ("agent",  "the lead opens the PBI pull request"),
+    ("pbi", "next"):           ("agent",  "the runner merges the PBI pull request"),
 }
 
-# Positions are searched in this order, so a status that plays two roles —
-# `Ready for Development` closes planning and opens development — is reported
-# as the forward-looking one. Answering "planning is finished" is true and
-# useless; answering "development can start" is what the caller asked.
-POSITION_ORDER = ("ready", "active", "next", "blocked")
+# Positions are searched in this order, so a tag that plays two roles —
+# `idp:development` opens planning and development alike — is reported as the
+# forward-looking one, and an owned card is `active` before it is anything else.
+POSITION_ORDER = ("ready", "active", "next")
 
 
 def parse_machine_header(text):
@@ -84,61 +92,44 @@ def parse_machine_header(text):
     return header
 
 
-# Positions a board cannot express as a status are carried by a tag instead.
-# The namespace is what makes them readable as one thing: everything under
-# `idp:` is a phase position, and two of them on one card is a fault rather
-# than two positions (IDE-125).
-TAG_PREFIX = "idp:"
+def _sibling(name, alias):
+    """The board model lives in `scripts/tags.py` and `scripts/phases.py`; borrow
+    it, never copy it."""
+    existing = sys.modules.get(alias)
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(alias, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-class PhaseMapError(ValueError):
-    """A phase map that cannot be read. Named so a caller can turn it into an
-    exit code instead of a traceback."""
+tags = _sibling("tags", "idp_tags")
+phase_model = _sibling("phases", "idp_phases")
 
-
-def as_marker(value):
-    """One cell of the phase map, in one shape.
-
-    A bare string is a status. That is what every profile written before tags
-    existed says, and it keeps meaning exactly that — the new form is a second
-    option, never a migration.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return {"status": value}
-    if isinstance(value, dict) and len(value) == 1:
-        carrier, name = next(iter(value.items()))
-        if carrier in ("status", "tag") and isinstance(name, str) and name:
-            if carrier == "tag" and not name.startswith(TAG_PREFIX):
-                raise PhaseMapError(
-                    f"phase tag '{name}' must start with '{TAG_PREFIX}': the prefix is "
-                    "how the resolver tells a phase position from a label somebody "
-                    "put on the card for their own reasons")
-            return {carrier: name}
-    raise PhaseMapError(
-        f"a phase position is a status name or {{'status': ...}} or {{'tag': ...}}; "
-        f"got {value!r}")
-
-
-def phase_tags(labels):
-    """The `idp:` labels on a card, in the order the board gave them."""
-    return [label for label in (labels or []) if label.startswith(TAG_PREFIX)]
+# One vocabulary, defined in tags.py and phases.py. Re-exported because every
+# caller already asks this module, and two definitions of what `{"tag": ...}`
+# means is one too many.
+TAG_PREFIX = tags.TAG_PREFIX
+PhaseMapError = phase_model.PhaseMapError
+as_marker = phase_model.as_marker
+phase_tags = tags.phase_tags
 
 
 def phase_map(profile, adapter_default):
-    """The status names this board uses, per phase and position.
+    """The board's phase map, every cell in marker form.
 
-    Lives in the profile so a foreign team maps its existing statuses instead
-    of creating nine new ones. Where a board has no status for a position, the
-    profile carries `{"tag": "idp:..."}` and the position rides on a tag
-    (IDE-125). Null is the last resort below that: the phase is recorded as a
-    comment and claim degrades to comment order — the fallback in IDE-71.
+    Feature phases are the fixed tags and only a PBI's states come from the
+    profile; `adapter_default` is what `board.phase_states()` returned, which
+    has already applied the profile. The profile is still checked here, so a
+    profile that maps a Feature phase fails at `init` and not on first use.
     """
-    configured = profile.get("phases") or adapter_default
-
+    phase_model.check_profile_phases((profile or {}).get("phases"))
     merged = {}
-    for phase, positions in configured.items():
+    for phase, positions in (adapter_default or {}).items():
         cells = {}
         for position, value in positions.items():
             marker = as_marker(value)
@@ -148,41 +139,56 @@ def phase_map(profile, adapter_default):
     return merged
 
 
-def locate(status, phases, tags=(), kind=None):
+CONFLICT = "conflict"
+
+
+def locate(status, phases, labels=(), kind=None, prefer=()):
     """Reverse the phase map: which phase and position is this card in?
 
-    **A tag beats a status.** The ordinary case on a board that cannot express
-    a phase is a card sitting in whatever coarse status it started in — which
-    maps to `ready` — while a tag says the work is `active`. Reading the status
-    first would report every claimed card as free, which is the one answer that
-    breaks the claim protocol.
+    **A phase tag beats a status**, and an owner tag next to it is what makes
+    the position `active` rather than `ready`. Two phase tags are `conflict` —
+    a human added one and forgot the other — returned as `(None, "conflict")`
+    so the caller can block the card and name both, never a crash.
+
+    `prefer` lists the phases the card's route passes through: the development
+    tag opens planning and development alike, and a bug, whose route has no
+    planning, must be told about development.
     """
-    carried = phase_tags(tags)
+    carried = phase_tags(labels)
     if len(carried) > 1:
-        raise PhaseMapError(
-            f"this card carries {len(carried)} phase tags: {', '.join(sorted(carried))}. "
-            "One card is in one position; pick which, then re-run")
+        return None, CONFLICT
+    owned = tags.owner_of(labels) is not None
 
     # A board is allowed to spend one status name on two levels, and every Azure
-    # DevOps process does: `New` opens design on a Feature and opens work on a
-    # backlog item. Which one is meant is decided by what the card *is*, so the
-    # phases that can apply to this kind are searched first. `pbi` is never on a
-    # route and a feature is never in it, so this cannot mask a real answer —
-    # without it, a backlog item sitting in `New` is told to run /idp-design.
+    # DevOps process does: `New` is a fresh Feature and a fresh backlog item.
+    # Which one is meant is decided by what the card *is*.
     ordered = list(phases)
     if kind:
         wants_pbi = kind == "pbi"
         ordered.sort(key=lambda phase: 0 if (phase == "pbi") == wants_pbi else 1)
+    if prefer:
+        ordered.sort(key=lambda phase: 0 if phase in prefer or phase == "pbi" else 1)
 
-    for source, wanted in (("tag", carried[0] if carried else None),
-                           ("status", status)):
-        if not wanted:
-            continue
-        folded = wanted.casefold()
+    if carried:
+        wanted = carried[0]
+        loose = None
         for position in POSITION_ORDER:
             for phase in ordered:
                 marker = phases[phase].get(position) or {}
-                name = marker.get(source)
+                if marker.get("tag") != wanted:
+                    continue
+                if bool(marker.get("owner")) == owned:
+                    return phase, position
+                loose = loose or (phase, position)
+        if loose:
+            return loose
+
+    if status:
+        folded = status.casefold()
+        for position in POSITION_ORDER:
+            for phase in ordered:
+                marker = phases[phase].get(position) or {}
+                name = marker.get("status")
                 if name and name.casefold() == folded:
                     return phase, position
     return None, None
@@ -208,7 +214,8 @@ def resolve(board, profile, identifier, phases=None):
         route = DEFAULT_ROUTE
 
     status = issue.get("status")
-    phase, position = locate(status, phases, issue.get("labels") or (), kind)
+    labels = issue.get("labels") or ()
+    phase, position = locate(status, phases, labels, kind, prefer=ROUTES[route])
 
     answer = {
         "identifier": issue["identifier"],
@@ -218,7 +225,11 @@ def resolve(board, profile, identifier, phases=None):
         "route": route,
         "phase": phase,
         "position": position,
-        "blocked": position == "blocked",
+        "blocked": tags.is_blocked(labels),
+        "owner": tags.owner_of(labels),
+        "paused": tags.paused_of(labels),
+        "stopped": tags.is_stopped(labels),
+        "conflict": phase_tags(labels) if position == CONFLICT else [],
         "discovery": header.get("discovery"),
         "stage": header.get("stage"),
         "waiting_on": None,
@@ -226,11 +237,24 @@ def resolve(board, profile, identifier, phases=None):
         "reason": None,
     }
 
-    if position == "blocked":
+    if position == CONFLICT:
+        # Not a crash: a human put a second phase tag on and forgot the first.
+        # The runner blocks the card with a comment naming both.
+        both = ", ".join(answer["conflict"])
         answer["waiting_on"] = "human"
-        answer["next"] = f"decide, then re-run /idp-design {identifier}"
-        answer["reason"] = ("a chain participant stopped the work; escalation always "
-                            "reaches a human, on every route")
+        answer["next"] = f"remove all but one of {both} from {identifier}"
+        answer["reason"] = (f"the card carries {len(answer['conflict'])} phase tags ({both}); "
+                            "one card is in one position")
+        return answer
+
+    if answer["blocked"]:
+        # A modifier, not a position: the phase tag stays, so the card keeps where
+        # it resumes from, and unblocking is removing this one tag.
+        answer["waiting_on"] = "human"
+        answer["next"] = (f"read the reason in the comments on {identifier}, resolve it, "
+                          f"then remove {tags.BLOCKED}")
+        answer["reason"] = ("blocked; escalation always reaches a human, on every route"
+                            + (f". It resumes from {phase} · {position}" if phase else ""))
         return answer
 
     if kind == "feature" and header.get("discovery") == "required":
@@ -264,10 +288,6 @@ def resolve(board, profile, identifier, phases=None):
             answer["next"] = f"move {identifier} to '{opens['status']}'"
         elif opens.get("tag"):
             answer["next"] = f"tag {identifier} with '{opens['tag']}'"
-        else:
-            answer["next"] = (f"the '{first}' phase has no status and no tag on this "
-                              "board; give it one in the profile — "
-                              '{"tag": "idp:..."} — or record it as a comment')
         return answer
 
     if phase != "pbi" and phase not in ROUTES[route]:
@@ -283,7 +303,12 @@ def resolve(board, profile, identifier, phases=None):
     answer["waiting_on"] = waiting_on
     answer["next"] = template.format(id=identifier) if template else None
     if answer["next"] is None:
-        answer["reason"] = "an agent holds this card; nothing to start"
+        answer["reason"] = (f"run '{answer['owner']}' holds this card; nothing to start"
+                            if answer["owner"] else
+                            "an agent holds this card; nothing to start")
+    elif answer["paused"]:
+        answer["reason"] = (f"paused by run '{answer['paused']}' with a handoff; any run "
+                            "may take it at once")
     return answer
 
 
@@ -298,6 +323,8 @@ def describe(answer):
     else:
         lines.append(f"phase:   —   (route: {answer['route']})")
 
+    if answer.get("owner"):
+        lines.append(f"owner:   {answer['owner']}")
     if answer["next"]:
         lines.append(f"next:    {answer['next']}")
         lines.append(f"waiting: {answer['waiting_on']}")

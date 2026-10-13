@@ -102,6 +102,23 @@ TRANSITIONS = {
 SOURCES = ("po", "architecture", "repository", "reviewer")
 
 
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_exit_codes", REPO_ROOT / "scripts" / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
@@ -178,17 +195,17 @@ def slugify(text):
 def load_registry(path=None, extra_slots=()):
     path = Path(path or REGISTRY)
     if not path.exists():
-        fail(6, f"no project slot registry at {path}")
+        fail(EXIT.CONFIG, f"no project slot registry at {path}")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{path} is not valid JSON: {exc}")
 
     slots = list(data["slots"])
     known = {s["id"] for s in slots}
     for extra in extra_slots or ():
         if extra["id"] in known:
-            fail(3, f"extra_slot '{extra['id']}' collides with a base slot")
+            fail(EXIT.INVALID, f"extra_slot '{extra['id']}' collides with a base slot")
         slots.append(extra)
     return {"registry_version": data.get("registry_version", "0"), "slots": slots}
 
@@ -205,7 +222,7 @@ def order_slots(registry):
     for slot in slots:
         for need in slot.get("depends_on", []):
             if need not in by_id:
-                fail(3, f"slot '{slot['id']}' depends on unknown slot '{need}'")
+                fail(EXIT.INVALID, f"slot '{slot['id']}' depends on unknown slot '{need}'")
 
     ordered, placed, remaining = [], set(), list(slots)
     while remaining:
@@ -218,7 +235,7 @@ def order_slots(registry):
                 progressed = True
         if not progressed:
             cycle = ", ".join(s["id"] for s in remaining)
-            fail(3, f"the slot graph has a cycle among: {cycle}")
+            fail(EXIT.INVALID, f"the slot graph has a cycle among: {cycle}")
     return ordered
 
 
@@ -237,9 +254,9 @@ def check_epic(board, epic):
     try:
         facts = board.describe_epic(epic)
     except LookupError:
-        fail(6, f"no epic at '{epic}' on this board")
+        fail(EXIT.CONFIG, f"no epic at '{epic}' on this board")
     if not facts.get("is_epic"):
-        fail(6, f"'{epic}' exists but is a {facts.get('kind') or 'different kind'}, "
+        fail(EXIT.CONFIG, f"'{epic}' exists but is a {facts.get('kind') or 'different kind'}, "
                 "not an epic; a project cannot hang from it")
     return facts
 
@@ -264,16 +281,16 @@ def check_repository(repository):
     parsed = urlparse(repository)
     if parsed.scheme in ("http", "https", "ssh", "git"):
         if not parsed.netloc:
-            fail(6, f"'{repository}' has no host; it is not a repository address")
+            fail(EXIT.CONFIG, f"'{repository}' has no host; it is not a repository address")
         return {"kind": "remote", "address": repository, "verified": "syntax only"}
     if repository.startswith("git@") and ":" in repository:
         return {"kind": "remote", "address": repository, "verified": "syntax only"}
 
     path = Path(repository).expanduser()
     if not path.exists():
-        fail(6, f"no repository at '{repository}'")
+        fail(EXIT.CONFIG, f"no repository at '{repository}'")
     if not (path / ".git").exists():
-        fail(6, f"'{repository}' exists but is not a git repository")
+        fail(EXIT.CONFIG, f"'{repository}' exists but is not a git repository")
     return {"kind": "local", "address": str(path.resolve()), "verified": "on disk"}
 
 
@@ -319,7 +336,7 @@ def journal(slug, event):
 def load_state(slug):
     path = session_dir(slug) / "state.json"
     if not path.exists():
-        fail(4, f"no session '{slug}'; run: establish.py init")
+        fail(EXIT.CONFLICT, f"no session '{slug}'; run: establish.py init")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -331,7 +348,7 @@ def save_state(state):
 def transition(state, target):
     current = state["state"]
     if target not in TRANSITIONS.get(current, set()):
-        fail(4, f"illegal transition {current} -> {target}")
+        fail(EXIT.CONFLICT, f"illegal transition {current} -> {target}")
     if target != current:
         journal(state["slug"], {"event": "transition", "from": current, "to": target})
     state["state"] = target
@@ -382,7 +399,7 @@ def new_package(slug, cid, epic, repository, wiki, architecture_hash,
 def load_package(slug):
     path = session_dir(slug) / "package.json"
     if not path.exists():
-        fail(4, f"session '{slug}' has no package")
+        fail(EXIT.CONFLICT, f"session '{slug}' has no package")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -410,7 +427,7 @@ def definition(state, slot_id):
     for slot in state["registry"]["slots"]:
         if slot["id"] == slot_id:
             return slot
-    fail(3, f"unknown slot '{slot_id}'")
+    fail(EXIT.INVALID, f"unknown slot '{slot_id}'")
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +763,7 @@ def guard_approvals(slug, package):
         package["approvals"] = {"architecture": None, "slice": None}
         save_package(slug, package)
         journal(slug, {"event": "approval-void"})
-        fail(7, "the architecture changed after it was approved, so both approvals "
+        fail(EXIT.INVALIDATED, "the architecture changed after it was approved, so both approvals "
                 "are void. A slice made from one architecture is not a slice of "
                 "another. Re-approve the architecture, then the slice")
 
@@ -758,22 +775,22 @@ def guard_approvals(slug, package):
 def resolve_slug(args):
     slug = getattr(args, "slug", None) or current_slug()
     if not slug:
-        fail(4, "no current session; run: establish.py init")
+        fail(EXIT.CONFLICT, "no current session; run: establish.py init")
     return slug
 
 
 def cmd_init(args):
     architecture = Path(args.architecture_file)
     if not architecture.exists():
-        fail(3, f"no architecture at {architecture}")
+        fail(EXIT.INVALID, f"no architecture at {architecture}")
     text = architecture.read_text(encoding="utf-8")
     if not text.strip():
-        fail(3, f"{architecture} is empty; there is nothing to verify")
+        fail(EXIT.INVALID, f"{architecture} is empty; there is nothing to verify")
 
     slug = args.slug or slugify(args.epic)
     directory = session_dir(slug)
     if (directory / "state.json").exists() and not args.force:
-        fail(4, f"session '{slug}' already exists; pass --force to start over")
+        fail(EXIT.CONFLICT, f"session '{slug}' already exists; pass --force to start over")
 
     repository = check_repository(args.repository)
 
@@ -874,7 +891,7 @@ def cmd_next(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     if state["state"] != "coverage":
-        fail(4, f"'next' belongs to the coverage step; this session is in "
+        fail(EXIT.CONFLICT, f"'next' belongs to the coverage step; this session is in "
                 f"'{state['state']}'")
     step = decide_next(state, load_package(slug))
     if args.json:
@@ -893,24 +910,24 @@ def cmd_answer(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     if state["state"] != "coverage":
-        fail(4, f"answers belong to the coverage step; this session is in "
+        fail(EXIT.CONFLICT, f"answers belong to the coverage step; this session is in "
                 f"'{state['state']}'")
     if args.source not in SOURCES:
-        fail(3, f"unknown source '{args.source}'; one of {', '.join(SOURCES)}")
+        fail(EXIT.INVALID, f"unknown source '{args.source}'; one of {', '.join(SOURCES)}")
 
     slot = definition(state, args.slot)
     allowed = slot.get("closable_by", ["po"])
     if args.source not in allowed:
-        fail(5, f"slot '{args.slot}' cannot be closed by '{args.source}'; "
+        fail(EXIT.FORBIDDEN, f"slot '{args.slot}' cannot be closed by '{args.source}'; "
                 f"only {', '.join(allowed)} may close it. This is the guard against "
                 "a decision nobody made looking like one somebody did")
 
     path = Path(args.value_file)
     if not path.exists():
-        fail(3, f"no value file at {path}")
+        fail(EXIT.INVALID, f"no value file at {path}")
     value = path.read_text(encoding="utf-8").strip()
     if not value:
-        fail(3, "an empty answer does not close a slot")
+        fail(EXIT.INVALID, "an empty answer does not close a slot")
 
     shape = slot.get("shape")
     if shape:
@@ -921,10 +938,10 @@ def cmd_answer(args):
         try:
             value = json.loads(value)
         except json.JSONDecodeError as exc:
-            fail(3, f"slot '{args.slot}' is answered with JSON, not prose: {exc}")
+            fail(EXIT.INVALID, f"slot '{args.slot}' is answered with JSON, not prose: {exc}")
         problems = reviewer().validate(value, shape, f"${args.slot}")
         if problems:
-            fail(3, "the answer does not fit the slot's shape:\n  " + "\n  ".join(problems))
+            fail(EXIT.INVALID, "the answer does not fit the slot's shape:\n  " + "\n  ".join(problems))
 
     package = load_package(slug)
     package["material"][args.slot] = value
@@ -941,11 +958,11 @@ def cmd_dismiss(args):
     state = load_state(slug)
     slot = definition(state, args.slot)
     if slot.get("required"):
-        fail(5, f"slot '{args.slot}' is required and cannot be dismissed. A required "
+        fail(EXIT.FORBIDDEN, f"slot '{args.slot}' is required and cannot be dismissed. A required "
                 "slot left silent is the defect this registry exists to catch")
     reason = Path(args.reason_file).read_text(encoding="utf-8").strip()
     if not reason:
-        fail(3, "a dismissal without a reason is a silence with a timestamp")
+        fail(EXIT.INVALID, "a dismissal without a reason is a silence with a timestamp")
     state.setdefault("dismissed", {})[args.slot] = {"reason": reason, "at": now()}
     save_state(state)
     journal(slug, {"event": "dismiss", "slot": args.slot})
@@ -984,11 +1001,11 @@ def cmd_challenge_run(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     if state["state"] != "challenge":
-        fail(4, f"the challenge belongs to the challenge step; this session is in "
+        fail(EXIT.CONFLICT, f"the challenge belongs to the challenge step; this session is in "
                 f"'{state['state']}'")
     package = load_package(slug)
     if package["provenance"]["reviewer_mode"] != "skipped" and not args.force:
-        fail(4, "this session has already been challenged; pass --force to run again")
+        fail(EXIT.CONFLICT, "this session has already been challenged; pass --force to run again")
 
     gateway = reviewer()
     if args.response_file:
@@ -999,7 +1016,7 @@ def cmd_challenge_run(args):
         try:
             payload = gateway.parse_and_validate(text, "challenge.schema.json")
         except gateway.ReviewerError as exc:
-            fail(3, str(exc))
+            fail(EXIT.INVALID, str(exc))
         mode, failures = "response-file", []
     else:
         payload, mode, failures = gateway.review(
@@ -1010,7 +1027,7 @@ def cmd_challenge_run(args):
         # nothing. Refusing here is what keeps the two apart.
         package["provenance"]["reviewer_mode"] = "skipped"
         save_package(slug, package)
-        fail(2, "no provider answered, so the architecture has not been challenged: "
+        fail(EXIT.UNAVAILABLE, "no provider answered, so the architecture has not been challenged: "
                 + "; ".join(failures or ["no provider is configured"]))
 
     added = [add_finding(package, "challenge", finding["kind"], finding["claim"],
@@ -1033,16 +1050,16 @@ def cmd_challenge_decide(args):
     package = load_package(slug)
     matches = [f for f in package["findings"] if f["id"] == args.finding]
     if not matches:
-        fail(3, f"no finding '{args.finding}'")
+        fail(EXIT.INVALID, f"no finding '{args.finding}'")
     finding = matches[0]
     if finding["decision"] is not None:
-        fail(4, f"{args.finding} was already {finding['decision']}")
+        fail(EXIT.CONFLICT, f"{args.finding} was already {finding['decision']}")
 
     note = Path(args.note_file).read_text(encoding="utf-8").strip()
     if not note:
         # An accepted finding must change something and a rejected one must say
         # why, or the step becomes a tick-box that costs a provider call.
-        fail(3, "a decision without a note is a tick-box; say what changes, or why not")
+        fail(EXIT.INVALID, "a decision without a note is a tick-box; say what changes, or why not")
     finding["decision"] = "accepted" if args.accept else "rejected"
     finding["note"] = note
     save_package(slug, package)
@@ -1055,22 +1072,22 @@ def cmd_traverse(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     if state["state"] != "traversal":
-        fail(4, f"tracing belongs to the traversal step; this session is in "
+        fail(EXIT.CONFLICT, f"tracing belongs to the traversal step; this session is in "
                 f"'{state['state']}'")
     package = load_package(slug)
     scenarios = {s["id"]: s for s in package["material"].get("scenarios", [])}
     if args.scenario not in scenarios:
-        fail(3, f"no scenario '{args.scenario}'; the session named "
+        fail(EXIT.INVALID, f"no scenario '{args.scenario}'; the session named "
                 f"{', '.join(scenarios) or 'none'}")
 
     gateway = reviewer()
     try:
         trace = json.loads(Path(args.trace_file).read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"a trace is JSON: {exc}")
+        fail(EXIT.INVALID, f"a trace is JSON: {exc}")
     problems = gateway.validate(trace, TRACE_SHAPE, "$trace")
     if problems:
-        fail(3, "the trace does not fit the shape:\n  " + "\n  ".join(problems))
+        fail(EXIT.INVALID, "the trace does not fit the shape:\n  " + "\n  ".join(problems))
 
     interactions = package["material"].get("interactions", [])
     broken = trace_problems(trace, interactions)
@@ -1080,7 +1097,7 @@ def cmd_traverse(args):
         save_package(slug, package)
         journal(slug, {"event": "traverse", "scenario": args.scenario,
                        "result": "broken", "hops": len(trace)})
-        fail(3, f"{args.scenario} does not traverse:\n  " + "\n  ".join(broken))
+        fail(EXIT.INVALID, f"{args.scenario} does not traverse:\n  " + "\n  ".join(broken))
 
     package["traces"][args.scenario] = trace
     save_package(slug, package)
@@ -1093,17 +1110,17 @@ def cmd_slice(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     if state["state"] != "slicing":
-        fail(4, f"slicing belongs to the slicing step; this session is in "
+        fail(EXIT.CONFLICT, f"slicing belongs to the slicing step; this session is in "
                 f"'{state['state']}'")
     package = load_package(slug)
     gateway = reviewer()
     try:
         proposal = json.loads(Path(args.file).read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"a slice is JSON: {exc}")
+        fail(EXIT.INVALID, f"a slice is JSON: {exc}")
     problems = gateway.validate(proposal, SLICE_SHAPE, "$slice")
     if problems:
-        fail(3, "the slice does not fit the shape:\n  " + "\n  ".join(problems))
+        fail(EXIT.INVALID, "the slice does not fit the shape:\n  " + "\n  ".join(problems))
 
     stages = proposal["stages"]
     open_stage = stages[0]["id"]
@@ -1112,7 +1129,7 @@ def cmd_slice(args):
         # The depth rule, made mechanical. Later stages live as one line in the
         # project ADR until their turn; a card for one of them would be authored
         # blind, which is the failure this whole phase is shaped to avoid.
-        fail(3, f"cards exist only for the open stage '{open_stage}'. These features "
+        fail(EXIT.INVALID, f"cards exist only for the open stage '{open_stage}'. These features "
                 f"belong to a later stage and must stay a summary line: "
                 f"{', '.join(stray)}")
 
@@ -1120,7 +1137,7 @@ def cmd_slice(args):
     for feature in proposal["features"]:
         unknown = [s for s in feature["scenarios"] if s not in known_scenarios]
         if unknown:
-            fail(3, f"feature '{feature['id']}' names scenarios the session never "
+            fail(EXIT.INVALID, f"feature '{feature['id']}' names scenarios the session never "
                     f"established: {', '.join(unknown)}")
 
     package["stages"] = stages
@@ -1155,17 +1172,17 @@ def cmd_review(args):
     slug = resolve_slug(args)
     state = load_state(slug)
     if state["state"] != "review":
-        fail(4, f"the per-feature pass belongs to the review step; this session is "
+        fail(EXIT.CONFLICT, f"the per-feature pass belongs to the review step; this session is "
                 f"in '{state['state']}'")
     package = load_package(slug)
     matches = [f for f in package["features"] if f["id"] == args.feature]
     if not matches:
-        fail(3, f"no feature '{args.feature}'")
+        fail(EXIT.INVALID, f"no feature '{args.feature}'")
     feature = matches[0]
 
     note = Path(args.note_file).read_text(encoding="utf-8").strip()
     if not note:
-        fail(3, "a verdict without a note is a verdict nobody can revisit")
+        fail(EXIT.INVALID, "a verdict without a note is a verdict nobody can revisit")
     decided = "done" if args.build else "required"
     if decided != feature["recommended"]:
         # Where the Product Owner overruled the rule. The HUB requires this
@@ -1195,20 +1212,20 @@ def cmd_approve(args):
 
     if args.what == "architecture":
         if state["state"] != "traversal":
-            fail(4, "the architecture is approved once it has been traversed; this "
+            fail(EXIT.CONFLICT, "the architecture is approved once it has been traversed; this "
                     f"session is in '{state['state']}'")
         untraced = [s["id"] for s in package["material"].get("scenarios", [])
                     if s["id"] not in package["traces"]]
         if untraced:
-            fail(4, "these scenarios are not traced: " + ", ".join(untraced))
+            fail(EXIT.CONFLICT, "these scenarios are not traced: " + ", ".join(untraced))
         material = architecture_material(package)
     else:
         guard_approvals(slug, package)
         if state["state"] != "approval":
-            fail(4, "the slice is approved after the per-feature pass; this session "
+            fail(EXIT.CONFLICT, "the slice is approved after the per-feature pass; this session "
                     f"is in '{state['state']}'")
         if not (package.get("approvals") or {}).get("architecture"):
-            fail(4, "the architecture has not been approved; a slice of an unapproved "
+            fail(EXIT.CONFLICT, "the architecture has not been approved; a slice of an unapproved "
                     "architecture approves nothing")
         material = slice_material(package)
 
@@ -1229,10 +1246,10 @@ def cmd_publish(args):
     package = load_package(slug)
     guard_approvals(slug, package)
     if state["state"] not in ("publish", "published"):
-        fail(4, f"publication belongs to the publish step; this session is in "
+        fail(EXIT.CONFLICT, f"publication belongs to the publish step; this session is in "
                 f"'{state['state']}'")
     if not (package.get("approvals") or {}).get("slice"):
-        fail(4, "the slice has not been approved")
+        fail(EXIT.CONFLICT, "the slice has not been approved")
 
     publisher = load_publisher()
     board = None if args.dry_run else publisher.open_board(state, package)
@@ -1272,32 +1289,32 @@ def cmd_advance(args):
     if step == "coverage":
         problems = validate(package, state)
         if problems:
-            fail(3, "coverage is not complete:\n  " + "\n  ".join(problems))
+            fail(EXIT.INVALID, "coverage is not complete:\n  " + "\n  ".join(problems))
         broken = check_interactions(package["material"].get("components", []),
                                     package["material"].get("interactions", []))
         for _, claim in broken:
             add_finding(package, "coverage", "gap", claim, "blocking")
         if broken:
             save_package(slug, package)
-            fail(3, "the declared interactions do not agree with the declared "
+            fail(EXIT.INVALID, "the declared interactions do not agree with the declared "
                     "components:\n  " + "\n  ".join(c for _, c in broken))
         target = "challenge"
     elif step == "challenge":
         if package["provenance"]["reviewer_mode"] == "skipped":
-            fail(4, "the architecture has not been challenged yet")
+            fail(EXIT.CONFLICT, "the architecture has not been challenged yet")
         open_findings = undecided(package)
         if open_findings:
-            fail(4, "these findings have no decision: "
+            fail(EXIT.CONFLICT, "these findings have no decision: "
                     + ", ".join(f["id"] for f in open_findings))
         target = "traversal"
     elif step == "traversal":
         scenarios = [s["id"] for s in package["material"].get("scenarios", [])]
         untraced = [s for s in scenarios if s not in package["traces"]]
         if untraced:
-            fail(4, "these scenarios are not traced: " + ", ".join(untraced))
+            fail(EXIT.CONFLICT, "these scenarios are not traced: " + ", ".join(untraced))
         open_findings = undecided(package)
         if open_findings:
-            fail(4, "these findings have no decision: "
+            fail(EXIT.CONFLICT, "these findings have no decision: "
                     + ", ".join(f["id"] for f in open_findings))
         lonely = unreachable_components(package["material"]["components"],
                                         package["traces"])
@@ -1307,30 +1324,30 @@ def cmd_advance(args):
                         "is missing, or the component is", "material", [name])
         save_package(slug, package)
         if lonely:
-            fail(4, "components no traced scenario reaches: " + ", ".join(lonely)
+            fail(EXIT.CONFLICT, "components no traced scenario reaches: " + ", ".join(lonely)
                     + ". Recorded as findings; decide them, then advance")
         # Approval is asked for last, when nothing known to be broken is left.
         # Asking a human to approve something the script already knows is wrong
         # spends their attention on a decision that cannot stand.
         if not (package.get("approvals") or {}).get("architecture"):
-            fail(4, "the architecture has not been approved; slicing an unapproved "
+            fail(EXIT.CONFLICT, "the architecture has not been approved; slicing an unapproved "
                     "architecture produces a slice nobody agreed to")
         target = "slicing"
     elif step == "slicing":
         if not package["features"]:
-            fail(4, "nothing has been sliced yet")
+            fail(EXIT.CONFLICT, "nothing has been sliced yet")
         target = "review"
     elif step == "review":
         undecided_features = [f["id"] for f in package["features"] if not f["decided"]]
         if undecided_features:
-            fail(4, "these features have no verdict: " + ", ".join(undecided_features))
+            fail(EXIT.CONFLICT, "these features have no verdict: " + ", ".join(undecided_features))
         target = "approval"
     elif step == "approval":
         if not (package.get("approvals") or {}).get("slice"):
-            fail(4, "the slice has not been approved")
+            fail(EXIT.CONFLICT, "the slice has not been approved")
         target = "publish"
     else:
-        fail(4, f"nothing to advance from '{step}' yet")
+        fail(EXIT.CONFLICT, f"nothing to advance from '{step}' yet")
 
     transition(state, args.to or target)
     save_state(state)
@@ -1350,7 +1367,7 @@ def cmd_validate(args):
         if not problems:
             print("coverage complete")
     if problems:
-        sys.exit(3)
+        sys.exit(EXIT.INVALID)
 
 
 def cmd_package_path(args):

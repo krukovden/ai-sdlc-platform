@@ -40,11 +40,14 @@ Usage:
     board.py memory init                        seed memory for an existing project
     board.py sync                               regenerate docs/project-state.md
 
-Exit codes, shared by every adapter:
-    0  success
-    2  the board rejected us, or could not be reached
-    3  the request was malformed - bad status name, wrong phase, unknown issue
-    6  configuration failure - no profile, no token, bad permissions
+Exit codes, shared by every adapter and named in scripts/exit_codes.py:
+    OK           success
+    NO           `status --quiet` found nothing to run; `memory check` found drift
+    UNAVAILABLE  the board rejected us, or could not be reached
+    INVALID      the request was malformed or refused - bad status name, wrong
+                 phase, a claim lost to another run - and nothing was written
+    CONFIG       configuration failure - no profile, no token, bad permissions
+Every refusal ends with a FIX line: what to do to get past it.
 """
 
 import argparse
@@ -92,11 +95,26 @@ CREDENTIALS = {
 }
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
+
+
+def _exit_codes():
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("idp_exit_codes",
+                                                  SCRIPT_DIR / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
 DEFAULT_MIRROR = REPO_ROOT / "docs" / "project-state.md"
 
 
-def fail(code, message):
-    print(f"ERROR: {message}", file=sys.stderr)
+def fail(code, message, fix=None):
+    print(f"ERROR: {EXIT.with_fix(message, fix)}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -139,70 +157,42 @@ def find_profile(start=None):
 def load_profile():
     path = find_profile()
     if not path:
-        fail(6, f"no {PROFILE_DIR}/{PROFILE_NAME} found here or above; "
-                f"run: {invoked_as()} init")
+        fail(EXIT.CONFIG, f"no {PROFILE_DIR}/{PROFILE_NAME} found here or above; "
+                          f"run: {invoked_as()} init",
+             fix="run `board.py init` in the repository root, or cd into a repository that has .idp/profile.json")
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(6, f"{path} is not valid JSON: {exc}")
+        fail(EXIT.CONFIG, f"{path} is not valid JSON: {exc}",
+             fix="correct the JSON in that file, then re-run")
 
     for field in ("board", "team_key"):
         if not profile.get(field):
-            fail(6, f"{path} is missing required field '{field}'")
+            fail(EXIT.CONFIG, f"{path} is missing required field '{field}'",
+                 fix="add the field to the profile, then re-run")
 
     profile["_path"] = str(path)
     return profile
 
 
-def agent_name(profile):
-    """Which identity this process works under, or None for the single-agent case.
-
-    The claim protocol reads the actor out of the board's own status history,
-    so two agents sharing one token are one actor and the protocol cannot say
-    who was first. IDP_AGENT names which key to use; without it nothing about
-    the single-agent setup changes.
-    """
-    name = os.environ.get("IDP_AGENT", "").strip()
-    if not name:
-        return None
-
-    agents = profile.get("agents") or {}
-    if name not in agents:
-        known = ", ".join(sorted(agents)) or "none configured"
-        fail(6, f"IDP_AGENT='{name}' is not in the profile. Known agents: {known}")
-    return name
-
-
 def token_path_for(profile):
-    """The token file this process must use, after checking the identity map.
+    """The token file this process must use.
 
-    Duplicate paths are refused here rather than at claim time: two agents
-    behind one key look identical in history, and the corruption only shows up
-    much later as a claim nobody can reproduce.
+    One per profile. The per-agent map that used to sit in front of this
+    existed only so the claim protocol could tell agents apart in the board's
+    history; a claim is now a fenced write and needs no identity to read back
+    (IDE-147), so the map is no longer consulted.
     """
-    agents = profile.get("agents") or {}
-    if agents:
-        seen = {}
-        for name, raw in sorted(agents.items()):
-            resolved = str(Path(raw).expanduser())
-            if resolved in seen:
-                fail(6, f"agents '{seen[resolved]}' and '{name}' share the token file "
-                        f"{resolved}; the claim protocol cannot tell them apart")
-            seen[resolved] = name
-
-    name = agent_name(profile)
-    if name:
-        return Path(agents[name]).expanduser()
-
     configured = profile.get("token_path")
     if configured:
         return Path(configured).expanduser()
 
     board_name, credentials = credentials_for(profile)
     if credentials is None:
-        fail(6, f"board '{board_name}' has no credential rule and the profile has no "
-                "'token_path'. Add one — guessing would mean handing another "
-                "board's key to this one.")
+        fail(EXIT.CONFIG, f"board '{board_name}' has no credential rule and the profile has no "
+                          "'token_path'. Add one — guessing would mean handing another "
+                          "board's key to this one.",
+             fix="add 'token_path' to .idp/profile.json, pointing at this board's own token file")
     default_path = credentials["path"]
     return Path(default_path).expanduser() if default_path else None
 
@@ -229,20 +219,19 @@ def read_token(profile):
     variable = credentials["env"] if credentials else None
     token = os.environ.get(variable, "") if variable else ""
     if token.strip():
-        # Still validate the identity map, so a broken profile fails the same
-        # way whether or not the environment happens to carry a key today.
-        token_path_for(profile)
         return token.strip()
 
     token_path = token_path_for(profile)
     if token_path is None:
         return None
     if not token_path.exists():
-        fail(6, f"no token file at {token_path} and no "
-                f"{variable or 'API key'} in the environment")
+        fail(EXIT.CONFIG, f"no token file at {token_path} and no "
+                          f"{variable or 'API key'} in the environment",
+             fix="write the token to that file with mode 0600, or export the environment variable")
     mode = stat.S_IMODE(token_path.stat().st_mode)
     if mode & 0o077:
-        fail(6, f"{token_path} must be mode 0600, found {oct(mode)}")
+        fail(EXIT.CONFIG, f"{token_path} must be mode 0600, found {oct(mode)}",
+             fix="chmod 600 the token file")
     return token_path.read_text().strip()
 
 
@@ -259,7 +248,8 @@ def load_adapter(profile):
     module_name = adapter_module_name(profile["board"])
     path = SCRIPT_DIR / f"{module_name}.py"
     if not path.exists():
-        fail(6, f"board '{profile['board']}' has no adapter: expected scripts/{module_name}.py")
+        fail(EXIT.CONFIG, f"board '{profile['board']}' has no adapter: expected scripts/{module_name}.py",
+             fix="set 'board' in the profile to a board this platform has an adapter for: linear or azure-devops")
 
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
@@ -267,7 +257,8 @@ def load_adapter(profile):
     spec.loader.exec_module(module)
 
     if not hasattr(module, "connect"):
-        fail(6, f"scripts/{module_name}.py is not an adapter: it has no connect()")
+        fail(EXIT.CONFIG, f"scripts/{module_name}.py is not an adapter: it has no connect()",
+             fix="restore the adapter from git; it must define connect()")
     return module
 
 
@@ -294,7 +285,8 @@ def open_board():
 def project_id_from(profile, override=None):
     project_id = override or profile.get("project_id")
     if not project_id:
-        fail(3, "no project: pass --project, or set project_id in the profile")
+        fail(EXIT.INVALID, "no project: pass --project, or set project_id in the profile",
+             fix="pass --project, or set 'project_id' in .idp/profile.json")
     return project_id
 
 
@@ -302,7 +294,8 @@ def read_body(args):
     if getattr(args, "body_file", None):
         path = Path(args.body_file)
         if not path.exists():
-            fail(3, f"no such file: {path}")
+            fail(EXIT.INVALID, f"no such file: {path}",
+                 fix="pass the path of a file that exists")
         return path.read_text(encoding="utf-8")
     return getattr(args, "body", None)
 
@@ -314,7 +307,8 @@ def read_body(args):
 def cmd_init(args):
     target = Path(os.getcwd()) / PROFILE_DIR / PROFILE_NAME
     if target.exists() and not args.force:
-        fail(6, f"{target} already exists; pass --force to overwrite")
+        fail(EXIT.CONFIG, f"{target} already exists; pass --force to overwrite",
+             fix="pass --force to overwrite it, or edit it by hand")
 
     profile = {
         "board": args.board,
@@ -354,7 +348,8 @@ def cmd_init(args):
             sections.language_of(profile)
             sections.register_of(profile)
         except sections.SectionError as exc:
-            fail(6, str(exc))
+            fail(EXIT.CONFIG, str(exc),
+                 fix="correct the 'artifacts' block, or the --language / --register you passed")
 
     if profile.get("phases"):
         # Verified before writing, like everything else in a profile: a phase
@@ -362,12 +357,14 @@ def cmd_init(args):
         try:
             state.phase_map(profile, {})
         except state.PhaseMapError as exc:
-            fail(6, str(exc))
+            fail(EXIT.CONFIG, str(exc),
+                 fix="correct the profile's 'phases' as the message says")
 
     for kind in profile.get("kinds", {}):
         if kind not in KINDS:
-            fail(6, f"the profile maps a kind the platform does not know: '{kind}'; "
-                    f"known kinds are {', '.join(KINDS)}")
+            fail(EXIT.CONFIG, f"the profile maps a kind the platform does not know: '{kind}'; "
+                              f"known kinds are {', '.join(KINDS)}",
+                 fix="map only epic, feature, pbi or task under 'kinds'")
 
     # Verify before writing. A profile that was never checked is a file that
     # lies, and it will lie at the least convenient moment.
@@ -457,7 +454,8 @@ def cmd_list(args):
 def cmd_create(args):
     profile, _, board = open_board()
     if args.kind and args.kind not in KINDS:
-        fail(3, f"unknown kind '{args.kind}'; the platform knows {', '.join(KINDS)}")
+        fail(EXIT.INVALID, f"unknown kind '{args.kind}'; the platform knows {', '.join(KINDS)}",
+             fix="pass one of epic, feature, pbi, task")
     issue = board.create_issue(
         title=args.title,
         body=read_body(args),
@@ -483,7 +481,8 @@ def cmd_comment(args):
     _, _, board = open_board()
     body = read_body(args)
     if not body:
-        fail(3, "pass --body or --body-file")
+        fail(EXIT.INVALID, "pass --body or --body-file",
+             fix="pass --body \"...\" or --body-file <path>")
     print(board.add_comment(args.id, body))
 
 
@@ -499,10 +498,12 @@ def cmd_doc(args):
         return
 
     if not (args.title and args.file):
-        fail(3, "attaching a document needs --title and --file")
+        fail(EXIT.INVALID, "attaching a document needs --title and --file",
+             fix="pass --title and --file")
     path = Path(args.file)
     if not path.exists():
-        fail(3, f"no such file: {path}")
+        fail(EXIT.INVALID, f"no such file: {path}",
+             fix="pass the path of a file that exists")
     content = path.read_text(encoding="utf-8")
 
     if args.id:
@@ -519,20 +520,22 @@ def cmd_status(args):
         answer = state.resolve(board, profile, args.id)
     except state.PhaseMapError as exc:
         # A phase map that cannot be read is a configuration fault, not a crash.
-        fail(6, str(exc))
+        fail(EXIT.CONFIG, str(exc),
+             fix="correct the profile's 'phases' as the message says")
     print(state.describe(answer))
     # A card nobody can act on is not an error, but a caller that scripts this
     # needs to tell "waiting on a human" from "run this now" without parsing.
     if args.quiet:
-        sys.exit(0 if answer["next"] else 1)
+        sys.exit(EXIT.OK if answer["next"] else EXIT.NO)
 
 
 def memory_document(profile, board):
     """The epic document that carries the registry, named by the profile."""
     slug = profile.get("memory_doc")
     if not slug:
-        fail(6, "the profile has no 'memory_doc': the slug of the epic document "
-                "that carries the registry. Add it, then re-run.")
+        fail(EXIT.CONFIG, "the profile has no 'memory_doc': the slug of the epic document "
+                          "that carries the registry. Add it, then re-run.",
+             fix="add 'memory_doc' — the slug of the epic document with the registry — to the profile")
     return slug, board.get_document(slug)
 
 
@@ -571,11 +574,13 @@ def cmd_memory(args):
             print(memory.core(registry))
         elif args.action == "why":
             if not args.id:
-                fail(3, "memory why needs an issue: board.py memory why IDE-42")
+                fail(EXIT.INVALID, "memory why needs an issue: board.py memory why IDE-42",
+                     fix="name the issue: board.py memory why IDE-42")
             print(explain(board, registry, args.id))
         elif args.action == "record":
             if not args.id or not args.entry:
-                fail(3, "memory record needs an issue and --entry")
+                fail(EXIT.INVALID, "memory record needs an issue and --entry",
+                     fix="pass the issue and --entry \"what the merge changed\"")
             title = memory.history_title(args.id)
             existing = None
             for doc in board.list_documents(project_id_from(profile, None)):
@@ -605,9 +610,10 @@ def cmd_memory(args):
             if any(findings[k] for k in ("unbacked", "unregistered",
                                           "unrecorded_removals",
                                           "closed_without_commits")):
-                sys.exit(1)
+                sys.exit(EXIT.NO)
     except memory.MemoryError_ as exc:
-        fail(3, str(exc))
+        fail(EXIT.INVALID, str(exc),
+             fix="correct the registry document as the message says, then re-run")
 
 
 def explain(board, registry, identifier):
@@ -641,15 +647,22 @@ def explain(board, registry, identifier):
 
 
 def cmd_start(args):
+    """Claim: one fenced write adding this run's owner tag. A lost race exits INVALID."""
     _, _, board = open_board()
     result = board.start_phase(args.id, args.phase)
-    print(f"{result['identifier']}  {result['status']}")
+    if not result.get("changed", True):
+        print(f"{result['identifier']} is already {args.phase} · active, held by this run",
+              file=sys.stderr)
+    print(f"{result['identifier']}  {result['status']}  "
+          f"{', '.join(result.get('labels') or []) or '—'}")
 
 
 def cmd_finish(args):
+    """Hand-off: the next phase tag on, this run's owner tag off, one fenced write."""
     _, _, board = open_board()
     result = board.finish_phase(args.id, args.phase, args.to)
-    print(f"{result['identifier']}  {result['status']}")
+    print(f"{result['identifier']}  {result['status']}  "
+          f"{', '.join(result.get('labels') or []) or '—'}")
 
 
 def cmd_sync(args):

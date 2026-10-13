@@ -135,6 +135,23 @@ DECISION_SCHEMA = json.loads(
     (REPO_ROOT / "schemas" / "decision-registry.schema.json").read_text(encoding="utf-8"))
 
 
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_exit_codes", REPO_ROOT / "scripts" / "exit_codes.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
 def fail(code, message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(code)
@@ -224,11 +241,11 @@ def journal(identifier, event):
 def load_state(identifier):
     path = session_dir(identifier) / "state.json"
     if not path.exists():
-        fail(4, f"no design session for {identifier}. Run: design.py init {identifier}")
+        fail(EXIT.CONFLICT, f"no design session for {identifier}. Run: design.py init {identifier}")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is corrupt: {exc}")
+        fail(EXIT.INVALID, f"{path} is corrupt: {exc}")
 
 
 def save_state(state):
@@ -239,7 +256,7 @@ def save_state(state):
 def transition(state, target):
     current = state["state"]
     if target not in TRANSITIONS.get(current, set()):
-        fail(4, f"illegal transition {current} -> {target}")
+        fail(EXIT.CONFLICT, f"illegal transition {current} -> {target}")
     if target != current:
         journal(state["identifier"],
                 {"event": "transition", "from": current, "to": target})
@@ -301,7 +318,7 @@ def open_card(identifier):
         # board.py already chose the right code — profile 6, missing issue 3.
         raise
     except Exception as exc:                       # noqa: BLE001 - deliberate
-        fail(2, f"the board could not be reached: {exc}")
+        fail(EXIT.UNAVAILABLE, f"the board could not be reached: {exc}")
     return board, profile, issue, answer
 
 
@@ -436,7 +453,7 @@ def mandatory_headings():
     """
     path = TEMPLATES / "adr.md"
     if not path.exists():
-        fail(3, f"no ADR template at {path}; the mandatory sections live there")
+        fail(EXIT.INVALID, f"no ADR template at {path}; the mandatory sections live there")
     return [line[3:].strip() for line in path.read_text(encoding="utf-8").splitlines()
             if line.startswith("## ")]
 
@@ -665,13 +682,13 @@ def read_response_file(path, schema_name):
     """
     candidate = Path(path)
     if not candidate.exists():
-        fail(3, f"no such file: {candidate}")
+        fail(EXIT.INVALID, f"no such file: {candidate}")
     reviewer = load_reviewer_module()
     try:
         return reviewer.parse_and_validate(
             candidate.read_text(encoding="utf-8"), schema_name)
     except reviewer.ReviewerError as exc:
-        fail(3, str(exc))
+        fail(EXIT.INVALID, str(exc))
 
 
 def practice_prompt(state):
@@ -749,13 +766,13 @@ def critic_prompt(state):
 def cmd_init(args):
     identifier = args.identifier
     if not identifier:
-        fail(3, "which card? Run: design.py init IDE-nn. The command does not "
+        fail(EXIT.INVALID, "which card? Run: design.py init IDE-nn. The command does not "
                 "guess what it is working on.")
 
     directory = session_dir(identifier)
     if (directory / "state.json").exists():
         if not args.resume:
-            fail(4, f"a design session for {identifier} already exists. Pass "
+            fail(EXIT.CONFLICT, f"a design session for {identifier} already exists. Pass "
                     f"--resume to continue from the last completed subphase.")
         state = load_state(identifier)
         skipped = [name for name in SUBPHASE_ORDER if subphase_done(state, name)]
@@ -771,23 +788,23 @@ def cmd_init(args):
     header = state_module().parse_machine_header(issue.get("description"))
 
     if (header.get("type") or "").strip().casefold() == "adr":
-        fail(5, f"{identifier} is already an ADR. /idp-design turns a feature into "
+        fail(EXIT.FORBIDDEN, f"{identifier} is already an ADR. /idp-design turns a feature into "
                 "an ADR; it is not run on its own output.")
     if answer["kind"] != "feature":
-        fail(4, f"{identifier} is a {answer['kind']}, not a feature. Its phase is "
+        fail(EXIT.CONFLICT, f"{identifier} is a {answer['kind']}, not a feature. Its phase is "
                 f"{describe_phase(answer)}. The signal for this command is that "
                 "the card is a feature.")
     if issue.get("status_type") in ("completed", "canceled"):
-        fail(4, f"{identifier} is '{issue['status']}' — {issue.get('status_type')}. "
+        fail(EXIT.CONFLICT, f"{identifier} is '{issue['status']}' — {issue.get('status_type')}. "
                 "There is nothing to design.")
     if answer["phase"] != "design":
-        fail(4, f"{identifier} is in phase {describe_phase(answer)}. /idp-design "
+        fail(EXIT.CONFLICT, f"{identifier} is in phase {describe_phase(answer)}. /idp-design "
                 f"starts from the design phase and refuses to guess.")
 
     # Checked before the claim branch, so --no-claim cannot become a way to
     # start a design session on a card sitting in Design Review.
     if answer["position"] not in ("ready", "active"):
-        fail(4, f"{identifier} is in phase {describe_phase(answer)}; design starts "
+        fail(EXIT.CONFLICT, f"{identifier} is in phase {describe_phase(answer)}; design starts "
                 "from its ready position and resumes from its active one.")
 
     claimed = False
@@ -855,21 +872,21 @@ def describe_phase(answer):
 def cmd_draft(args):
     state = load_state(args.id)
     if not args.sections_file:
-        fail(3, "pass --sections-file: a JSON object of section heading -> text")
+        fail(EXIT.INVALID, "pass --sections-file: a JSON object of section heading -> text")
     path = Path(args.sections_file)
     if not path.exists():
-        fail(3, f"no such file: {path}")
+        fail(EXIT.INVALID, f"no such file: {path}")
     try:
         sections = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{path} is not valid JSON: {exc}")
     if not isinstance(sections, dict):
-        fail(3, "the sections file is a JSON object of heading -> text")
+        fail(EXIT.INVALID, "the sections file is a JSON object of heading -> text")
 
     missing = [h for h in mandatory_headings()
                if not str(sections.get(h, "")).strip()]
     if missing:
-        fail(3, "the ADR template's mandatory sections are empty or absent: "
+        fail(EXIT.INVALID, "the ADR template's mandatory sections are empty or absent: "
                 + ", ".join(missing))
 
     if args.scope:
@@ -897,14 +914,14 @@ def cmd_decisions(args):
         return
 
     if not args.file:
-        fail(3, "pass --file with the decision registry, or --list to read it back")
+        fail(EXIT.INVALID, "pass --file with the decision registry, or --list to read it back")
     path = Path(args.file)
     if not path.exists():
-        fail(3, f"no such file: {path}")
+        fail(EXIT.INVALID, f"no such file: {path}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{path} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{path} is not valid JSON: {exc}")
 
     reviewer = load_reviewer_module()
     problems = reviewer.validate(payload, DECISION_SCHEMA)
@@ -912,14 +929,14 @@ def cmd_decisions(args):
         # Nothing is stored. A registry that half-loaded would leave decisions
         # whose reversibility nobody ever set looking like decisions somebody
         # classified.
-        fail(3, "the decision registry does not match its schema; nothing was "
+        fail(EXIT.INVALID, "the decision registry does not match its schema; nothing was "
                 "stored:\n  " + "\n  ".join(problems)
                 + f"\n  reversibility must be one of: {', '.join(REVERSIBILITY)}")
 
     seen = set()
     for decision in payload:
         if decision["id"] in seen:
-            fail(3, f"duplicate decision id '{decision['id']}'; the id is what an "
+            fail(EXIT.INVALID, f"duplicate decision id '{decision['id']}'; the id is what an "
                     "alternative round is keyed by")
         seen.add(decision["id"])
 
@@ -935,7 +952,7 @@ def cmd_decisions(args):
 def cmd_practice(args):
     state = load_state(args.id)
     if not architect_done(state):
-        fail(4, "best practice runs on a draft and a decision registry; neither "
+        fail(EXIT.CONFLICT, "best practice runs on a draft and a decision registry; neither "
                 "is complete. Run `next` to see what is missing.")
     transition(state, "PRACTICE")
 
@@ -995,25 +1012,25 @@ def cmd_practice(args):
 def cmd_alternatives(args):
     state = load_state(args.id)
     if not subphase_done(state, "practice"):
-        fail(4, "alternatives run after best practice, not before: a practice "
+        fail(EXIT.CONFLICT, "alternatives run after best practice, not before: a practice "
                 "finding must be able to change a decision first.")
     if state.get("redraft_required"):
-        fail(4, "best practice contradicted a decision and the draft has not been "
+        fail(EXIT.CONFLICT, "best practice contradicted a decision and the draft has not been "
                 "revised. Run `draft` before generating alternatives.")
     if not args.decision:
-        fail(3, "pass --decision <id>: alternatives are generated per decision, "
+        fail(EXIT.INVALID, "pass --decision <id>: alternatives are generated per decision, "
                 "never per document")
 
     decision = find_decision(state, args.decision)
     if not decision:
         known = ", ".join(d["id"] for d in state["decisions"]) or "none"
-        fail(3, f"no decision '{args.decision}' in the registry. Known: {known}")
+        fail(EXIT.INVALID, f"no decision '{args.decision}' in the registry. Known: {known}")
     if decision["reversibility"] != "hard-to-reverse":
-        fail(5, f"{decision['id']} is cheap-to-reverse; alternatives are generated "
+        fail(EXIT.FORBIDDEN, f"{decision['id']} is cheap-to-reverse; alternatives are generated "
                 "only for hard-to-reverse decisions. Three alternatives for the "
                 "name of an internal helper cost more than changing your mind.")
     if decision["id"] in state["alternative_rounds"]:
-        fail(4, f"{decision['id']} has already had its round, and the budget is "
+        fail(EXIT.CONFLICT, f"{decision['id']} has already had its round, and the budget is "
                 f"{ROUNDS_PER_DECISION} per decision. --force-budget does not "
                 "lift this one: a second round on the same decision is a rerun, "
                 "not more coverage.")
@@ -1029,7 +1046,7 @@ def cmd_alternatives(args):
         journal(args.id, {"event": "budget_exceeded", "limit":
                           MAX_DECISIONS_WITH_ALTERNATIVES,
                           "hard_to_reverse": [d["id"] for d in hard]})
-        fail(4, f"{len(hard)} hard-to-reverse decisions, and the budget is "
+        fail(EXIT.CONFLICT, f"{len(hard)} hard-to-reverse decisions, and the budget is "
                 f"{MAX_DECISIONS_WITH_ALTERNATIVES} per ADR. Choose which ones "
                 "deserve a round — or pass --force-budget, which is journalled.")
     if args.force_budget and not state.get("budget_forced"):
@@ -1057,12 +1074,12 @@ def cmd_alternatives(args):
 
     for alternative in produced:
         if alternative["decision_id"] != decision["id"]:
-            fail(3, f"an alternative names decision '{alternative['decision_id']}' "
+            fail(EXIT.INVALID, f"an alternative names decision '{alternative['decision_id']}' "
                     f"but the round is for '{decision['id']}'; nothing was stored")
 
     if produced and decision.get("flagged_by_practice") and not any(
             a.get("addresses_practice_finding") for a in produced):
-        fail(3, f"external practice contradicts {decision['id']}, so the round is "
+        fail(EXIT.INVALID, f"external practice contradicts {decision['id']}, so the round is "
                 "obliged to consider the found approach: no alternative fills in "
                 "`addresses_practice_finding`. Nothing was stored.")
 
@@ -1091,11 +1108,11 @@ def read_alternatives_file(path):
     """
     candidate = Path(path)
     if not candidate.exists():
-        fail(3, f"no such file: {candidate}")
+        fail(EXIT.INVALID, f"no such file: {candidate}")
     try:
         payload = json.loads(candidate.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        fail(3, f"{candidate} is not valid JSON: {exc}")
+        fail(EXIT.INVALID, f"{candidate} is not valid JSON: {exc}")
 
     reviewer = load_reviewer_module()
     schema = reviewer.load_schema("alternatives.schema.json")
@@ -1103,7 +1120,7 @@ def read_alternatives_file(path):
     for index, item in enumerate(items):
         problems = reviewer.validate(item, schema, f"$[{index}]")
         if problems:
-            fail(3, "an alternative does not match its schema; nothing was "
+            fail(EXIT.INVALID, "an alternative does not match its schema; nothing was "
                     "stored:\n  " + "\n  ".join(problems))
     return items
 
@@ -1111,12 +1128,12 @@ def read_alternatives_file(path):
 def cmd_critic(args):
     state = load_state(args.id)
     if not subphase_done(state, "practice"):
-        fail(4, "the critic runs last. Best practice has not run, and a critic "
+        fail(EXIT.CONFLICT, "the critic runs last. Best practice has not run, and a critic "
                 "working from a draft the practice pass has not touched spends "
                 "the round on objections that pass would have removed.")
     if pending_decisions(state):
         pending = ", ".join(d["id"] for d in pending_decisions(state))
-        fail(4, "the critic runs last and must see the chosen alternatives. "
+        fail(EXIT.CONFLICT, "the critic runs last and must see the chosen alternatives. "
                 f"Still without a round: {pending}")
 
     if state["state"] != "CRITIC":
@@ -1195,9 +1212,9 @@ def cmd_critic(args):
 def cmd_objection(args):
     state = load_state(args.id)
     if not args.objection_id or not args.disposition:
-        fail(3, "pass --id <objection> and --disposition accepted|rejected")
+        fail(EXIT.INVALID, "pass --id <objection> and --disposition accepted|rejected")
     if args.disposition == "rejected" and not str(args.reason or "").strip():
-        fail(3, "a rejected objection needs --reason: it does not disappear, it "
+        fail(EXIT.INVALID, "a rejected objection needs --reason: it does not disappear, it "
                 "goes to 'рассмотрено и отклонено' and to the feature's Tried & "
                 "Rejected at merge")
 
@@ -1211,15 +1228,15 @@ def cmd_objection(args):
             print(f"{args.objection_id}: {args.disposition}")
             return
     known = ", ".join(o["id"] for o in state["objections"]) or "none"
-    fail(3, f"no objection '{args.objection_id}'. Known: {known}")
+    fail(EXIT.INVALID, f"no objection '{args.objection_id}'. Known: {known}")
 
 
 def cmd_considered(args):
     state = load_state(args.id)
     if not args.artifact or not args.status:
-        fail(3, "pass --artifact <name> --status written|skipped")
+        fail(EXIT.INVALID, "pass --artifact <name> --status written|skipped")
     if args.status == "skipped" and not str(args.reason or "").strip():
-        fail(3, "a skip needs --reason. A skip without a reason is not a skip, "
+        fail(EXIT.INVALID, "a skip needs --reason. A skip without a reason is not a skip, "
                 "it is a forgotten artifact, and a PBI reads the ADR as a contract")
 
     for row in state["considered"]:
@@ -1241,11 +1258,11 @@ def cmd_considered(args):
 def cmd_integrate(args):
     state = load_state(args.id)
     if not subphase_done(state, "critic"):
-        fail(4, "сведение comes after the critic; the critic has not run")
+        fail(EXIT.CONFLICT, "сведение comes after the critic; the critic has not run")
 
     undisposed = [o["id"] for o in state["objections"] if not o.get("disposition")]
     if undisposed:
-        fail(3, "every critic objection needs a disposition before the ADR is "
+        fail(EXIT.INVALID, "every critic objection needs a disposition before the ADR is "
                 "issued — accepted or rejected, never dropped. Still open: "
                 + ", ".join(undisposed))
 
@@ -1253,14 +1270,14 @@ def cmd_integrate(args):
     if problems:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
-        fail(3, f"{len(problems)} problems; the ADR is not ready for approval")
+        fail(EXIT.INVALID, f"{len(problems)} problems; the ADR is not ready for approval")
 
     _, _, issue, _ = open_card(state["identifier"])
     current = feature_hash(issue.get("description"))
     if current != state["feature_hash"]:
         journal(args.id, {"event": "approval_invalidated",
                           "was": state["feature_hash"], "now": current})
-        fail(7, "the feature changed materially while the ADR was being written: "
+        fail(EXIT.INVALIDATED, "the feature changed materially while the ADR was being written: "
                 f"it hashed to {state['feature_hash']} at the start and hashes to "
                 f"{current} now. The document describes a feature that no longer "
                 "exists. Re-read the card and revise before asking for approval.")
@@ -1288,7 +1305,7 @@ def cmd_validate(args):
             print(f"  {problem}", file=sys.stderr)
         print("valid" if not problems else f"{len(problems)} problems")
     if problems:
-        sys.exit(3)
+        sys.exit(EXIT.INVALID)
 
 
 def cmd_render(args):
@@ -1370,7 +1387,7 @@ def cmd_publish(args):
     """
     state = load_state(args.id)
     if state["state"] != "AWAITING_APPROVAL":
-        fail(4, f"{state['identifier']} is {state['state']}, not AWAITING_APPROVAL. "
+        fail(EXIT.CONFLICT, f"{state['identifier']} is {state['state']}, not AWAITING_APPROVAL. "
                 "There is nothing approved to publish yet; run `integrate` first.")
 
     board, profile, issue, _ = open_card(state["identifier"])
@@ -1381,7 +1398,7 @@ def cmd_publish(args):
     if current != state["feature_hash"]:
         journal(args.id, {"event": "approval_invalidated_at_publish",
                           "was": state["feature_hash"], "now": current})
-        fail(7, "the feature changed while the ADR was waiting for approval. "
+        fail(EXIT.INVALIDATED, "the feature changed while the ADR was waiting for approval. "
                 f"It hashed to {state['feature_hash']} when the work started and "
                 f"hashes to {current} now, so the approval covers a document "
                 "about a feature that no longer exists. Revise, then ask again.")
@@ -1390,7 +1407,7 @@ def cmd_publish(args):
     text = render_adr(state)
     project_id = profile.get("project_id")
     if not project_id:
-        fail(6, "the profile has no project_id, so documents cannot be listed and "
+        fail(EXIT.CONFIG, "the profile has no project_id, so documents cannot be listed and "
                 "a second ADR could be attached over the first")
 
     for document in board.list_documents(project_id):
@@ -1403,7 +1420,7 @@ def cmd_publish(args):
             print("already attached, unchanged. Nothing was written.",
                   file=sys.stderr)
             return
-        fail(4, f"'{title}' is already attached to {state['identifier']} and its "
+        fail(EXIT.CONFLICT, f"'{title}' is already attached to {state['identifier']} and its "
                 "content differs from this draft. Replacing an approved ADR in "
                 "place would erase the record that the first one was approved — "
                 "a new version supersedes it instead, and that path (IDE-69 \u00a78) "
@@ -1557,11 +1574,11 @@ def _make_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if not getattr(args, "command", None):
-        fail(3, "which subcommand? Run `design.py --help`.")
+        fail(EXIT.INVALID, "which subcommand? Run `design.py --help`.")
     if args.command != "init" and not args.id:
         args.id = current_identifier()
         if not args.id:
-            fail(4, "no current design session. Run `design.py init IDE-nn`, or "
+            fail(EXIT.CONFLICT, "no current design session. Run `design.py init IDE-nn`, or "
                     "pass --id to name one.")
     args.func(args)
 
