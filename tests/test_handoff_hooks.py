@@ -432,6 +432,14 @@ class LayerOneTests(unittest.TestCase):
         statusline.install(settings, self.state, script="/opt/idp/" + statusline.MARK,
                            out=io.StringIO())
         self.assertEqual(statusline.wrapped(self.state), orca)
+        # Reinstall with a new script path repairs the stale command without re-wrapping.
+        new_script = "/opt/idp-v2/" + statusline.MARK
+        out_reinstall = io.StringIO()
+        statusline.install(settings, self.state, script=new_script, out=out_reinstall)
+        reinstalled = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(reinstalled["statusLine"]["command"], f'python3 "{new_script}"')
+        self.assertEqual(statusline.wrapped(self.state), orca)
+        self.assertIn("updated the idp status line script path", out_reinstall.getvalue())
         statusline.uninstall(settings, self.state, out=io.StringIO())
         self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["statusLine"], orca)
 
