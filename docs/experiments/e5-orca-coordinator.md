@@ -57,4 +57,19 @@ backend waits and `subprocess` carries everything (spec).
 
 ## Result
 
-(filled in after the run)
+### Attempt 1 — probe launched from a dispatched worker's shell (stop rule fired)
+
+`worker-start` exited 1 on the first call: `nested_worker_depth_exceeded` —
+"Sub-worker dispatch is not permitted at depth 2 (max 1)". `run-create` and
+`task-create` worked (`--run` explicit). Per the stop rule nothing was retried
+from that shell. Raw trace: `tests/fixtures/orca/e5-attempt1/trace.jsonl`.
+
+Finding: **Orca counts coordination depth from the caller.** A runner started
+from inside a dispatched worker cannot dispatch; a runner started from a
+person's terminal can. Amendment, written before attempt 2: the probe is re-run
+from a terminal created with `orca terminal create` (not a dispatch), which is
+how `run.py` is started in practice. Same hypothesis, same pass and stop rules;
+attempt 2 is the first run of the registered design, not a retry of the failed
+call.
+
+(attempt 2 — filled in after the run)
