@@ -137,10 +137,17 @@ def query(token, document, variables=None):
             LAST_SERVER_DATE = response.headers.get("Date") or LAST_SERVER_DATE
             body = json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
+        said = ""
+        try:
+            said = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:                                   # noqa: BLE001 - best effort
+            pass
+        finally:
+            exc.close()                     # or it leaks as a ResourceWarning
         if exc.code in (401, 403):
             fail(EXIT.UNAVAILABLE, "Linear rejected the API key. Reissue it in Settings > Security & access.",
                  fix="issue a new key in Linear (Settings > Security & access) and write it to the token file the profile names, mode 0600")
-        fail(EXIT.UNAVAILABLE, f"Linear returned HTTP {exc.code}: {exc.read().decode()[:300]}",
+        fail(EXIT.UNAVAILABLE, f"Linear returned HTTP {exc.code}: {said}",
              fix="retry once Linear answers; if it keeps failing, read the response above")
     except urllib.error.URLError as exc:
         fail(EXIT.UNAVAILABLE, f"cannot reach Linear: {exc.reason}",

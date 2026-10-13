@@ -379,6 +379,10 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
             said = exc.read().decode("utf-8", "replace").strip()[:300]
         except Exception:                                   # noqa: BLE001 - best effort
             pass
+        finally:
+            # An HTTPError holds the response open; left to the collector it
+            # surfaces as a ResourceWarning on every refused request.
+            exc.close()
         if exc.code in (401, 203) or exc.code == 302:
             fail(EXIT.UNAVAILABLE, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps said {exc.code} "
                                    f"for {method} {url}",
