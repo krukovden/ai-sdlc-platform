@@ -447,6 +447,23 @@ class OutcomeTests(Phase3TestCase):
         self.assertNotIn(tags.BLOCKED, self.labels(world, "a"))
         self.assertIsNone(tags.owner_of(self.labels(world, "a")))
 
+    def test_a_failing_security_scanner_is_a_defect(self):
+        world = self.one()
+        scanner = fin.Finalizer({"security_scanner": "echo 'B101 assert used' && false"},
+                                env=run.executors.environment.witness_env(os.environ),
+                                clock=lambda: 0.0)
+        self.assertEqual(world.runner(finalizer=scanner).run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(self.attempts(world, "a"), ["defect"] * 3)
+        card = world.items()["a"]["id"]
+        self.assertIn("B101", " ".join(c["body"] for c in world.board.list_comments(card)))
+
+    def test_the_profile_carries_the_budget_and_the_scanner_closed(self):
+        checked = run.board_cli.check_profile(dict(PROFILE, development={
+            "witness_budget_seconds": 60, "security_scanner": "bandit -r src"}))
+        self.assertEqual(checked["development"]["witness_budget_seconds"], 60)
+        with self.assertRaises(run.board_cli.ProfileError):
+            run.board_cli.check_profile(dict(PROFILE, development={"budget": 60}))
+
     def test_every_witness_leaves_a_record_with_sha_command_exit_and_tail(self):
         world = self.one()
         world.runner().run_feature(FEATURE)

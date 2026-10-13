@@ -300,6 +300,23 @@
           }
         }
       }
+    },
+    "development": {
+      "description": "Phase 3 finalize (IDE-147, 3.2): how long the witnesses of one PBI may run in all, and the security scanner, when the project has one.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "witness_budget_seconds": {
+          "description": "The phase budget for one PBI's witnesses. A plan whose witnesses' worst case does not fit is refused up front. Default 1800.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "security_scanner": {
+          "description": "A command run at finalize in the PBI's worktree, with the witnesses' allowlisted environment; a non-zero exit is a defect.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }
