@@ -130,8 +130,9 @@ class RouteTests(ScriptTestCase):
                         description="---\ntype: bug\nroute: bug\n---\n")
         self.assertEqual(result["route"], "bug")
         self.assertEqual(result["kind"], "bug")
-        # A bug's route has no planning, so the development tag means development.
-        self.assertEqual(result["phase"], "development")
+        # A bug is planned into a single PBI (IDE-147, Routes): the development
+        # tag opens planning on its route too.
+        self.assertEqual(result["phase"], "planning")
 
     def test_a_small_feature_is_not_offered_the_design_phase(self):
         result = answer(labels=["idp:design"],

@@ -23,6 +23,10 @@ and pinned by hash in a planning comment, and the feature journal.
             start a worker through the executor: role `worker`, the development skill
         wait for any worker, route on .idp/result.json
 
+3.3 **Integration** and the hand-off to the human's QA follow in
+`integration.py`, which also runs this loop again for the PBIs its findings
+become and for the Bugs a human files under the Feature after QA.
+
 "Waiting" is wider than the ADR's `todo` on purpose: a PBI left in `doing` by a
 crash, a reap or a pause has no live owner and must be picked up again, or the
 termination rule would block a Feature that only needed a resume.
@@ -52,6 +56,7 @@ from . import bugs, shape, states
 from . import merge as merges
 from .gitops import Git, GitError, local_excludes, mention as mention_of, \
     repository_name, slug
+from .integration import Integration, amended_keys
 from .journal import Journal
 
 MAX_ATTEMPTS = 3
@@ -194,6 +199,9 @@ class Development:
         self.feature_branch = None
         self.journal = None
         self.halt = None
+        self.route_name = None
+        self.header = {}
+        self.integration = Integration(self)
 
     def say(self, text):
         self.runner.say(text)
@@ -205,7 +213,11 @@ class Development:
         issue = self.board.get_issue(feature)
         header = self.runner_state().parse_machine_header(issue.get("description"))
         route = header.get("route") or "feature"
-        if route != "small-feature":
+        self.route_name, self.header = route, header
+        # Each route checks its own gate (IDE-147, *Routes*): a feature its approved
+        # ADR; a small feature none, its creation with idp:development is the
+        # approval; a bug its verdict, written below with no review gate.
+        if self.runner_state().route_gate(route) == "adr":
             ok, message, fix = self.runner.check_adr(self.board, feature)
             if not ok:
                 self.say(f"{feature}: {message}\nFIX: {fix}")
@@ -215,10 +227,6 @@ class Development:
             self.say(f"{feature} has no branch name on the board.\nFIX: give the Feature a "
                      "branch name; the feature branch is taken from the board verbatim")
             return EXIT.REFUSED
-        if self.finished(feature):
-            self.say(f"{feature}: every PBI is built and merged into {self.feature_branch}. "
-                     "Integration (3.3) is IDE-147 build step 4; the card waits there.")
-            return EXIT.DONE
 
         self.preflight()
         self.git.fetch()
@@ -232,10 +240,14 @@ class Development:
         self.journal = Journal(self.board, feature,
                                self.home / f"{feature}-journal" / "journal.md")
         with self.runner.heartbeat(feature):
+            if self.runner_state().route_gate(route) == "verdict":
+                code = self.integration.verdict(base)
+                if code != EXIT.DONE:
+                    return code
             code = self.planning_phase(feature, issue, header, route, base)
             if code != EXIT.DONE:
                 return code
-            return self.building_phase(feature)
+            return self.integration.cycle()
 
     def runner_state(self):
         return self.runner.state
@@ -249,15 +261,6 @@ class Development:
                                     "push the product repository's main branch, then re-run")
         return sha
 
-    def finished(self, feature):
-        """Built, and nothing left half-done: no owner still on the card."""
-        if tags.owner_of(self.board.read_card(feature).get("tags")):
-            return False
-        if not lease.events(self.board.list_comments(feature), BUILT):
-            return False
-        items = [i for i in shape.work_items(self.board, feature) if not shape.is_qa(i)]
-        return all(self.mover.bucket(i["issue"]) == "done" for i in items)
-
     def preflight(self):
         """Resolve every role once. Review must be able to differ from the worker."""
         executors = runner_executors()
@@ -265,6 +268,7 @@ class Development:
             self.executor.resolve("design")
             author = self.executor.resolve("worker")
             self.executor.resolve("review", author=author)
+            self.executor.resolve("integration")
         except executors.ResolutionError as exc:
             raise self.runner.error(
                 EXIT.BLOCKED, f"phase 3 refuses to start: {exc.message}", exc.fix)
@@ -293,11 +297,13 @@ class Development:
         todo = self.mover.names().get("todo") if hasattr(self.mover, "names") else None
         ids, _ = shape.ensure(self.board, issue, self.plan, self.profile, header,
                               todo_status=todo)
-        self.journal.add(f"Planning cut {len(self.plan['pbis'])} PBIs: "
-                         + ", ".join(f"{k} → {ids[k]}" for k in
-                                     [p["key"] for p in self.plan["pbis"]])
-                         + f"; the plan is pinned at `{pinned['commit'][:12]}` "
-                           f"({pinned['sha256']}).")
+        # What planning cut, not what integration or QA added to the plan since.
+        cut = [p["key"] for p in self.plan["pbis"] if p["key"] not in amended_keys(self.plan)]
+        first = plans.first_pinned(self.board, feature) or pinned
+        self.journal.add(f"Planning cut {len(cut)} PBIs: "
+                         + ", ".join(f"{k} → {ids[k]}" for k in cut)
+                         + f"; the plan is pinned at `{first['commit'][:12]}` "
+                           f"({first['sha256']}).")
         if self.plan.get("notes"):
             self.journal.add(f"Why this cut: {self.plan['notes']}")
         self.journal.upload()
@@ -324,6 +330,9 @@ class Development:
         except (OSError, ValueError):
             return None, []
         problems = []
+        if self.route_name == "bug" and len(plan.get("pbis") or []) != 1:
+            problems.append(f"the bug route is built as a single PBI, and the plan cuts "
+                            f"{len(plan.get('pbis') or [])}")
         if (session.get("adr") or {}).get("hash") != self.planning.content_hash(adr_text):
             problems.append("the plan was cut from a different ADR than the approved one")
         try:
@@ -1199,19 +1208,21 @@ class Development:
                          text=f"Building (3.2) is done: {len(done)} item(s) merged into "
                               f"`{self.feature_branch}`. Integration (3.3) runs next.",
                          items=len(done), run=self.run_id)
-        tags.release(self.board, feature, self.run_id)
-        self.say(f"{feature}: every PBI is merged into {self.feature_branch}. Integration "
-                 "(3.3) is IDE-147 build step 4; the card waits at idp:development.")
         return EXIT.DONE
 
     # -- the Feature's counters and modifiers ---------------------------------
 
     def feature_attempt(self, phase, n, cause, reason):
+        # `n` is the count inside the current human cycle and resets when that
+        # cycle starts. The dedupe key is the all-time count, or the first
+        # attempt of a new cycle would find the old key and post nothing.
+        total = len(lease.events(self.board.list_comments(self.feature), ATTEMPT,
+                                 phase=phase)) + 1
         lease.post_event(self.board, self.feature, ATTEMPT,
-                         f"{ATTEMPT}:{phase}:{self.feature}:{n}",
+                         f"{ATTEMPT}:{phase}:{self.feature}:{total}",
                          text=f"{phase.capitalize()} attempt {n} of {MAX_ATTEMPTS} did not "
                               f"finish: {reason}",
-                         phase=phase, n=n, cause=cause, run=self.run_id)
+                         phase=phase, n=n, cause=cause, outcome=cause, run=self.run_id)
 
     def block_feature(self, reason):
         reason = flat(reason)

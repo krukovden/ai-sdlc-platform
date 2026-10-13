@@ -129,10 +129,11 @@ class DefaultRunTests(ScriptTestCase):
             self.assertIsNone(tags.owner_of(card["tags"]))
             self.assertEqual(world.remote_file(FEATURE_BRANCH, f"src/{key}.py"), "VALUE = 1\n")
         qa = world.board.cards[items[shape.QA_KEY]["id"]]
-        self.assertEqual((qa["status"], qa["tags"]), ("New", []))
+        # Never worked: the hand-off gives it to the human, it is not built.
+        self.assertEqual((qa["status"], qa["tags"]), ("Active", []))
         self.assertNotIn(items[shape.QA_KEY]["id"], world.sessions["worker"])
         feature = world.board.cards[FEATURE]["tags"]
-        self.assertEqual(feature, [tags.DEVELOPMENT])                 # released, waiting
+        self.assertEqual(feature, [tags.QA])                          # handed to the human
         self.assertTrue(world.events(FEATURE, orchestrator.BUILT))
 
     def test_a_dependency_runs_only_after_what_it_waits_on_merged(self):
@@ -625,7 +626,8 @@ class BugTests(Phase3TestCase):
         world.board.add_card(BUG, kind="bug", parent=FEATURE, title="[Bug] VALUE missing",
                              description=description)
         if rule:
-            world.profile = dict(world.profile, development={"bug_witness": rule})
+            world.profile = dict(world.profile, development=dict(
+                world.profile["development"], bug_witness=rule))
         return world
 
     def test_a_bug_with_a_stated_witness_is_pinned_then_built_and_merged(self):

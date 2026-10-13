@@ -49,6 +49,14 @@
       "type": "string",
       "minLength": 1
     },
+    "approvers": {
+      "description": "Who approves at the human gates, first one first (constitution, principle 1). The first is assigned the QA Testing PBI when phase 3 hands the Feature to QA.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "repositories": {
       "type": "array",
       "items": {
@@ -337,6 +345,28 @@
               "description": "The test file the worker adds; finalize requires it in the diff and failing without the fix.",
               "type": "string",
               "minLength": 1
+            }
+          }
+        },
+        "integration": {
+          "description": "3.3 Integration (IDE-147): the full build and the full test suite, run on the feature branch with the witnesses' allowlisted environment once every PBI is merged. Without a test command 3.3 blocks the Feature rather than pass it untested.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "build": {
+              "description": "The full build. Optional: a project with nothing to build names none. A non-zero exit is a finding, and a fix PBI with this command as its witness.",
+              "type": "string",
+              "minLength": 1
+            },
+            "test": {
+              "description": "The full test suite. A non-zero exit is a finding, and a fix PBI with this command as its witness.",
+              "type": "string",
+              "minLength": 1
+            },
+            "timeout_seconds": {
+              "description": "How long the build and the suite may each run. Past it the Feature is blocked: the command is wrong, not the code. Default 1200.",
+              "type": "integer",
+              "minimum": 1
             }
           }
         }

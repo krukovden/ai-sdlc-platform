@@ -142,7 +142,7 @@ class FakeBoard(phases.PhaseMixin):
                 "description": card["description"], "status": card["status"],
                 "status_type": "completed" if card["status"] == "Done" else "unstarted",
                 "parent": card["parent"], "labels": list(card["tags"]),
-                "kind": card["kind"]}
+                "kind": card["kind"], "assignee": card.get("assignee")}
 
     def list_project(self, project_id=None):
         return [self.get_issue(c) for c in sorted(self.cards)]
@@ -189,6 +189,13 @@ class FakeBoard(phases.PhaseMixin):
         card["rev"] += 1
         self._effect(("update", card["identifier"]))
         return {"identifier": card["identifier"], "status": card["status"]}
+
+    def assign_issue(self, identifier, who):
+        card = self._card(identifier)
+        card["assignee"] = who
+        card["rev"] += 1
+        self._effect(("assign", card["identifier"], who))
+        return {"identifier": card["identifier"], "assignee": who}
 
     def find_by_correlation(self, correlation_id):
         for card in self.cards.values():

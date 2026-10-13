@@ -107,9 +107,9 @@ Three routes by kind of work: **feature** — three gates, **small feature** —
 
 **The route is proposed, not assumed.** The model reads the request and proposes a route with one clause of justification; the human confirms or overrides it in a word. Where the model is unsure it asks rather than guesses. The chosen route is written into the artifact's machine header, because it decides how many gates the state resolver has to check.
 
-**The feature's files live on the board, not in the repository.** The ADR, the feature history and the feature's Tried & Rejected are attachments on the feature card in Linear or Azure DevOps; the feature registry and the project's Tried & Rejected are attachments on the epic. There is no directory here for them and there will not be one — the board is the synchronisation point, and an agent working from another machine or inside a different product repository has to find them without git access.
+**The feature's files live on the board, not in the repository.** The ADR, the feature history and the feature's Tried & Rejected are attachments on the feature card in Linear or Azure DevOps; the project's Tried & Rejected is an attachment on the epic, and the feature registry is the product repository's `memory/index.md`. There is no directory here for them and there will not be one — the board is the synchronisation point, and an agent working from another machine or inside a different product repository has to find them without git access.
 
-**Their names follow one rule, so nobody has to think about names when opening an epic or a feature:** `[<IDE-nn> · ]<NN> · <Role> — <hint>`, with the identifier present at feature level and absent at epic level. The only thing worth memorising is that **`02` is always Tried & Rejected**, on both levels. The table of names is defined in one place — the memory contract, IDE-76 — and lives in code as `EPIC_FILES` and `FEATURE_FILES` in `scripts/memory.py`.
+**Their names follow one rule, so nobody has to think about names when opening an epic or a feature:** `[<IDE-nn> · ]<NN> · <Role> — <hint>`, with the identifier present at feature level and absent at epic level. The only thing worth memorising is that **`02` is always Tried & Rejected**, on both levels. The table of names is defined in one place — the memory contract, IDE-76 — and lives in code as `EPIC_FILES` and `FEATURE_FILES` in `scripts/memory.py`. The epic's `01 · Feature Registry` is gone (IDE-147, *Memory*): the product repository's `memory/index.md` is the registry, filled after a merge into `main` by engineering-catalog's memory-writer, and `board.py memory core` / `memory init` refuse with a FIX that says so.
 
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
@@ -186,7 +186,8 @@ evals/         golden ideas and LLM evaluations
 The profile now carries four things beyond the board: `phases` (map our phase names onto
 this board's statuses, `null` where a status cannot exist), `agents` (one token path per
 agent, because the claim protocol reads the actor from history), `memory_doc` (the epic
-document holding the registry) and `repositories` (everything the drift detector must
+document that held the registry — read by nothing since IDE-147, kept only so old
+profiles still validate) and `repositories` (everything the drift detector must
 search, not just the clone you happen to be in).
 
 Skills are developed here and symlinked into `~/.claude/skills/` for local use — a link, never a copy, so an edit here is live everywhere immediately:

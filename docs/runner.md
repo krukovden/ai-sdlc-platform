@@ -7,9 +7,10 @@ platform revision ADR, [IDE-147](https://linear.app/krukov-idea-hub/issue/IDE-14
 (`docs/superpowers/specs/2026-10-12-platform-revision-design.md`). This page says
 how to run it.
 
-What it serves today: **phase 2, design**, and **phase 3, development** through
-planning (3.1) and building (3.2), from a terminal or unattended (`--agent`). Integration (3.3) and QA are later build steps:
-a Feature that reaches them stays where it is, waiting.
+What it serves today: **phase 2, design**, and **phase 3, development** — planning
+(3.1), building (3.2), integration (3.3) and the hand-off to the human's QA — from
+a terminal or unattended (`--agent`). Phase 4 is the human's for now: a Feature at
+`idp:qa` waits for them.
 
 ## Before the first run
 
@@ -54,11 +55,16 @@ a Feature that reaches them stays where it is, waiting.
    exactly that SHA, under `~/.idp/worktrees/`. Phase 3 pushes to its remote:
    the feature branch, the PBI branches, the merges.
 
-5. **For phase 3, optionally a `development` block**: the witness budget of one
-   PBI, and a security scanner run at finalize. Both are closed keys like the rest.
+5. **For phase 3, a `development` block**: the witness budget of one PBI and a
+   security scanner run at finalize, both optional, and the full build and test
+   suite 3.3 runs — `integration.test` is required before a Feature can reach QA.
+   And **`approvers`**: who decides at the human gates, the first of whom is given
+   the QA Testing PBI. All closed keys like the rest.
 
    ```json
-   "development": {"witness_budget_seconds": 1800, "security_scanner": "bandit -q -r src"}
+   "development": {"witness_budget_seconds": 1800, "security_scanner": "bandit -q -r src",
+                   "integration": {"build": "make", "test": "make test"}},
+   "approvers": ["denys.kriukov@example.com"]
    ```
 
 ## Running a Feature
@@ -94,19 +100,36 @@ review comment states the new hash.
 ## Phase 3: development
 
 From `idp:development` — a human approved the ADR by setting it, or created a
-small-feature card with it — one run owns the Feature for the whole phase. The
-code is `scripts/phase3/`; `run.py` only hands the card to it.
+small-feature or bug card with it — one run owns the Feature for the whole phase.
+The code is `scripts/phase3/`; `run.py` only hands the card to it.
 
-**Before anything is written**, three refusals:
+**Each route checks its own gate** (`state.ROUTE_TABLE`, IDE-147 *Routes*):
 
-* the Feature must carry exactly one ADR whose sha256 is the one the design-review
-  comment states (`run.py adr-check`), exit 3 otherwise — except on the
-  `small-feature` route, which has no ADR;
-* every role must resolve once, and `review` must resolve to a different agent and
-  model than `worker` — the hard review rule — or the run refuses to start, exit 2,
-  with the reason and a FIX;
-* a Feature whose building already finished, with no owner left on it, is left
-  alone: running twice changes nothing.
+| Route | Phases | Phase 3 starts once |
+| -- | -- | -- |
+| `feature` | 1 → 2 → 3 → 4 | the Feature carries exactly one ADR whose sha256 the design-review comment states (`run.py adr-check`), exit 3 otherwise |
+| `small-feature` | 1 → 3 → 4 | nothing more: creating the Feature with `idp:development` is the approval, and there is no ADR |
+| `bug` | 1 → 2 → 3 → 4 | the verdict is attached: the run writes it first, with no review gate (below), and plans exactly one PBI from it |
+
+A `small-feature` or `bug` card at `idp:design` is refused with exit 3 and a FIX:
+neither route has a design review, so it starts at `idp:development`. The runner
+cannot put it there itself — it has no path to `idp:development` at all.
+
+**Before anything is written**, every role must resolve once, and `review` must
+resolve to a different agent and model than `worker` — the hard review rule — or
+the run refuses to start, exit 2, with the reason and a FIX. A Feature already
+handed to QA sits at `idp:qa`, which this phase never starts from: running twice
+changes nothing.
+
+**The bug route's verdict** is the architect's short answer instead of an ADR:
+the `design` role writes `.idp/verdict.md` — front matter `type: verdict`, then
+`## Cause`, `## Fix`, `## Risk`, at most 600 words — the runner checks it, attaches
+it in the ADR's place (`<card> · 00 · ADR — …`) and posts a `verdict` comment with
+its hash. Planning reads it as its ADR; a plan with more than one PBI is refused as
+an attempt. If a run stops after attaching the verdict but before recording its
+hash, the next run reads and validates the attachment and posts the missing
+matching event without another architect session. An invalid attachment blocks
+planning until it is replaced.
 
 ### 3.1 Planning
 
@@ -259,9 +282,99 @@ is `F`, pushed with `--force-with-lease=<feature>:F` — the same contract, the 
 refusal when the head moved. A GitHub pull request is not opened. Linear has no
 Task kind either, so a Task is a sub-issue of its PBI.
 
-When every item is done, the runner posts a `built` comment, uploads the journal,
-releases the Feature and exits 0; the card waits at `idp:development` for
-integration (3.3).
+When every item is done, the runner posts a `built` comment, uploads the journal
+and goes on to integration, still owning the Feature.
+
+### 3.3 Integration
+
+Two PBIs that ran at the same time could not see each other in review, so this is
+the last place a duplicate is caught. The code is `scripts/phase3/integration.py`.
+
+1. **The full build and the full test suite** on the feature branch head, in a
+   detached worktree, with the witnesses' allowlisted environment:
+
+   ```json
+   "development": {"integration": {"build": "make", "test": "make test", "timeout_seconds": 1200}}
+   ```
+
+   `test` is required — without it 3.3 blocks the Feature with a FIX rather than
+   pass it untested; `build` is optional. A red build or suite is a **finding**
+   whose witness is the failing command. A command past its timeout blocks the
+   Feature: the command is wrong, not the code.
+2. **One session**, role `integration`, on the feature branch's diff against
+   `main`, with the ADR, the Feature, the plan, the check results and the journal in
+   `.idp/context/`. It looks for duplicates across PBIs, ADR items not built, built
+   things the ADR did not ask for, and inconsistent naming, errors or patterns, and
+   writes `.idp/integration-r<N>.json`: a summary — which goes into the feature
+   journal — and findings, each with the paths its fix touches and criteria with a
+   runnable witness. An answer that cannot be used is an attempt (three, then
+   `idp:blocked`).
+3. **Findings become child PBIs, and 3.2 runs again.** Witnesses come only from the
+   pinned plan, so the runner **amends the plan**: it appends one entry per finding,
+   keyed `integration-r<round>-<source hash>` — the correlation key
+   `(feature, round, source hash)` — with a record of the amendment (source, round,
+   cycle, head, keys), commits it to the feature branch and pins the new hash. The
+   cards follow from the plan, and QA Testing comes to depend on them too.
+4. **Counters on the board**: every round is an `integration` comment with its
+   number, its cycle and a verdict — `green`, `findings` or `blocked`. **At most two
+   rounds of fixes** per cycle; the third failure sets `idp:blocked`, so a night run
+   cannot loop. A human lifting the block, or a return from QA, starts a new cycle.
+   Documenter, integration and verdict attempts are three per that cycle: they
+   survive a crash and resume, and the lift grants three more. A witness that is
+   not an object is a malformed answer and consumes one of those attempts.
+
+The plan in git is the record of every amendment, and the board mirrors it: a run
+that died between the commit and the pin, or between the pin and the round's
+comment, repairs both from the plan when it resumes.
+
+**The documenter** is the last step of 3.3, once a round is green: a session with
+the `documenter` skill (role `integration`) lifts the Feature's acceptance criteria
+into `docs/blueprint/<area>.md` of the areas the feature touched — requirements
+with `REQ-<AREA>-<NNN>` ids, AC checkboxes linking the code and the test that
+satisfy them, an architecture table; current truth only, at most 3,000 words per
+area. The model writes; `scripts/blueprint.py check` decides: the template's shape,
+every link resolves, every built AC links code and test, the word ceiling, and
+nothing changed outside `docs/blueprint/`. A documenter's own commits are part of
+that diff: any path outside `docs/blueprint/**` is refused with a FIX, and nothing
+is committed or pushed. A refusal goes back with its problems as
+an attempt. A cached documentation result is rechecked against the current
+feature-branch tip, including an area file a later commit deleted, so a DONE from
+an earlier head is not trusted. What passes is committed to the feature branch as
+`docs(blueprint): … #<card>`, marked `idp-blueprint: <card>@<head>`, so it sits in
+the same pull request into `main` as the code.
+
+**The hand-off**, for now the end of the pipeline:
+
+1. the pull request feature → `main` is opened (Azure Repos; on Linear the record
+   is a comment), so the AI review pipeline and the full suite run on it. **The
+   runner never merges it**;
+2. the QA Testing PBI moves to `doing` and is assigned to the first of the
+   profile's `approvers` — on a board whose adapter cannot set an assignee, the
+   comment naming them is the assignment, and with no approvers the comment says
+   so with a FIX;
+3. the journal is uploaded, and a `qa-handoff` comment says what the human does next;
+4. `idp:development` → `idp:qa` through the tag writer, the owner tag off in the
+   same revision.
+
+Nothing in the pipeline marks a Feature done. The human tests through the QA
+Testing PBI and either closes it and merges the pull request — the Feature is done
+— or files Bugs under the Feature (engineering-catalog's `qa-ado-work-item`) and
+sets `idp:development`. Then the next run takes the Bugs: 3.2 builds them like
+PBIs, each from its Bug plan addendum (above), 3.3 runs again as a new cycle, and
+the Feature returns to `idp:qa`. The pull request into `main` is the same one.
+
+**Memory after the merge.** While the Feature is in flight, its journal and its
+Tried & Rejected are attachments on it. When the human merges into `main`,
+engineering-catalog's `memory-writer` moves the decisions that will outlive the
+feature, and the rejections, into the product repository's `memory/`; its
+`memory/index.md` is the registry. The platform hands them over through the
+journal and writes nothing there itself. The epic's old feature registry is gone:
+`board.py memory core` and `memory init` refuse with a FIX naming `memory/index.md`.
+
+**Reconcile** runs at the end of every phase, however it ended:
+engineering-catalog's `ado-board reconcile --json` compares git with the board and
+repairs the difference, never touching a card with an `idp:` tag. Without the
+catalog — or on Linear, which it does not serve — it is skipped with one notice.
 
 ## Agent mode: a night you can leave
 
@@ -446,8 +559,8 @@ product repository's clone so it can read them. `adr-check` is phase 3's precond
 
 | Code | Meaning |
 | -- | -- |
-| 0 | the run reached a gate or a phase it does not serve, and left the card waiting; in phase 3, every PBI is merged |
-| 2 | the card is blocked, or this machine cannot fill a role (`FIX` says which); in phase 3, nothing can run |
+| 0 | the run reached a gate or a phase it does not serve, and left the card waiting; in phase 3, the Feature is handed to QA |
+| 2 | the card is blocked, or this machine cannot fill a role (`FIX` says which); in phase 3, nothing can run, or integration failed a third time |
 | 3 | refused: the card is held, stopped, or not in a phase this run starts from |
 | 4 | the card was paused — after a rate limit, `run.py stop` or `idp:stop`; any run may take it |
 
@@ -459,6 +572,8 @@ product repository's clone so it can read them. `adr-check` is phase 3's precond
 | The planning session's state (a cache) | `~/.feature-discovery/planning/<card>/` — lost, it rebuilds from the card |
 | A session's worktree | `~/.idp/worktrees/<repo>/<card>-design/`, `<card>-planning/` |
 | A PBI's worktree, its review worktree | `~/.idp/worktrees/<repo>/<pbi>-g<N>/`, `<pbi>-review/` |
+| 3.3's worktrees, one per head | `~/.idp/worktrees/<repo>/<card>-integration-<sha>/`, `-documenter-<sha>/` |
+| Area blueprints | `docs/blueprint/<area>.md` in the product repository, on the feature branch |
 | The pinned plan | `docs/plans/<card>.plan.json` on the feature branch, its hash in the planning comment |
 | The feature journal (working file) | `~/.idp/worktrees/<repo>/<card>-journal/journal.md`, uploaded as `01 · History` |
 | What the session reads | `<worktree>/.idp/context/` |

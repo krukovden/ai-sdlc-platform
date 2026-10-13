@@ -117,6 +117,9 @@ class LocateTests(ScriptTestCase):
                          ("planning", "ready"))
         self.assertEqual(state.locate(None, phases(), ["idp:development"],
                                       prefer=state.ROUTES["bug"]),
+                         ("planning", "ready"))
+        self.assertEqual(state.locate(None, phases(), ["idp:development"],
+                                      prefer=["development", "qa"]),
                          ("development", "ready"))
 
     def test_qa_is_where_development_hands_on_to_the_human(self):

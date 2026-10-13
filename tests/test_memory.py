@@ -1,14 +1,18 @@
-"""Project memory, and the detector that keeps it honest.
+"""Project memory on the board, and the detector that keeps it honest.
 
-The registry is only worth having if it cannot quietly drift from the code. So
-the cases that matter here are the dishonest ones: an entry with no work behind
-it, a closed feature nobody registered, a cancelled feature with no recorded
-reason, and a check that would pass because it ran against a stale clone.
+The epic's feature registry is gone (IDE-147, *Memory*): the product
+repository's `memory/index.md` is the registry, and every command that read the
+old one refuses with a fix that names it. What remains is a feature's own files
+and the cases that matter for them: a closed card with no commit behind it, a
+summary older than the code it describes, and a check that would pass because
+it ran against a stale clone.
 
-Nothing here shells out to git — every git call goes through three functions,
+Nothing here shells out to git — every git call goes through a few functions,
 and the tests replace them.
 """
 
+import contextlib
+import io
 import shutil
 import tempfile
 import unittest
@@ -20,29 +24,6 @@ from support import ScriptTestCase, board
 memory = board.memory
 
 
-DOCUMENT = """# The epic
-
-Some prose the humans read.
-
-```idp-registry
-{
-  "schema_version": "1.0",
-  "features": [
-    {"name": "Work Tracking Adapter", "one_liner": "knows the board by name",
-     "issue": "IDE-93"}
-  ],
-  "removed": [
-    {"id": "old-plan", "name": "Up-front plan", "issues": ["IDE-6"],
-     "why_removed": "written before anything was designed", "replaced_by": "spike-first"}
-  ],
-  "parked": []
-}
-```
-
-More prose after it.
-"""
-
-
 def issue(identifier, parent=None, status_type="completed", title="A feature", labels=()):
     return {"identifier": identifier, "title": title, "parent": parent,
             "status": status_type.title(), "status_type": status_type,
@@ -50,176 +31,82 @@ def issue(identifier, parent=None, status_type="completed", title="A feature", l
             "url": f"https://example.invalid/{identifier}"}
 
 
-class RegistryBlockTests(ScriptTestCase):
+class RegistryRemovedTests(ScriptTestCase):
+    """Removed behaviour refuses, and the refusal says where the registry went."""
 
-    def test_reads_the_machine_block_and_ignores_the_prose_around_it(self):
-        registry = memory.parse_registry(DOCUMENT)
-        self.assertEqual(registry["features"][0]["issue"], "IDE-93")
-        self.assertEqual(len(registry["removed"]), 1)
+    def run_board(self, *argv):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stderr(err), \
+                mock.patch.object(board, "open_board") as opened, \
+                mock.patch("sys.argv", ["board.py", *argv]):
+            board.main()
+        self.assertFalse(opened.called, "a removed command must not reach the board")
+        return caught.exception.code, err.getvalue()
 
-    def test_raises_when_the_document_has_no_block(self):
+    def test_memory_core_refuses_with_a_fix_naming_memory_index(self):
+        code, err = self.run_board("memory", "core")
+        self.assertEqual(code, board.EXIT.INVALID)
+        self.assertIn("\nFIX: ", err)
+        self.assertIn("memory/index.md", err.split("FIX:", 1)[1])
+
+    def test_memory_init_refuses_the_same_way(self):
+        code, err = self.run_board("memory", "init")
+        self.assertEqual(code, board.EXIT.INVALID)
+        self.assertIn("memory/index.md", err.split("FIX:", 1)[1])
+
+    def test_the_epic_has_no_registry_file_any_more(self):
+        self.assertNotIn("registry", memory.EPIC_FILES)
         with self.assertRaises(memory.MemoryError_) as caught:
-            memory.parse_registry("# Just prose")
-        self.assertIn("memory init", str(caught.exception))
+            memory.epic_file("registry")
+        self.assertIn("FIX:", str(caught.exception))
+        self.assertIn("memory/index.md", str(caught.exception))
 
-    def test_raises_with_the_json_error_when_the_block_is_malformed(self):
-        with self.assertRaises(memory.MemoryError_) as caught:
-            memory.parse_registry("```idp-registry\n{not json}\n```")
-        self.assertIn("not valid JSON", str(caught.exception))
+    def test_the_registry_api_is_gone_not_left_half_working(self):
+        for name in ("parse_registry", "render_registry", "add_feature", "remove_feature",
+                     "seed", "core"):
+            self.assertFalse(hasattr(memory, name), name)
 
-    def test_replacing_the_block_leaves_the_prose_untouched(self):
-        registry = memory.parse_registry(DOCUMENT)
-        memory.add_feature(registry, "State Resolution", "where a card is", "IDE-94")
-        updated = memory.replace_registry(DOCUMENT, registry)
-
-        self.assertIn("Some prose the humans read.", updated)
-        self.assertIn("More prose after it.", updated)
-        self.assertIn("IDE-94", updated)
-        self.assertEqual(updated.count("```idp-registry"), 1)
-
-
-class EntryTests(ScriptTestCase):
-
-    def test_all_three_fields_are_required_and_none_is_defaulted(self):
-        for missing in ("name", "one_liner", "issue"):
-            entry = {"name": "n", "one_liner": "o", "issue": "IDE-1"}
-            entry[missing] = ""
-            with self.assertRaises(memory.MemoryError_) as caught:
-                memory.validate_entry(entry)
-            self.assertIn(missing, str(caught.exception))
-            self.assertIn("No default", str(caught.exception))
-
-    def test_a_whitespace_only_explanation_does_not_count_as_present(self):
-        with self.assertRaises(memory.MemoryError_):
-            memory.validate_entry({"name": "n", "one_liner": "   ", "issue": "IDE-1"})
-
-    def test_adding_the_same_issue_twice_updates_rather_than_duplicates(self):
-        registry = memory.parse_registry(DOCUMENT)
-        memory.add_feature(registry, "Renamed", "a better clause", "IDE-93")
-
-        entries = [f for f in registry["features"] if f["issue"] == "IDE-93"]
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["name"], "Renamed")
-
-
-class RemovalTests(ScriptTestCase):
-
-    def test_a_removed_feature_leaves_the_registry_entirely(self):
-        registry = memory.parse_registry(DOCUMENT)
-        memory.remove_feature(registry, "IDE-93", "superseded", "the new one", "2026-08-15")
-
-        self.assertEqual(registry["features"], [])
-        self.assertIn("IDE-93", registry["removed"][-1]["issues"])
-
-    def test_a_removal_without_a_reason_is_refused(self):
-        registry = memory.parse_registry(DOCUMENT)
-        with self.assertRaises(memory.MemoryError_) as caught:
-            memory.remove_feature(registry, "IDE-93", "  ", "x", "2026-08-15")
-        self.assertIn("invitation to reintroduce", str(caught.exception))
-
-    def test_removing_something_that_was_never_registered_is_refused(self):
-        registry = memory.parse_registry(DOCUMENT)
-        with self.assertRaises(memory.MemoryError_):
-            memory.remove_feature(registry, "IDE-999", "why", "what", "2026-08-15")
+    def test_why_points_at_the_features_files_and_at_memory_index(self):
+        fake = mock.Mock()
+        fake.get_issue.return_value = {"title": "Feature", "status": "Active",
+                                       "url": "https://example.invalid/IDE-42"}
+        fake.list_attachments.return_value = [
+            {"title": memory.feature_file("IDE-42", "history")}, {"title": "Notes"}]
+        text = board.explain(fake, "IDE-42")
+        self.assertIn(memory.feature_file("IDE-42", "history"), text)
+        self.assertNotIn("Notes", text)
+        self.assertIn("memory/index.md", text)
 
 
 class DriftTests(ScriptTestCase):
     """The detector reports; it never edits the thing it is checking."""
 
     def setUp(self):
-        self.registry = memory.parse_registry(DOCUMENT)
         self.profile = {"repositories": ["/repo"]}
 
-    def check(self, commits, mentioned, issues, **kwargs):
+    def check(self, issues, backed=("IDE-93",), profile=None, **kwargs):
         with mock.patch.object(memory, "fetch") as fetched, \
              mock.patch.object(memory, "commits_mentioning",
-                               side_effect=lambda r, i, **k: commits.get(i, [])), \
-             mock.patch.object(memory, "identifiers_on", return_value=set(mentioned)):
+                               side_effect=lambda r, i, **k: ["abc"] if i in backed else []):
             self.fetched = fetched
-            return memory.check_drift(self.registry, issues, self.profile, **kwargs)
+            return memory.check_drift(issues, profile or self.profile, **kwargs)
 
     def test_fetches_from_the_remote_before_deciding_anything(self):
-        self.check({"IDE-93": ["abc"]}, [], [issue("IDE-93", parent=None)])
+        self.check([issue("IDE-93")])
         self.fetched.assert_called_once()
 
     def test_no_fetch_is_possible_but_must_be_asked_for(self):
-        self.check({"IDE-93": ["abc"]}, [], [issue("IDE-93")], do_fetch=False)
+        self.check([issue("IDE-93")], do_fetch=False)
         self.fetched.assert_not_called()
 
-    def test_an_entry_with_no_commits_behind_it_is_reported(self):
-        findings = self.check({}, [], [issue("IDE-93")])
-        self.assertEqual([e["issue"] for e in findings["unbacked"]], ["IDE-93"])
-
-    def test_commits_carrying_a_pbi_identifier_back_the_parent_feature(self):
-        issues = [issue("IDE-93"), issue("IDE-94", parent="IDE-93")]
-        findings = self.check({"IDE-94": ["abc"]}, [], issues)
-        self.assertEqual(findings["unbacked"], [])
-
-    def test_a_closed_feature_missing_from_the_registry_is_reported(self):
-        issues = [issue("IDE-93"), issue("IDE-79", status_type="completed")]
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-79"], issues)
-        self.assertEqual(findings["unregistered"], ["IDE-79"])
-
-    def test_an_open_feature_mentioned_in_a_commit_is_not_reported(self):
-        # A commit naming a card is not the same as the feature landing.
-        issues = [issue("IDE-93"), issue("IDE-80", status_type="started")]
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-80"], issues)
-        self.assertEqual(findings["unregistered"], [])
-
-    def test_a_cancelled_feature_with_no_recorded_reason_is_reported(self):
-        issues = [issue("IDE-93"), issue("IDE-91", status_type="canceled")]
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-91"], issues)
-        self.assertEqual(findings["unrecorded_removals"], ["IDE-91"])
-
-    def test_a_cancelled_feature_already_under_removed_is_not_reported(self):
-        issues = [issue("IDE-93"), issue("IDE-6", status_type="canceled")]
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-6"], issues)
-        self.assertEqual(findings["unrecorded_removals"], [])
-
-    def test_identifiers_from_another_project_are_ignored(self):
-        findings = self.check({"IDE-93": ["a"]}, ["ABC-1"], [issue("IDE-93")])
-        self.assertEqual(findings["unregistered"], [])
-
-    def test_a_container_feature_is_covered_by_a_child_carrying_the_line(self):
-        """One feature is one unit of work, not necessarily one capability.
-
-        IDE-92 carried six of them and each has its own line under its own
-        child card. Reading only the feature's own identifier reported a hole
-        that was not there — and the only ways to silence it were a lie
-        (labelling a capability feature `Process`) or a duplicate entry.
-        """
-        issues = [issue("IDE-92", status_type="completed"),
-                  issue("IDE-93", parent="IDE-92")]
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-93"], issues)
-        self.assertEqual(findings["unregistered"], [])
-
-    def test_being_covered_by_a_child_is_said_out_loud(self):
-        issues = [issue("IDE-92", status_type="completed"),
-                  issue("IDE-93", parent="IDE-92")]
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-93"], issues)
-        text = memory.describe_drift(findings)
-        self.assertIn("No drift", text)
-        self.assertIn("IDE-92", text)
-        self.assertIn("IDE-93", text)
-
-    def test_a_feature_registered_in_its_own_right_needs_no_such_note(self):
-        findings = self.check({"IDE-93": ["a"]}, ["IDE-93"], [issue("IDE-93")])
-        self.assertEqual(findings["covered_by_children"], {})
-
-    def test_a_container_whose_children_are_all_unregistered_is_still_caught(self):
-        issues = [issue("IDE-96", status_type="completed"),
-                  issue("IDE-97", parent="IDE-96")]
-        findings = self.check({"IDE-97": ["a"]}, ["IDE-97"], issues)
-        self.assertEqual(findings["unregistered"], ["IDE-96"])
-
     def test_a_clean_run_says_which_repositories_it_checked(self):
-        findings = self.check({"IDE-93": ["a"]}, [], [issue("IDE-93")])
-        text = memory.describe_drift(findings)
+        text = memory.describe_drift(self.check([issue("IDE-93")]))
         self.assertIn("No drift", text)
         self.assertIn("/repo", text)
+        self.assertIn("memory/index.md", text)
 
     def test_the_report_states_that_nothing_was_changed(self):
-        findings = self.check({}, [], [issue("IDE-93")])
+        findings = self.check([issue("IDE-125")])
         self.assertIn("Nothing was changed", memory.describe_drift(findings))
 
 
@@ -255,23 +142,16 @@ class WordBoundaryTests(ScriptTestCase):
 
 
 class ClosedWithoutCommitsTests(ScriptTestCase):
-    """The case that got past both original rules (IDE-128).
+    """The case that got past the registry's own rules (IDE-128), and outlived it.
 
-    IDE-125 was closed as Done and none of its code was on `main`. Rule 1 only
-    looks at cards the registry names, and the registry names features; rule 2
-    starts from identifiers that appear in commit messages, so a card with no
-    commits at all cannot reach it. A closed work item sat between them.
+    IDE-125 was closed as Done and none of its code was on `main`.
     """
-
-    def setUp(self):
-        self.registry = memory.parse_registry(DOCUMENT)
 
     def check(self, issues, backed=("IDE-93",)):
         with mock.patch.object(memory, "fetch"), \
              mock.patch.object(memory, "commits_mentioning",
-                               side_effect=lambda r, i, **k: ["abc"] if i in backed else []), \
-             mock.patch.object(memory, "identifiers_on", return_value=set(backed)):
-            return memory.check_drift(self.registry, issues, {"repositories": ["/repo"]})
+                               side_effect=lambda r, i, **k: ["abc"] if i in backed else []):
+            return memory.check_drift(issues, {"repositories": ["/repo"]})
 
     def test_a_closed_work_item_with_no_commits_anywhere_is_reported(self):
         issues = [issue("IDE-93"), issue("IDE-125", parent="IDE-93")]
@@ -292,15 +172,6 @@ class ClosedWithoutCommitsTests(ScriptTestCase):
         issues = [issue("IDE-92"), issue("IDE-95", parent="IDE-92")]
         findings = self.check(issues, backed=("IDE-95",))
         self.assertEqual(findings["closed_without_commits"], [])
-
-    def test_the_report_exits_nonzero_through_the_same_door_as_the_others(self):
-        # board.py treats it as drift, not as a note: the whole job of this
-        # command is to catch closed work whose commits are missing.
-        issues = [issue("IDE-93"), issue("IDE-125", parent="IDE-93")]
-        findings = self.check(issues)
-        self.assertTrue(any(findings[k] for k in ("unbacked", "unregistered",
-                                                  "unrecorded_removals",
-                                                  "closed_without_commits")))
 
 
 class StaleDocumentationTests(ScriptTestCase):
@@ -398,36 +269,27 @@ class HistoryTests(ScriptTestCase):
 
 
 class ProcessFeatureTests(ScriptTestCase):
-    """The registry answers "what can the platform do".
+    """A feature that produced rules rather than code lands nowhere in git.
 
-    A feature that produced rules rather than a capability does not belong in
-    it, and must not be reported as missing from it either — otherwise the
-    detector reports the same non-problem on every run until nobody reads it.
+    Reporting it as closed without commits on every run would teach everyone to
+    ignore the report; skipping it silently would hide the skip.
     """
-
-    def setUp(self):
-        self.registry = memory.parse_registry(DOCUMENT)
 
     def check(self, issues, profile=None):
         with mock.patch.object(memory, "fetch"), \
              mock.patch.object(memory, "commits_mentioning",
-                               side_effect=lambda r, i, **k: ["abc"] if i == "IDE-93" else []), \
-             mock.patch.object(memory, "identifiers_on",
-                               return_value={i["identifier"] for i in issues}):
-            return memory.check_drift(self.registry, issues,
-                                      profile or {"repositories": ["/repo"]})
+                               side_effect=lambda r, i, **k: ["abc"] if i == "IDE-93" else []):
+            return memory.check_drift(issues, profile or {"repositories": ["/repo"]})
 
-    def test_a_labelled_feature_is_not_reported_as_missing_from_the_registry(self):
+    def test_a_labelled_feature_is_not_reported_as_closed_without_commits(self):
         issues = [issue("IDE-93"), issue("IDE-79", labels=["Feature", "Process"])]
         findings = self.check(issues)
-
-        self.assertEqual(findings["unregistered"], [])
+        self.assertEqual(findings["closed_without_commits"], [])
         self.assertEqual(findings["process"], ["IDE-79"])
 
     def test_the_skip_is_stated_in_the_report_rather_than_silent(self):
         issues = [issue("IDE-93"), issue("IDE-79", labels=["Process"])]
         text = memory.describe_drift(self.check(issues))
-
         self.assertIn("No drift", text)
         self.assertIn("IDE-79", text)
         self.assertIn("not capabilities", text)
@@ -444,7 +306,7 @@ class ProcessFeatureTests(ScriptTestCase):
 
     def test_an_unlabelled_closed_feature_is_still_reported(self):
         issues = [issue("IDE-93"), issue("IDE-79", labels=["Feature"])]
-        self.assertEqual(self.check(issues)["unregistered"], ["IDE-79"])
+        self.assertEqual(self.check(issues)["closed_without_commits"], ["IDE-79"])
 
 
 class NamingTests(ScriptTestCase):
@@ -455,11 +317,10 @@ class NamingTests(ScriptTestCase):
     one day open the wrong document and be confident about it.
     """
 
-    def test_the_epic_carries_three_files_in_a_fixed_order(self):
+    def test_the_epic_keeps_its_hub_and_tried_and_rejected_and_01_stays_empty(self):
         self.assertEqual(
-            [memory.epic_file(r) for r in ("hub", "registry", "tried_rejected")],
+            [memory.epic_file(r) for r in ("hub", "tried_rejected")],
             ["00 · HUB — read this before any work",
-             "01 · Feature Registry — what exists now",
              "02 · Tried & Rejected — do not re-litigate"])
 
     def test_a_feature_carries_the_same_shape_plus_its_identifier(self):
@@ -497,7 +358,7 @@ class NamingTests(ScriptTestCase):
             "IDE-42 · 01 · History — what happened to this feature.md")
 
     def test_a_name_from_outside_the_convention_is_recognised_as_such(self):
-        self.assertTrue(memory.is_conventional(memory.epic_file("registry")))
+        self.assertTrue(memory.is_conventional(memory.epic_file("hub")))
         self.assertTrue(memory.is_conventional(memory.feature_file("IDE-42", "adr")))
         self.assertFalse(memory.is_conventional("IDE-42 — history"))
         self.assertFalse(memory.is_conventional("Notes"))
@@ -512,42 +373,6 @@ class RepositoryTests(ScriptTestCase):
     def test_falls_back_to_the_repository_holding_the_profile(self):
         paths = memory.repositories({"_path": "/work/project/.idp/profile.json"})
         self.assertEqual([str(p) for p in paths], ["/work/project"])
-
-
-class SeedTests(ScriptTestCase):
-
-    def test_seeds_one_entry_per_feature_and_marks_every_one_legacy(self):
-        issues = [issue("IDE-79", title="[Feature] Foundation"),
-                  issue("IDE-89", parent="IDE-79", title="[Work Item] Consolidate")]
-        registry = memory.seed(issues, "2026-08-15")
-
-        self.assertEqual(len(registry["features"]), 1)
-        entry = registry["features"][0]
-        self.assertEqual(entry["issue"], "IDE-79")
-        self.assertEqual(entry["name"], "Foundation")
-        self.assertTrue(entry["legacy"])
-
-    def test_the_seeded_explanation_says_it_was_never_reviewed(self):
-        registry = memory.seed([issue("IDE-79")], "2026-08-15")
-        self.assertIn("not yet reviewed", registry["features"][0]["one_liner"])
-
-
-class CoreTests(ScriptTestCase):
-
-    def test_prints_one_line_per_capability_and_the_rejected_list(self):
-        text = memory.core(memory.parse_registry(DOCUMENT))
-        self.assertIn("IDE-93", text)
-        self.assertIn("knows the board by name", text)
-        self.assertIn("Up-front plan", text)
-
-    def test_says_so_plainly_when_nothing_is_registered(self):
-        text = memory.core({"features": [], "removed": [], "parked": []})
-        self.assertIn("nothing registered yet", text)
-
-    def test_marks_a_legacy_entry_so_the_reader_knows_how_much_to_trust_it(self):
-        registry = {"features": [{"name": "N", "one_liner": "o", "issue": "IDE-1",
-                                  "legacy": True}], "removed": [], "parked": []}
-        self.assertIn("(legacy)", memory.core(registry))
 
 
 if __name__ == "__main__":
