@@ -291,9 +291,13 @@ The rules are CRAP's agent mode:
   recorded.** Every session's prompt gains the agent-mode rules and
   `IDP_AGENT_MODE=1`, and the session records each call with
   `run.py decide --context … --decision … --rationale … --alternative …
-  --load-bearing yes|no`. After the session the runner posts each one on the
-  Feature as a decision-journal comment — Context, Decision, Rationale, Sign-off,
-  Load-bearing, Alternative — keyed, so a crash and a resume post it once.
+  --load-bearing yes|no`. The runner collects them every 10 seconds while the
+  session runs, and once more when it ends, and posts each on the Feature as a
+  decision-journal comment — Context, Decision, Rationale, Sign-off, Load-bearing,
+  Alternative — keyed on its content, so a retry posts it once. A post that fails
+  keeps the decision for the next collection; a session that ends at the cliff
+  carries what is unposted inside its committed `handoff.md`, and the next session
+  on that branch, on any machine, posts it before it starts.
 * **`blocked` always halts that card.** It keeps `idp:blocked` until a human lifts
   it, and the loop moves on to the next card.
 * **A refusal is reported once and backed off.** A card that answers exit 3 — or
@@ -303,7 +307,12 @@ The rules are CRAP's agent mode:
   exit 3 means nothing changed.
 * **An idle loop slows down.** A pass that ran nothing sleeps 1 minute, then 2, 4,
   8, up to 15. A machine that can fill no role says so once and asks again every 15
-  minutes, with a fresh executor, so an agent whose usage limit reset comes back.
+  minutes. **Availability is asked again, not cached for the night:** whenever a
+  phase it was asked to serve cannot be served, and after an idle rest while some
+  agent is unavailable, the loop takes a fresh executor and probes again — so a
+  worker exhausted at its usage limit comes back once the limit resets. Each probe
+  is a real authenticated call; `--serve` keeps a machine from re-probing for a
+  phase it should never serve.
 
 Nothing in agent mode prompts: a takeover refuses (below), and a gate never waits
 for a keypress.
@@ -352,10 +361,18 @@ refused toward its Feature, whose owner holds the PBI claims.
 | 3. After the cliff | the runner sees its worker exit on a limit | the runner, no model | the guarantee (see *Phase 3*) |
 
 **Layer 2** runs `handoff.py` steps 1 and 2 — the `wip(handoff)` commit and a
-mechanical `handoff.md`, pushed — on a `pbi/*` branch only, once per session, and
-never pauses the card: a model session holds no board credential, so layer 3 or
-`reap` does that. The card is `IDP_CARD` under the runner, else the id in the PBI
-branch name. Claude gets it from the plugin's `hooks/hooks.json`. Copilot gets no
+mechanical `handoff.md`, pushed — on a `pbi/*` branch only, once per identified
+session (an event without a session id is never marked, so it cannot silence
+another). Then step 3, so nobody waits out the lease. In an interactive session
+whose profile and token open the board, the hook swaps `idp:owner:<run>` for
+`idp:paused:<run>` itself, in one fenced write. Otherwise — always under the
+runner, whose sessions hold no board credential — the committed `handoff.md`
+carries a **pause request** (card, branch, run, reason), and the next agent-mode
+pass or `run.py reap` reads it from the branch and pauses the card at once. A
+request counts only while its handoff is still the branch's last commit, names
+the branch of the card's current claim, and names the owner's run or none; a
+reader never pauses its own run's cards. The card is `IDP_CARD` under the runner,
+else the id in the PBI branch name. Claude gets it from the plugin's `hooks/hooks.json`. Copilot gets no
 plugin hook — and never a `sessionStart` one, which could make it drop the
 freshness hook's message — so install `hooks/copilot-hooks.json` by hand into
 `~/.copilot/hooks/` with `IDP_PLATFORM_ROOT` set, or print one with absolute paths:
@@ -372,9 +389,10 @@ python3 scripts/hooks/statusline.py --uninstall   # puts it back
 ```
 
 `--install` never replaces a status line silently. It keeps the one configured —
-on a machine with Orca, Orca's `claude-statusline.sh` — prints what it wrapped,
-and runs it on the same input after recording the numbers, so what you see does
-not change. The numbers go to `~/.idp/hooks/sessions/<session>.json`; the plugin's
+on a machine with Orca, Orca's `claude-statusline.sh`; a dict or a plain command
+string — prints what it wrapped, and runs it on the same input after recording the
+numbers, so what you see does not change. If the wrapped line fails — it cannot
+start, times out, exits non-zero — the wrapper shows its own short line instead. The numbers go to `~/.idp/hooks/sessions/<session>.json`; the plugin's
 `PostToolUse` hook (`scripts/hooks/context_watch.py`) reads them and, the first
 time either reaches 90% (`IDP_HANDOFF_THRESHOLD`), tells the model to finish the
 step in flight, commit, write `handoff.md`, push and `report --code 4`. It is
@@ -420,7 +438,9 @@ python3 scripts/run.py --help
 ```
 
 `reap` measures by the board's clock, never the laptop's. Without a card it looks
-at every held card of the project. `adr-check` is phase 3's precondition.
+at every held card of the project. It also honours pause requests that layer 2
+left on PBI branches, at once (see *When a session ends early*); run it from the
+product repository's clone so it can read them. `adr-check` is phase 3's precondition.
 
 ## Exit codes of `run.py` itself
 

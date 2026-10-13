@@ -495,5 +495,37 @@ class ExperimentFourTests(unittest.TestCase):
         self.assertTrue(text.rstrip().endswith("## Results"))
 
 
+
+class HardenedGitTests(GitTestCase):
+    """`safe.bareRepository=explicit`: layer 2, the pause-request reader and experiment 4's
+    recorder still work, and every bare remote is read through the safe-bare helper."""
+
+    HARDENED = {"GIT_CONFIG_PARAMETERS": "'safe.bareRepository=explicit'"}
+
+    def test_layer_two_and_the_reader_work_under_it(self):
+        with mock.patch.dict(os.environ, self.HARDENED):
+            self.branch("pbi/7-store/g1")
+            code, result = cliff.run("claude", None, {
+                "hook_event_name": "StopFailure", "session_id": "h", "cwd": str(self.repo),
+                "error": "rate_limit"}, dict(self.env, IDP_CARD="7"))
+            self.assertEqual(result["outcome"], "handed-off")
+            self.assertIn("rate_limit", self.remote_file("pbi/7-store/g1", "handoff.md"))
+            text, at_tip = agent_mode.branch_reader(self.repo)("pbi/7-store/g1")
+            self.assertTrue(at_tip)
+            self.assertEqual(handoff_script.read_pause_request(text)["card"], "7")
+
+    def test_experiment_four_sees_its_push_land_under_it(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "idp_e4_hardened", SCRIPTS_DIR / "experiments" / "e4_cliff_hooks.py")
+        e4 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(e4)
+        with mock.patch.dict(os.environ, self.HARDENED):
+            e4.setup(self.root / "e4")
+            entry = e4.record_hook(self.root / "e4", "claude", None,
+                                   {"hook_event_name": "StopFailure", "error": "rate_limit"})
+        self.assertTrue(entry["push"]["landed"], entry)
+
+
 if __name__ == "__main__":
     unittest.main()
