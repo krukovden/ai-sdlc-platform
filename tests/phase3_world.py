@@ -261,13 +261,13 @@ class World:
         return ScriptedExecutor(*steps, **kwargs)
 
     def runner(self, run_id="run-1", executor=None, pool=None, finalizer=None, sleep=None,
-               out=None):
+               out=None, merger=None):
         self.executor_ = executor or self.executor()
         self.slept = []
 
         def development(owner):
             return phase3.Development(
-                owner, pool=pool or phase3.InlinePool(),
+                owner, pool=pool or phase3.InlinePool(), merger=merger,
                 sleep=sleep or self.slept.append, planning_home=self.planning_home,
                 worktrees=self.home / "worktrees",
                 finalizer=finalizer or phase3.finalize.Finalizer(

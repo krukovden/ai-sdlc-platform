@@ -72,6 +72,7 @@ BUILT = "built"
 REFUSAL = "refusal"
 INFRA = "infra"
 PATHS = "paths"
+RACE = "merge-race"
 
 PLANNING_PROMPT = """You are the planning session for {feature}, started by run.py (IDE-147).
 Follow the planning skill exactly: {skill}
@@ -192,6 +193,7 @@ class Development:
         self.feature = None
         self.feature_branch = None
         self.journal = None
+        self.halt = None
 
     def say(self, text):
         self.runner.say(text)
@@ -428,11 +430,13 @@ class Development:
             if not self.running and not ready:
                 return self.terminate(feature, work, status, by_key)
             for item in ready:
-                if self.free_worker() is None:
+                if self.halt is not None or self.free_worker() is None:
                     break
                 self.advance(item)
-            if self.running:
+            if self.running and self.halt is None:
                 self.route(*self.pool.wait_any())
+            if self.halt is not None:
+                return self.halt
         raise self.runner.error(EXIT.BLOCKED, "the building loop did not settle",
                                 "look at the Feature's comments; this is a runner bug")
 
@@ -1034,6 +1038,8 @@ class Development:
         else:
             self.skip[pbi] = "the feature branch kept moving"
             return
+        if not self.landed_on_tested(item, claim, wt, done, head):
+            return
         lease.post_event(self.board, pbi, MERGED, f"{MERGED}:{claim['branch']}",
                          text=f"Merged into `{self.feature_branch}` at `{head[:12]}`: exactly "
                               f"the tested `{merged[:12]}` (feature `{feature_sha[:12]}`).",
@@ -1045,6 +1051,42 @@ class Development:
             review = self.review_text(pbi, verdict.get("merge"))
             merger.comment(self.board, pr, pbi, review, f"review-comments:{pbi}:{merged}")
         self.after_merge(item, claim, head)
+
+    def landed_on_tested(self, item, claim, wt, done, head):
+        """The squash's parent must be the tested F. If it is not, prove the new head.
+
+        A git-level merge cannot land elsewhere (its push is a compare-and-swap
+        on F). Azure Repos pins only the source, so a sibling completing in the
+        window lands this PBI on a head nobody tested: the runner records it and
+        runs the witnesses again on the head that actually exists. Green, the
+        merge stands; red, the Feature is blocked for a human — the code is
+        already on the feature branch and no runner may take it back.
+        """
+        pbi = item["id"]
+        parent = self.git.run("rev-parse", f"{head}^1", check=False)
+        parent = parent.stdout.strip() if parent.returncode == EXIT.OK else None
+        if parent == done["feature"]:
+            return True
+        lease.post_event(self.board, pbi, RACE, f"{RACE}:{head}",
+                         text=f"The pull request completed onto `{(parent or '?')[:12]}`, not "
+                              f"onto the tested `{done['feature'][:12]}`: the feature head moved "
+                              "in the window before completion. The witnesses run again on "
+                              f"`{head[:12]}`.",
+                         head=head, parent=parent, tested=done["feature"])
+        outcome = self.finalize(item, claim, wt, retest_feature=head, pbi_sha=done["pbi"])
+        if outcome.passed:
+            lease.post_event(self.board, pbi, RACE, f"{RACE}:{head}:verified",
+                             text=f"Re-verified on `{head[:12]}`: every witness passed.",
+                             head=head, verified=True)
+            return True
+        if outcome.records:
+            self.board.attach_document(witness_title(pbi), fin.render_record(pbi, outcome),
+                                       identifier=pbi)
+        self.halt = self.block_feature(
+            f"{pbi} merged onto an untested feature head `{head[:12]}`, and it does not "
+            f"prove out there ({outcome.kind}): {outcome.detail.splitlines()[0]}. FIX: repair the "
+            "feature branch by hand, then remove idp:blocked")
+        return False
 
     def review_text(self, pbi, merged):
         for comment in self.comments(pbi):

@@ -94,13 +94,21 @@ class AzureReposMerger(Merger):
                                               description, [work_item])
 
     def complete(self, pr, branch, target, feature_sha, merged, title, mention):
-        self.git.fetch()
+        """Complete, pinned to M — with a window this side cannot close.
+
+        `lastMergeSourceCommit` pins the source; nothing in the completion call
+        pins the target. So the target head is asked of the remote immediately
+        before the call (one `ls-remote`, no fetch in between), and the caller
+        checks afterwards that the squash's parent is the tested F. Whether the
+        service itself refuses a completion onto a moved target is unmeasured
+        (CLAUDE.md, Known gaps).
+        """
         if self.git.remote_sha(target) != feature_sha:
             return None
         self.board.complete_pull_request(self.repository, pr["id"], merged,
                                          merge_message(title, mention, branch, merged))
         self.git.fetch()
-        return self.git.remote_sha(target)
+        return self.git.tracking(target)
 
     def merged(self, pr, branch, target):
         if not pr:

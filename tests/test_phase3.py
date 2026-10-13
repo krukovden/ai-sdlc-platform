@@ -749,6 +749,68 @@ class MergeTests(Phase3TestCase):
         self.assertTrue(world.events(card, orchestrator.PULL_REQUEST))
 
 
+class RacingMerger(phase3.merge.GitMerger):
+    """Azure Repos as it might behave: a sibling lands first and the service still
+    completes this PR, squashing it onto the new head nobody tested."""
+
+    def __init__(self, git, world, root, breaks=False):
+        super().__init__(git)
+        self.world, self.root, self.breaks = world, root, breaks
+        self.raced = None
+
+    def complete(self, pr, branch, target, feature_sha, merged, title, mention):
+        if self.raced is None:
+            other = self.root / "racer"
+            git(self.root, "clone", "-q", "-b", target, str(self.world.remote), str(other))
+            (other / "src" / "racer.py").write_text("VALUE = 1\n")
+            if self.breaks:
+                (other / "src" / "a.py").write_text("VALUE = 0\n")
+            git(other, "add", "-A")
+            git(other, "commit", "-q", "-m", "a sibling lands first #998")
+            git(other, "push", "-q", "origin", target)
+            self.git.fetch()
+            moved = self.git.tracking(target)
+            # Broken: the sibling rewrote src/a.py and its side won the squash.
+            tree = self.git.run("rev-parse", f"{moved}^{{tree}}") if self.breaks else \
+                self.git.run("merge-tree", "--write-tree", moved, merged).splitlines()[0]
+            squash = self.git.run("commit-tree", tree, "-p", moved, "-m",
+                                  phase3.merge.merge_message(title, mention, branch, merged))
+            self.git.push(squash, target, expect=moved)
+            self.raced = squash
+            return squash
+        return super().complete(pr, branch, target, feature_sha, merged, title, mention)
+
+
+class MergeRaceTests(Phase3TestCase):
+
+    def racing(self, breaks):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        merger = RacingMerger(phase3.gitops.Git(world.repo), world, self.root, breaks)
+        return world, merger, world.runner(merger=merger).run_feature(FEATURE)
+
+    def test_a_completion_onto_a_moved_head_is_recorded_and_re_verified(self):
+        world, merger, code = self.racing(breaks=False)
+        self.assertEqual(code, EXIT.DONE)
+        card = world.items()["a"]["id"]
+        races = world.events(card, orchestrator.RACE)
+        self.assertEqual(races[0]["head"], merger.raced)
+        self.assertNotEqual(races[0]["parent"], races[0]["tested"])
+        self.assertTrue(races[1]["verified"])
+        self.assertEqual(self.status(world, "a"), "Resolved")
+
+    def test_a_raced_head_whose_witnesses_fail_blocks_the_feature(self):
+        world, merger, code = self.racing(breaks=True)
+        self.assertEqual(code, EXIT.BLOCKED)
+        self.assertIn(tags.BLOCKED, world.board.cards[FEATURE]["tags"])
+        reason = world.events(FEATURE, lease.BLOCK)[-1]["reason"]
+        self.assertIn("untested feature head", reason)
+
+    def test_a_merge_onto_the_tested_head_records_no_race(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.runner().run_feature(FEATURE)
+        self.assertEqual(world.events(world.items()["a"]["id"], orchestrator.RACE), [])
+
+
 class ReviewTests(Phase3TestCase):
 
     def test_critical_findings_go_back_to_the_worker_as_a_review_round(self):
@@ -1108,6 +1170,9 @@ class AzureReposMergerTests(unittest.TestCase):
 
             def remote_sha(self, branch):
                 return "F"
+
+            def tracking(self, branch):
+                return "S"
 
         merger = phase3.merge.AzureReposMerger(Board(), Git(), "repo")
         pr = merger.open("pbi/5-x/g1", FEATURE_BRANCH, "X", "d", "5")
