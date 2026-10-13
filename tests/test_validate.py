@@ -772,3 +772,18 @@ class Offline(ValidatorTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParentIdentifierTests(unittest.TestCase):
+    """`parent` names an issue on whichever board the project uses (the live ADO run)."""
+
+    def test_a_linear_key_and_an_azure_devops_id_are_both_parents(self):
+        import re as _re
+        schema = json.loads((Path(__file__).resolve().parent.parent / "schemas"
+                             / "frontmatter.schema.json").read_text(encoding="utf-8"))
+        pattern = _re.compile(schema["properties"]["parent"]["pattern"])
+        for good in ("IDE-68", "ABC2-7", "104704"):
+            self.assertTrue(pattern.fullmatch(good), good)
+        for bad in ("ide-68", "IDE-", "#104704", "104704a", ""):
+            self.assertFalse(pattern.fullmatch(bad), bad)
+
