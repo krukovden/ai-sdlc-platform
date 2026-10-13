@@ -512,7 +512,7 @@ class CredentialTests(ScriptTestCase):
     def refused(self, names=None, **scenario):
         harness = Harness(self, terminal_env=names or ["PATH", "HOME"], **scenario)
         sub = FakeSubprocess()
-        executor = harness.executor(fallback=lambda: sub)
+        executor = harness.executor(fallback=lambda: sub, sleep=lambda seconds: None)
         code = executor.run_role("worker", "IDE-1", harness.worktree, "p")
         return harness, executor, sub, code
 
