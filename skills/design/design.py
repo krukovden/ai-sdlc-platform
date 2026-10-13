@@ -130,25 +130,9 @@ SUBPHASE_ORDER = ["architect", "practice", "alternatives", "critic", "integratio
 PROVIDERS = None
 PROVIDER_RUNNER = None
 
-# The decision registry's schema. A module dict rather than a file because it
-# is never handed to a provider: the model passes it to the CLI directly, so
-# nothing here has to satisfy strict structured output. What it does have to do
-# is refuse a decision with no reversibility.
-DECISION_SCHEMA = {
-    "type": "array",
-    "minItems": 1,
-    "items": {
-        "type": "object",
-        "required": ["id", "decision", "reversibility", "why"],
-        "additionalProperties": False,
-        "properties": {
-            "id": {"type": "string", "minLength": 1},
-            "decision": {"type": "string", "minLength": 1},
-            "reversibility": {"enum": REVERSIBILITY},
-            "why": {"type": "string", "minLength": 1},
-        },
-    },
-}
+# Registry input is validated before any decision is stored.
+DECISION_SCHEMA = json.loads(
+    (REPO_ROOT / "schemas" / "decision-registry.schema.json").read_text(encoding="utf-8"))
 
 
 def fail(code, message):
@@ -474,6 +458,8 @@ def validate(state):
     """
     problems = []
     sections = state.get("sections") or {}
+    if state.get("scope") not in ("small", "medium", "large"):
+        problems.append("the ADR requires scope: small, medium or large")
 
     for heading in mandatory_headings():
         if heading not in sections:
@@ -549,6 +535,8 @@ def render_adr(state):
 
     lines = ["---", "type: adr", "status: proposed",
              f"route: {state.get('route', 'feature')}", 'standard: "1.0"']
+    if state.get("scope"):
+        lines.append(f"scope: {state['scope']}")
     if state.get("cid"):
         lines.append(f"cid: {state['cid']}")
     lines += [f"parent: {state['identifier']}", "---", ""]
@@ -585,7 +573,8 @@ def render_adr(state):
             flag = words.phrase("practice-contradicts", language)
         lines.append(f"| {cell(decision['id'])} | {cell(decision['decision'])} | "
                      f"{cell(decision['reversibility'])} | "
-                     f"{cell(decision['why'])}{flag} |")
+                     f"{cell(decision['why'])}{flag}; "
+                     f"{cell(decision.get('rejected_option_breaks', ''))} |")
     lines.append("")
 
     lines += [words.heading("alternatives", language), ""]
@@ -729,6 +718,9 @@ def alternatives_prompt(state, decision, produced):
     return "\n\n".join(parts)
 
 
+CRITIC_DIMENSIONS = ("counterfactuals", "absence", "reversibility", "failure-modes")
+
+
 def critic_prompt(state):
     return "\n\n".join([
         "You are reviewing a technical design written by a different model. "
@@ -736,6 +728,14 @@ def critic_prompt(state):
         "edit the document: you return objections, and the architect decides.",
         "You see the final shape on purpose, alternatives included, so that you "
         "do not spend the round on objections the alternatives already answered.",
+        "Rubric: counterfactuals name what each rejected option breaks; absence "
+        "states what constraints exclude; reversibility states the cost of undoing; "
+        "failure-modes lists failures and observable handling. Return rubric entries "
+        "for counterfactuals, absence, reversibility, failure-modes, each with a "
+        "file:line citation or the exact verdict ran clean. Missing or malformed "
+        "rubric counts as critical. Flag ADR overload (method names, call order), "
+        "never missing implementation-tier detail. A test pinned to its own mirror "
+        "cannot fail: require an independent observable.",
         "ADR draft: " + canonical_json(state.get("sections") or {}),
         "Decision registry: " + canonical_json(state["decisions"]),
         "Alternatives: " + canonical_json(state.get("alternatives") or {}),
@@ -872,6 +872,8 @@ def cmd_draft(args):
         fail(3, "the ADR template's mandatory sections are empty or absent: "
                 + ", ".join(missing))
 
+    if args.scope:
+        state["scope"] = args.scope
     state["sections"] = {str(k): str(v) for k, v in sections.items()}
     state["redraft_required"] = False
     journal(args.id, {"event": "draft", "sections": sorted(state["sections"])})
@@ -1142,6 +1144,14 @@ def cmd_critic(args):
         return
 
     objections = list(state["objections"])
+    rubric = response.get("rubric") or {}
+    if any(not isinstance(rubric.get(name), str) or not (
+            rubric[name] == "ran clean" or re.search(r"\S+:\d+", rubric[name]))
+           for name in CRITIC_DIMENSIONS):
+        objections.append({"id": f"obj-{len(objections) + 1}",
+                           "text": "Critical: malformed critic rubric; every dimension needs file:line or ran clean",
+                           "severity": "critical", "lens": "rubric",
+                           "disposition": None, "reason": None})
     for gap in response.get("gaps") or []:
         objections.append({
             "id": f"obj-{len(objections) + 1}",
@@ -1472,6 +1482,7 @@ def _make_parser():
     p = sub.add_parser("draft", help="record the architect's sections")
     p.add_argument("--id")
     p.add_argument("--sections-file")
+    p.add_argument("--scope", choices=("small", "medium", "large"))
     p.set_defaults(func=cmd_draft)
 
     p = sub.add_parser("decisions", help="record or read the decision registry")

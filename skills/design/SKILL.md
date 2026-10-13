@@ -159,3 +159,24 @@ existed, and it changed every page (IDE-140).
 
 If there is no profile yet, write in English, in short plain sentences, for a
 reader whose first language is not English.
+
+## Architectural altitude and critique
+
+Record the rewrite size explicitly with `draft --scope small|medium|large`.
+Finalize validation refuses a missing scope; there is no inferred size. Project
+ADRs retain their separate `scope: project` contract.
+
+Every decision registry entry requires `rejected_option_breaks`: name the rejected
+option and the observable contract it would break. “It would be worse” is not a
+counterfactual. Read `templates/exemplars/decisions.md` for the authoring pair.
+The critic answers counterfactuals, absence, reversibility and failure-modes in its
+`rubric`, each with file:line or `ran clean`; a malformed rubric creates a critical
+objection. Objections remain on the record even when overruled.
+
+An ADR describes components, boundaries and contracts, not method names, call order
+or task instructions. Critique overloaded detail, never missing lower-tier detail.
+Include a Mermaid diagram when multiple components exchange data across a boundary,
+when ownership changes, or when a state transition is central to correctness.
+Do not draw a diagram for a flat list or one local operation. Each diagram must
+answer a named architectural question; justify it or remove it. A diagram replaces
+its equivalent prose rather than duplicating it. Never use ASCII diagrams.

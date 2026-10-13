@@ -34,7 +34,7 @@ TEMPLATE_FILES = ("feature.md", "adr.md", "pbi.md", "pbi.agent.md", "bug.md")
 # One set per language the platform writes in: the default language sits at the
 # top of `templates/`, every other one in a directory named for it (IDE-132).
 TEMPLATE_SETS = [TEMPLATES] + sorted(
-    path for path in TEMPLATES.iterdir() if path.is_dir())
+    path for path in TEMPLATES.iterdir() if path.is_dir() and path.name != "exemplars")
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,7 @@ cid: fp_abc123
 
 ADR = """---
 type: adr
+scope: medium
 status: proposed
 route: feature
 standard: "1.0"
