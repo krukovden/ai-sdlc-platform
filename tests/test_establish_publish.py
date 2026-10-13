@@ -222,11 +222,44 @@ class PublicationTests(Session):
         self.assertIn("status: approved", content)
         self.assertIn(WORDS.heading("stages"), content)
 
-    def test_the_profile_points_at_the_registry_document(self):
+    def test_only_the_project_adr_is_published_as_an_epic_document(self):
+        self.publish_now()
+        published = establish.load_package(self.slug)["published"]
+        self.assertEqual(set(self.board.documents), {published["adr"]["slug"]})
+        self.assertNotIn("registry", published)
+        self.assertFalse((self.repo / "memory").exists())
+
+    def test_the_profile_no_longer_writes_memory_doc(self):
         self.publish_now()
         profile = json.loads((self.repo / ".idp" / "profile.json").read_text())
-        registry_slug = establish.load_package(self.slug)["published"]["registry"]["slug"]
-        self.assertEqual(profile["memory_doc"], registry_slug)
+        self.assertNotIn("memory_doc", profile)
+        self.assertEqual(profile["project_id"], "EPIC-1")
+        self.assertEqual(profile["repositories"], [str(self.repo.resolve())])
+
+    def test_the_root_file_points_only_at_repository_memory(self):
+        self.publish_now()
+        text = (self.repo / "PROJECT.md").read_text()
+        self.assertIn("memory/index.md", text)
+        self.assertNotIn("memory core", text)
+        self.assertNotIn("doc-", text)
+
+    def test_publication_preserves_existing_repository_memory(self):
+        index = self.repo / "memory" / "index.md"
+        index.parent.mkdir()
+        content = "# Project memory\n\nDecisions already recorded at merge.\n"
+        index.write_text(content, encoding="utf-8")
+        self.publish_now()
+        self.publish_now()
+        self.assertEqual(index.read_text(encoding="utf-8"), content)
+        self.assertEqual(len(self.board.documents), 1)
+
+    def test_a_retired_registry_record_is_not_followed_on_resume(self):
+        package = establish.load_package(self.slug)
+        package.setdefault("published", {})["registry"] = {"slug": "retired-missing-doc"}
+        establish.save_package(self.slug, package)
+        self.publish_now()
+        self.assertTrue(establish.load_package(self.slug)["published"]["verify"]["checked"])
+        self.assertEqual(len(self.board.documents), 1)
 
     def test_breaking_at_each_step_and_retrying_duplicates_nothing(self):
         # The property that matters: a retry completes what is missing and
@@ -262,7 +295,6 @@ class PublicationTests(Session):
         state = establish.load_state(self.slug)
         published = package.setdefault("published", {})
         published["adr"] = {"slug": "doc-missing"}
-        published["registry"] = {"slug": "doc-missing"}
         published["features"] = {}
         published["profile"] = {}
         published["schema_file"] = {}

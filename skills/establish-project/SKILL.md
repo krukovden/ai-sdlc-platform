@@ -117,9 +117,15 @@ establish.py advance
 establish.py publish
 ```
 
-Publication writes the project ADR and the seed registry onto the epic, creates
-the cards of the open stage, and writes the profile and the root file into the
-repository. It is idempotent: if it breaks, run it again.
+Publication attaches the project ADR to the epic, creates the cards of the open
+stage, writes the optional wiki pages and the epic description, and writes the
+profile and `PROJECT.md` into the repository. It is idempotent: if it breaks,
+run it again.
+
+The only feature registry is the repository's `memory/index.md`, maintained by
+engineering-catalog's memory-writer after a merge into `main`. Publication points
+`PROJECT.md` there but does not create or overwrite it, publish a registry on the
+epic, or write `memory_doc` into the profile.
 
 ## What you must not do
 

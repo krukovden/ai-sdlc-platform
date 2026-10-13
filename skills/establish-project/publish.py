@@ -4,8 +4,8 @@
 Two properties matter more than anything else in this file.
 
 **Nothing large is created outward.** The epic, the repository and the wiki are
-the Product Owner's to create; this writes the project ADR, the seed registry
-and the feature cards of the open stage, and nothing else.
+the Product Owner's to create; this writes the project ADR and the feature
+cards of the open stage. The feature registry stays in `memory/index.md`.
 
 **Every step is idempotent by `cid`.** Creating a dozen things across two
 systems over a network fails halfway; that is not an edge case, it is Tuesday.
@@ -145,36 +145,6 @@ def render_project_adr(package):
     ])
 
 
-def render_registry(package):
-    """The seed registry: no features yet, and the ADR as the baseline.
-
-    An empty registry is not nothing. Without it the drift detector has no
-    baseline to compare the first merged feature against.
-    """
-    block = {
-        "schema_version": "1.0",
-        "project": package["slug"],
-        "features": [],
-        "removed": [],
-        "parked": [],
-        "baseline": {
-            "correlation_id": package["correlation_id"],
-            "architecture_hash": package["architecture_hash"],
-        },
-    }
-    return "\n".join([
-        "# Project memory",
-        "",
-        "The registry below is the machine-readable source. One line per capability, "
-        "written at merge and only at merge.",
-        "",
-        "```idp-registry",
-        json.dumps(block, indent=2, ensure_ascii=False),
-        "```",
-        "",
-    ])
-
-
 def render_epic_description(package, published):
     """Six sentences on the epic itself, which is the first thing anyone reads.
 
@@ -270,7 +240,7 @@ def render_feature(package, feature):
     ])
 
 
-def render_schema_file(package, memory_doc):
+def render_schema_file(package):
     """The file at the repository root that points back at the board."""
     words = load_sections()
     language = package.get("language")
@@ -280,7 +250,7 @@ def render_schema_file(package, memory_doc):
         words.phrase("board-is-the-truth", language),
         "",
         "- " + words.phrase("epic-line", language, epic=package["epic"]),
-        "- " + words.phrase("memory-line", language, document=memory_doc),
+        "- " + words.phrase("memory-line", language, document="memory/index.md"),
         "- " + words.phrase("cid-line", language,
                             correlation_id=package["correlation_id"]),
         "",
@@ -288,7 +258,6 @@ def render_schema_file(package, memory_doc):
         "",
         "```bash",
         "python3 scripts/board.py status <ID>",
-        "python3 scripts/board.py memory core",
         "```",
         "",
         words.heading("awaiting-discovery", language),
@@ -398,12 +367,6 @@ def step_adr(board, state, package):
     return {"slug": document["slug"], "url": document.get("url")}
 
 
-def step_registry(board, state, package):
-    document = board.attach_document(f"{package['slug']} — project memory",
-                                     render_registry(package))
-    return {"slug": document["slug"], "url": document.get("url")}
-
-
 def step_features(board, state, package):
     """One card per feature of the open stage, idempotent by correlation id."""
     created = {}
@@ -431,7 +394,6 @@ def step_profile(board, state, package, published):
         "board": state.get("board_name", "linear"),
         "team_key": state.get("team_key", ""),
         "project_id": package["epic"],
-        "memory_doc": published["registry"]["slug"],
         "repositories": [state["repository"]["address"]],
     }
     if package.get("wiki"):
@@ -457,8 +419,7 @@ def step_schema_file(board, state, package, published):
     if state["repository"]["kind"] != "local":
         return {"skipped": "the repository is remote"}
     target = Path(state["repository"]["address"]) / "PROJECT.md"
-    target.write_text(render_schema_file(package, published["registry"]["slug"]),
-                      encoding="utf-8")
+    target.write_text(render_schema_file(package), encoding="utf-8")
     return {"path": str(target)}
 
 
@@ -512,15 +473,14 @@ def step_wiki(board, state, package, published):
 def step_verify(board, state, package, published):
     """Cross-links are checked, not assumed.
 
-    A published project whose profile points at a document that is not there
+    A published project whose cards point at an ADR that is not there
     looks finished and is not, and the discovery happens weeks later in another
     repository.
     """
     problems = []
-    for name in ("adr", "registry"):
-        slug = published[name]["slug"]
-        if not board.document_exists(slug):
-            problems.append(f"the {name} document '{slug}' does not resolve")
+    slug = published["adr"]["slug"]
+    if not board.document_exists(slug):
+        problems.append(f"the adr document '{slug}' does not resolve")
     for feature_id, identifier in published["features"].items():
         if not board.issue_exists(identifier):
             problems.append(f"card {identifier} for feature '{feature_id}' does not "
@@ -529,10 +489,6 @@ def step_verify(board, state, package, published):
         profile = Path(state["repository"]["address"]) / ".idp" / "profile.json"
         if not profile.exists():
             problems.append("the profile was not written into the repository")
-        else:
-            written = json.loads(profile.read_text(encoding="utf-8"))
-            if written.get("memory_doc") != published["registry"]["slug"]:
-                problems.append("the profile does not point at the registry document")
     for name, address in (published.get("wiki", {}).get("written") or {}).items():
         if not board.wiki_page_exists(address):
             problems.append(f"the wiki page '{name}' at {address} does not resolve")
@@ -545,8 +501,7 @@ def step_verify(board, state, package, published):
 # exists; the ADR links back by an address that is derived, not looked up.
 # `epic` comes after `wiki`, because the description points at both the ADR and
 # the wiki pages, and can only name what has already been written.
-STEPS = ("adr", "registry", "features", "wiki", "epic", "profile", "schema_file",
-         "verify")
+STEPS = ("adr", "features", "wiki", "epic", "profile", "schema_file", "verify")
 
 
 def run(board, state, package, dry_run=False, save=lambda: None):
