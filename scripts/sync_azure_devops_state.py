@@ -48,8 +48,9 @@ expired PAT, which `az login` cannot renew (IDE-130).
     iteration_path    optional, likewise
     work_item_types   optional map: {"feature": "Feature", "pbi": "Product Backlog Item"}
                       — what this process calls each kind. The default is Agile's
-    phases            optional: what carries each phase position on this board.
-                      A string is a status name, {"tag": "idp:..."} is a tag
+    phases            optional, `pbi` only: this process's names for a backlog
+                      item's ready / active / next states. A Feature's phases
+                      are the fixed `idp:` tags of `scripts/tags.py`
     state_types       optional: status name -> unstarted/started/completed/canceled
 
     Verification status
@@ -63,11 +64,16 @@ expired PAT, which `az login` cannot renew (IDE-130).
     id is stamped into `System.Tags`, which no sanitiser touches. Idempotency
     reads the tag.
 
-Exit codes are defined by board.py and shared by every adapter:
-    0  success
-    2  the board rejected us, or could not be reached — including an expired login
-    3  the request was malformed
-    6  configuration failure
+    The same holds for the fenced tag write (IDE-147): what status a failed
+    `test /rev` comes back with, and whether posting a comment bumps `/rev`,
+    are experiment 2 of that ADR and have not been measured. Both are read
+    defensively — see `CONFLICT_STATUSES` — and `tests/fakeboard.py` models
+    the second as a switch, so the claim is tested either way.
+
+Exit codes are named in `scripts/exit_codes.py` and shared by every adapter:
+UNAVAILABLE (the board rejected us or could not be reached — including an
+expired login), INVALID (the request was malformed or refused, nothing
+written), CONFIG (configuration failure). Every refusal ends with a FIX line.
 """
 
 import argparse
@@ -91,6 +97,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "docs" / "project-state.md"
 
 API_VERSION = "7.1"
+COMMENTS_API_VERSION = "7.1-preview.4"
 DEFAULT_TIMEOUT = 60
 
 # `workitemsbatch` takes at most 200 ids per request. Listing attachments over
@@ -122,10 +129,6 @@ def credential_source(profile):
     Named for a human who has to replace it. The precedence is board.py's, and
     only the last two rungs of it are reproduced — enough to name a file.
     """
-    agents = (profile or {}).get("agents") or {}
-    name = os.environ.get("IDP_AGENT", "").strip()
-    if name and name in agents:
-        return f"the token file for agent '{name}', {agents[name]}"
     if (profile or {}).get("token_path"):
         return f"the token file the profile names, {profile['token_path']}"
     return "AZURE_DEVOPS_EXT_PAT in the environment"
@@ -166,59 +169,18 @@ DEFAULT_WORK_ITEM_TYPES = {
 }
 
 # ---------------------------------------------------------------------------
-# The phase map: abstract state -> what this board uses to carry the position.
+# Phases. A Feature's phase is one of the fixed `idp:` tags in scripts/tags.py
+# (IDE-147): Azure DevOps states belong to the work item type, so no process
+# ships a state for a human gate, and a tag needs no administrator. What a tag
+# costs is stated in IDE-125: it does not move a card across a board column —
+# the Feature's own state moves only coarsely, New -> Active -> Done.
 #
-# **These are not the nine names this platform creates on Linear.** Azure DevOps
-# states belong to the work item type, so adding a state means an inherited
-# process and an administrator; `Ready for Design` is not a state any process
-# ships and never will be. Shipping Linear's names here made every phase command
-# fail on a fresh project until the profile overrode all of them, which is the
-# opposite of what a default is for (IDE-129).
-#
-# So the default carries each position with whatever a fresh project can already
-# reach:
-#
-#   * `New` opens the design phase — a Feature is created in it on Agile and
-#     Scrum, and on the custom processes derived from them. CMMI starts at
-#     `Proposed`, which is a one-line override.
-#   * The backlog item keeps real states, `New` / `Active` / `Resolved`. They are
-#     the Agile and CMMI lifecycle, they move the card across the board's
-#     columns, and this is the level where a board being readable by eye is worth
-#     most. A Scrum team maps its own — `Approved`, `Committed`, `Done`.
-#   * Everything else is carried by an `idp:` tag (IDE-125, IDE-126). The two
-#     human gates and `blocked` are positions no process ships at all, and the
-#     rest belong to a Feature whose states differ per process. A tag needs no
-#     administrator. What it costs is stated in IDE-125: a phase carried by a tag
-#     does not move a card across a board column.
-#
-# A team that *can* create real states maps them in the profile's `phases` table
-# and gets the columns back. That is the profile adapting a working default, not
-# repairing a broken one.
+# The backlog item keeps real states, because that is the level where a board
+# readable by eye is worth most. These are Agile's and CMMI's; a Scrum team maps
+# its own — `Approved`, `Committed`, `Done` — under `phases.pbi` in the profile.
 # ---------------------------------------------------------------------------
 
-PHASE_STATES = {
-    "design": {
-        "ready": "New",                              # where a fresh Feature already is
-        "active": {"tag": "idp:in-design"},
-        "next": {"tag": "idp:design-review"},        # a human gate: no process ships one
-    },
-    "planning": {
-        "ready": {"tag": "idp:ready-for-planning"},
-        "active": {"tag": "idp:in-planning"},
-        "next": {"tag": "idp:ready-for-development"},  # no gate: straight to the queue
-    },
-    "development": {
-        "ready": {"tag": "idp:ready-for-development"},
-        "active": {"tag": "idp:in-development"},
-        "next": {"tag": "idp:pr-review"},            # a human gate
-    },
-    "pbi": {
-        "ready": "New",
-        "active": "Active",
-        "next": "Resolved",
-        "blocked": {"tag": "idp:blocked-needs-design"},
-    },
-}
+DEFAULT_PBI_STATES = {"ready": "New", "active": "Active", "next": "Resolved"}
 
 # WIQL cannot return a state *category*, and the resolver only needs to tell
 # "finished" from "still moving". This table answers that; a process with its
@@ -263,27 +225,39 @@ UNSAFE_LITERAL = re.compile(r"['\"\n\r]")
 CID_PATTERN = re.compile(r'"?\bcid"?\s*:\s*"?([A-Za-z0-9_.:@+-]+)"?')
 
 TAG_FEATURE_PACKAGE = "sdlc:feature-package"
-TAG_READY_FOR_DESIGN = "sdlc:ready-for-design"
 TAG_CID_PREFIX = "sdlc:cid="
 
 
-def fail(code, message):
-    print(f"ERROR: {message}", file=sys.stderr)
+def _sibling(name, alias):
+    """A sibling script, loaded once and shared under one alias."""
+    existing = sys.modules.get(alias)
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(alias, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _sibling("exit_codes", "idp_exit_codes")
+
+
+def fail(code, message, fix=None):
+    print(f"ERROR: {EXIT.with_fix(message, fix)}", file=sys.stderr)
     sys.exit(code)
+
+
+def _tags_module():
+    """The board model and its single writer. Every tag change goes through it."""
+    return _sibling("tags", "idp_tags")
 
 
 def _sections_module():
     """`scripts/sections.py`, borrowed the same way `state.py` is."""
-    existing = sys.modules.get("idp_sections")
-    if existing is not None:
-        return existing
-    import importlib.util
-    path = Path(__file__).resolve().parent / "sections.py"
-    spec = importlib.util.spec_from_file_location("idp_sections", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["idp_sections"] = module
-    spec.loader.exec_module(module)
-    return module
+    return _sibling("sections", "idp_sections")
 
 
 def _state_module():
@@ -292,16 +266,7 @@ def _state_module():
     Two definitions of what `{"tag": ...}` means is one too many, and the copy
     is always the one that rots. The Linear adapter borrows the same module.
     """
-    existing = sys.modules.get("idp_state")
-    if existing is not None:
-        return existing
-    import importlib.util
-    path = Path(__file__).resolve().parent / "state.py"
-    spec = importlib.util.spec_from_file_location("idp_state", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["idp_state"] = module
-    spec.loader.exec_module(module)
-    return module
+    return _sibling("state", "idp_state")
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +305,34 @@ def build_ssl_context():
     for candidate in ("/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"):
         if os.path.exists(candidate):
             return ssl.create_default_context(cafile=candidate)
-    fail(6, "no CA bundle found; run the Install Certificates command for your Python")
+    fail(EXIT.CONFIG, "no CA bundle found; run the Install Certificates command for your Python",
+         fix="run 'Install Certificates.command' from your Python's folder, or install a CA bundle at /etc/ssl/cert.pem; never disable verification")
+
+
+# What a lost fence looks like. A JSON patch whose `test /rev` fails is rejected
+# rather than applied; which status Azure DevOps answers with is experiment 2 of
+# IDE-147 and not yet measured, so both precondition codes count, plus the
+# classic "changed by someone else" error in any 400. Anything else stays an
+# error: a conflict misread as an outage blocks a card, an outage misread as a
+# conflict would make a run walk away from work it actually holds.
+CONFLICT_STATUSES = (409, 412)
+CONFLICT_MARKERS = ("tf26071", "has been changed by someone else")
+
+
+class Conflict:
+    """The answer `rest_call(..., conflict=True)` gives when the fence held."""
+
+    def __bool__(self):
+        return False
+
+
+CONFLICT = Conflict()
 
 
 def rest_call(url, method="GET", body=None, content_type=None, authorization=None,
               timeout=DEFAULT_TIMEOUT, parse_json=True, auth_hint=None,
-              extra_headers=None, soft=False, want_etag=False):
+              extra_headers=None, soft=False, want_etag=False, conflict=False,
+              want_date=False):
     """One Azure DevOps REST request, with the CLI's exit codes.
 
     `body` is bytes and is sent unchanged — that is the whole point of this door.
@@ -357,6 +344,11 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
     requires the current version of a wiki page in `If-Match` before it will
     overwrite it, which is what makes the write idempotent rather than a
     conflict.
+
+    `conflict` turns a rejected `test` operation into the `CONFLICT` answer
+    instead of an exit: for the fenced tag write, losing a race is an ordinary
+    result. `want_date` returns `(payload, Date header)` — the server's clock,
+    which is the only clock a lease may be measured by.
     """
     headers = {"Accept": "application/json"}
     if authorization:
@@ -366,19 +358,21 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
     headers.update(extra_headers or {})
 
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    etag = None
+    etag = date = None
     try:
         with urllib.request.urlopen(request, timeout=timeout,
                                     context=build_ssl_context()) as response:
             payload = response.read()
             status = response.status
             etag = response.headers.get("ETag")
+            date = response.headers.get("Date")
             # Azure DevOps answers an unauthenticated request with 203 and a
             # sign-in page rather than a 401, which reads as success to anything
             # that only checks for an exception.
             if status == 203:
-                fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps answered 203 "
-                        f"(a sign-in page) for {method} {url}")
+                fail(EXIT.UNAVAILABLE, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps answered 203 "
+                                       f"(a sign-in page) for {method} {url}",
+                     fix="renew the credential the hint names, then retry")
     except urllib.error.HTTPError as exc:
         said = ""
         try:
@@ -386,17 +380,27 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
         except Exception:                                   # noqa: BLE001 - best effort
             pass
         if exc.code in (401, 203) or exc.code == 302:
-            fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps said {exc.code} "
-                    f"for {method} {url}")
+            fail(EXIT.UNAVAILABLE, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps said {exc.code} "
+                                   f"for {method} {url}",
+                 fix="renew the credential the hint names, then retry")
+        if conflict and (exc.code in CONFLICT_STATUSES or (
+                exc.code == 400 and any(m in said.casefold() for m in CONFLICT_MARKERS))):
+            return CONFLICT
         if exc.code == 404:
             if soft:
                 return (None, None) if want_etag else None
-            fail(3, f"{method} {url}: not found. {said}")
-        fail(2, f"{method} {url} failed with {exc.code}: {said}")
+            fail(EXIT.INVALID, f"{method} {url}: not found. {said}",
+                 fix="check the id or name in the request; nothing was written")
+        fail(EXIT.UNAVAILABLE, f"{method} {url} failed with {exc.code}: {said}",
+             fix="retry once the service answers; if it keeps failing, read the "
+                 "message above")
     except urllib.error.URLError as exc:
-        fail(2, f"could not reach {url}: {exc.reason}")
+        fail(EXIT.UNAVAILABLE, f"could not reach {url}: {exc.reason}",
+             fix="check the network and the organization URL in the profile, then retry")
 
     text = payload.decode("utf-8", "replace")
+    if want_date:
+        return (json.loads(text) if parse_json and text.strip() else text), date
     if not parse_json:
         return (text, etag) if want_etag else text
     if not text.strip():
@@ -407,9 +411,11 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
     except json.JSONDecodeError:
         # The sign-in page again, this time behind a 200.
         if "<html" in text[:200].casefold():
-            fail(2, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps returned a web page "
-                    f"where {method} {url} should have returned JSON")
-        fail(2, f"{method} {url} returned output that is not JSON: {text[:300]}")
+            fail(EXIT.UNAVAILABLE, f"{auth_hint or AUTH_HINT}\n\nAzure DevOps returned a web page "
+                                   f"where {method} {url} should have returned JSON",
+                 fix="renew the credential the hint names, then retry")
+        fail(EXIT.UNAVAILABLE, f"{method} {url} returned output that is not JSON: {text[:300]}",
+             fix="retry; if it persists, the endpoint or its API version changed")
 
 
 def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=False,
@@ -432,9 +438,10 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
     afternoon.
     """
     if shutil.which("az") is None:
-        fail(2, "the az CLI was not found on PATH. Install it and the azure-devops "
-                "extension (az extension add --name azure-devops), then sign in "
-                "with:  ! az login")
+        fail(EXIT.UNAVAILABLE, "the az CLI was not found on PATH. Install it and the azure-devops "
+                               "extension (az extension add --name azure-devops), then sign in "
+                               "with:  ! az login",
+             fix="install the az CLI and its azure-devops extension, then sign in with:  ! az login")
 
     env = dict(os.environ)
     if token:
@@ -446,8 +453,9 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
     except subprocess.TimeoutExpired:
         # Mirrors the Linear adapter's timeout clause, and for the same reason:
         # a write that timed out may still have been applied.
-        fail(2, f"az did not answer within {timeout}s. The request may or may not "
-                "have been applied; check the work item before retrying a write.")
+        fail(EXIT.UNAVAILABLE, f"az did not answer within {timeout}s. The request may or may not "
+                               "have been applied; check the work item before retrying a write.",
+             fix="look at the work item on the board; retry the write only if it did not land")
 
     if proc.returncode != 0:
         return _classify_failure(args, proc, soft=soft, auth_hint=auth_hint)
@@ -460,7 +468,8 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
     except json.JSONDecodeError:
         if soft:
             return None
-        fail(2, f"az returned output that is not JSON: {output[:300]}")
+        fail(EXIT.UNAVAILABLE, f"az returned output that is not JSON: {output[:300]}",
+             fix="retry; if it persists, upgrade the az CLI and its azure-devops extension")
 
 
 def _classify_failure(args, proc, soft=False, auth_hint=None):
@@ -469,12 +478,15 @@ def _classify_failure(args, proc, soft=False, auth_hint=None):
     lowered = said.casefold()
 
     if any(marker in lowered for marker in AUTH_MARKERS):
-        fail(2, f"{auth_hint or AUTH_HINT}\n\naz said:\n{said}")
+        fail(EXIT.UNAVAILABLE, f"{auth_hint or AUTH_HINT}\n\naz said:\n{said}",
+             fix="renew the credential the hint above names, then retry")
     if soft:
         return None
     if any(marker in lowered for marker in NOT_FOUND_MARKERS):
-        fail(3, f"az {' '.join(args[:3])}: {said}")
-    fail(2, f"az {' '.join(args[:3])} failed:\n{said}")
+        fail(EXIT.INVALID, f"az {' '.join(args[:3])}: {said}",
+             fix="check the id or name in the request; nothing was written")
+    fail(EXIT.UNAVAILABLE, f"az {' '.join(args[:3])} failed:\n{said}",
+         fix="read az's message above; retry once the cause is fixed")
 
 
 # ---------------------------------------------------------------------------
@@ -729,9 +741,10 @@ def organization_url(profile):
     """
     raw = str((profile or {}).get("workspace") or "").strip()
     if not raw:
-        fail(6, "the profile has no 'workspace': for Azure DevOps that is the "
-                "organization, either its name ('contoso') or its URL "
-                "('https://dev.azure.com/contoso'). Add it, then re-run.")
+        fail(EXIT.CONFIG, "the profile has no 'workspace': for Azure DevOps that is the "
+                          "organization, either its name ('contoso') or its URL "
+                          "('https://dev.azure.com/contoso'). Add it, then re-run.",
+             fix="add 'workspace' to .idp/profile.json — the organization name or URL — then re-run")
     if raw.startswith("http://") or raw.startswith("https://"):
         return raw.rstrip("/")
     return "https://dev.azure.com/" + raw.strip("/")
@@ -741,7 +754,7 @@ def organization_url(profile):
 # Adapter interface. Every board adapter implements these.
 # ---------------------------------------------------------------------------
 
-class Board:
+class Board(_tags_module().PhaseMixin):
     """A connected Azure DevOps organization, project and team."""
 
     def __init__(self, token, profile):
@@ -769,8 +782,9 @@ class Board:
     def _project(self, override=None):
         project = override or self.project
         if not project:
-            fail(6, "the profile has no 'project_id': for Azure DevOps that is the "
-                    "project name. Add it, then re-run.")
+            fail(EXIT.CONFIG, "the profile has no 'project_id': for Azure DevOps that is the "
+                              "project name. Add it, then re-run.",
+                 fix="add 'project_id' to .idp/profile.json — the project name — then re-run")
         return project
 
     def _az(self, args, **kwargs):
@@ -792,16 +806,17 @@ class Board:
                                  "--resource", ADO_RESOURCE_ID, "-o", "json"]) or {}
                 bearer = data.get("accessToken")
                 if not bearer:
-                    fail(2, f"{self.auth_hint or AUTH_HINT}\n\n`az account "
-                            "get-access-token` returned no token")
+                    fail(EXIT.UNAVAILABLE, f"{self.auth_hint or AUTH_HINT}\n\n`az account "
+                                           "get-access-token` returned no token",
+                         fix="sign in again with:  ! az login")
                 self._authorization_header = f"Bearer {bearer}"
         return self._authorization_header
 
     def _rest(self, path, method="GET", body=None, content_type=None, query=None,
-              project=None, parse_json=True, **kwargs):
+              project=None, parse_json=True, api_version=API_VERSION, **kwargs):
         """One REST call, addressed the way the CLI addresses the same thing."""
         parameters = dict(query or {})
-        parameters["api-version"] = API_VERSION
+        parameters["api-version"] = api_version
         # Project-scoped, like every call this adapter makes. The project name
         # carries spaces on a real board, so it is quoted rather than trusted.
         scope = urllib.parse.quote(self._project(project))
@@ -925,7 +940,8 @@ class Board:
         data = self._az(["boards", "work-item", "show", "--id", str(work_item_id),
                          "--expand", expand, "--org", self.organization, "-o", "json"])
         if not data:
-            fail(3, f"no work item {identifier}")
+            fail(EXIT.INVALID, f"no work item {identifier}",
+                 fix="check the work item id; `board.py list` shows what exists")
         return data
 
     def get_issue(self, identifier):
@@ -1014,31 +1030,15 @@ class Board:
         """The machine contract Azure DevOps carries in System.Tags.
 
         Derived, never passed in: a caller that has to remember to tag is a
-        caller that will forget on the one path nobody tested.
+        caller that will forget on the one path nobody tested. The phase tag is
+        not among them: a card enters a phase through the transition table in
+        scripts/tags.py, as one more fenced write, and nowhere else.
         """
-        state = _state_module()
         tags = []
         header_type = _header_type(body)
         kind = header_type or ("pbi" if parent else "feature")
         if kind == "feature":
             tags.append(TAG_FEATURE_PACKAGE)
-
-        # A card is only marked as opening design when design is a phase this
-        # card can be in. Before IDE-144 the status was compared and nothing
-        # else, so a PBI on the `small-feature` route — which has no design
-        # phase at all — was created carrying `sdlc:ready-for-design`, because
-        # the profile happened to map `design.ready` onto the status every new
-        # card starts in. The kind and the route were both known and neither was
-        # consulted.
-        route = _header_route(body) or state.DEFAULT_ROUTE
-        design_applies = (kind not in ("pbi", "pbi-agent")
-                          and "design" in state.ROUTES.get(route, ()))
-        if design_applies:
-            opens_design = state.as_marker(
-                self.phase_states().get("design", {}).get("ready")) or {}
-            if status and status.casefold() == str(
-                    opens_design.get("status") or "").casefold():
-                tags.append(TAG_READY_FOR_DESIGN)
 
         cid = read_cid(body)
         if cid:
@@ -1079,7 +1079,8 @@ class Board:
 
         created = self._az(args)
         if not created or not created.get("id"):
-            fail(3, "Azure DevOps refused to create the work item")
+            fail(EXIT.INVALID, "Azure DevOps refused to create the work item",
+                 fix="check the work item type and fields the profile names (`work_item_types`, `area_path`), then retry")
         work_item_id = str(created["id"])
 
         if parent:
@@ -1092,9 +1093,11 @@ class Board:
             try:
                 self.update_issue(work_item_id, status=status)
             except SystemExit as exc:
-                fail(exc.code if isinstance(exc.code, int) else 3,
+                fail(exc.code if isinstance(exc.code, int) else EXIT.INVALID,
                      f"work item {work_item_id} was created but could not be moved to "
-                     f"'{status}'. It exists: {self.web_url(work_item_id, project)}")
+                     f"'{status}'. It exists: {self.web_url(work_item_id, project)}",
+                     fix=f"move work item {work_item_id} to '{status}' by hand or with "
+                         "`board.py update`; do not re-run the create, it would duplicate it")
 
         return {
             "identifier": work_item_id,
@@ -1135,7 +1138,8 @@ class Board:
             args.extend(f"{key}={value}" for key, value in fields.items())
 
         if not (title or status or fields or parent):
-            fail(3, "nothing to update")
+            fail(EXIT.INVALID, "nothing to update",
+                 fix="pass at least one of --title, --status, --body or --parent")
 
         updated = None
         if title or status or fields:
@@ -1169,9 +1173,10 @@ class Board:
         if not host:
             host = self.profile.get("epic_id")
             if not host:
-                fail(6, "the profile has no 'epic_id'. Azure DevOps has no project-level "
-                        "documents; the epic carries them as attachments (IDE-76). Add "
-                        "the epic's work item id, then re-run.")
+                fail(EXIT.CONFIG, "the profile has no 'epic_id'. Azure DevOps has no project-level "
+                                  "documents; the epic carries them as attachments (IDE-76). Add "
+                                  "the epic's work item id, then re-run.",
+                     fix="add 'epic_id' — the work item id of the project's epic — to .idp/profile.json, then re-run")
 
         work_item_id = str(_as_id(host))
         project = self._project(project_id)
@@ -1187,7 +1192,8 @@ class Board:
                               query={"fileName": name}, project=project) or {}
         attachment_url = uploaded.get("url")
         if not attachment_url:
-            fail(2, f"Azure DevOps accepted no attachment for '{title}'")
+            fail(EXIT.UNAVAILABLE, f"Azure DevOps accepted no attachment for '{title}'",
+                 fix="retry the upload; if it keeps failing, check the attachment size and the token's Work Items (Read & Write) scope")
 
         patch = json.dumps([{
             "op": "add",
@@ -1303,7 +1309,8 @@ class Board:
                              query={"download": "true"}, project=project,
                              parse_json=False)
         if not content:
-            fail(3, f"no attachment with id '{slug}'")
+            fail(EXIT.INVALID, f"no attachment with id '{slug}'",
+                 fix="check the attachment id; `board.py doc --list` shows what is attached")
 
         title = slug
         epic = self.profile.get("epic_id")
@@ -1326,8 +1333,9 @@ class Board:
         identifier, _ = _wiki_parts(address)
         found = self._rest(f"wiki/wikis/{urllib.parse.quote(identifier)}", soft=True)
         if not found:
-            fail(6, f"no wiki named {identifier!r} in project "
-                    f"{self._project()!r}. `az devops wiki list` shows what there is.")
+            fail(EXIT.CONFIG, f"no wiki named {identifier!r} in project "
+                              f"{self._project()!r}. `az devops wiki list` shows what there is.",
+                 fix="run `az devops wiki list` and put a wiki that exists into --wiki or the profile")
         return {"identifier": found.get("name") or identifier,
                 "url": found.get("remoteUrl") or found.get("url")}
 
@@ -1358,159 +1366,94 @@ class Board:
                 "created": existing is None,
                 "url": page.get("remoteUrl") or page.get("url")}
 
-    # -- phase transitions --------------------------------------------------
+    # -- the two tag primitives, and the comments a lease is read from -------
+    #
+    # Phases, claims, hand-offs and leases are board-neutral and live in
+    # scripts/tags.py and scripts/lease.py, which this class inherits through
+    # `PhaseMixin`. What only this board knows is how to read a card with its
+    # revision and how to write one fenced on it.
 
-    def phase_states(self):
-        """This board's phase map, after the profile has had its say.
+    DEFAULT_PBI_STATES = DEFAULT_PBI_STATES
 
-        Identical in behaviour to the Linear adapter, and duplicated rather
-        than extracted on purpose while both adapters are still settling: the
-        shared piece is the *contract*, and the contract is in board.py.
+    def read_card(self, identifier):
+        """The card as the tag writer decides on it, revision included."""
+        item = self._show(identifier, expand="relations")
+        fields = item.get("fields") or {}
+        work_item_id = str(item.get("id") or _as_id(identifier))
+        return {
+            "identifier": work_item_id,
+            "rev": item.get("rev"),
+            "tags": _tags_of(fields),
+            "status": fields.get("System.State") or "",
+            "changed_at": fields.get("System.ChangedDate"),
+            "kind": self.kind_of_type(fields.get("System.WorkItemType")),
+            "parent": _parent_of(item),
+        }
+
+    def write_card(self, identifier, rev, tags, status=None):
+        """The fenced write: one JSON patch, `test /rev` first, then the fields.
+
+        `op: replace`, over REST, and not `az boards work-item update --fields`.
+        That command sends `add`, and **Azure DevOps does not replace
+        `System.Tags` on an add** — it merges, so the old phase tag survived
+        every swap and the card carried two (IDE-136). The `test` operation is
+        what makes this a claim rather than a hope: if the revision moved since
+        `rev` was read, the service rejects the whole patch and nothing lands.
         """
-        configured = (self.profile or {}).get("phases")
-        if not configured:
-            return PHASE_STATES
-
-        merged = {phase: dict(positions) for phase, positions in PHASE_STATES.items()}
-        for phase, positions in configured.items():
-            slot = merged.setdefault(phase, {})
-            for position, name in positions.items():
-                if name is None:
-                    slot.pop(position, None)
-                else:
-                    slot[position] = name
-        return merged
-
-    def phase_marker(self, phase, kind):
-        """What carries this position here: a state, or a tag.
-
-        Azure DevOps is where this matters most. Its states belong to the work
-        item type, so adding the nine means an inherited process and an
-        administrator; tags need neither, which is the whole reason a position
-        may be carried by one (IDE-125).
-        """
-        return _state_module().as_marker(self.phase_status(phase, kind))
-
-    def position_of(self, issue, phase, kind):
-        """Is the work item in this position right now?
-
-        A carried tag decides on its own and the state is not consulted, which
-        is what the resolver does. If the two disagreed, a claim would start
-        design on work somebody had already finished.
-        """
-        marker = self.phase_marker(phase, kind)
-        carried = _state_module().phase_tags(issue["labels"])
-        if len(carried) > 1:
-            fail(3, f"{issue['identifier']} carries {len(carried)} phase tags: "
-                    f"{', '.join(sorted(carried))}. One work item is in one position; "
-                    "pick which, then re-run. Nothing was changed.")
-        if carried:
-            return marker.get("tag") == carried[0]
-        return bool(marker.get("status")) and \
-            issue["status"].casefold() == marker["status"].casefold()
-
-    def describe_marker(self, marker):
-        if "tag" in marker:
-            return f"tag '{marker['tag']}'"
-        return f"'{marker['status']}'"
-
-    def apply_marker(self, identifier, marker):
-        if "tag" in marker:
-            return self.set_phase_tag(identifier, marker["tag"])
-        return self.update_issue(identifier, status=marker["status"])
-
-    def set_phase_tag(self, identifier, tag):
-        """Move the work item to one phase position, in one revision.
-
-        `System.Tags` is a single semicolon-separated field, so the swap is a
-        read-modify-write of it — and it must be **one** write. Two would leave
-        a window in which the item has no position and a second agent would read
-        it as unclaimed.
-
-        Everything outside the `idp:` namespace survives untouched. The
-        correlation id lives in this same field and idempotent publication finds
-        work items by it; losing it here would break a different subsystem
-        entirely.
-        """
-        state = _state_module()
-        issue = self.get_issue(identifier)
-        keep = [name for name in issue["labels"] if not name.startswith(state.TAG_PREFIX)]
-        wanted = keep + ([tag] if tag else [])
-
+        if rev is None:
+            fail(EXIT.UNAVAILABLE, f"work item {identifier} came back without a revision, so "
+                                   "a fenced write is impossible",
+                 fix="retry; if the board keeps answering without `rev`, the az CLI is "
+                     "too old — upgrade it")
         work_item_id = str(_as_id(identifier))
-        # `op: replace`, over REST, and not `az boards work-item update --fields`.
-        # That command sends `add`, and **Azure DevOps does not replace
-        # `System.Tags` on an add** — it merges. So the old phase tag survived
-        # every swap, the work item ended up carrying two, and `locate` raises on
-        # two by design: the card was wedged and only a human editing tags in the
-        # web UI could free it. Measured on the live board; `add` and the `az`
-        # command both left the field unchanged, `replace` cleared it (IDE-136).
-        patch = json.dumps([{
-            "op": "replace",
-            "path": "/fields/System.Tags",
-            "value": "; ".join(wanted),
-        }]).encode("utf-8")
+        patch = [
+            {"op": "test", "path": "/rev", "value": rev},
+            {"op": "replace", "path": "/fields/System.Tags", "value": "; ".join(tags)},
+        ]
+        if status:
+            patch.append({"op": "replace", "path": "/fields/System.State", "value": status})
         updated = self._rest(f"wit/workitems/{work_item_id}", method="PATCH",
-                             body=patch,
-                             content_type="application/json-patch+json") or {}
+                             body=json.dumps(patch).encode("utf-8"),
+                             content_type="application/json-patch+json", conflict=True)
+        if updated is CONFLICT:
+            return {"conflict": True}
+        updated = updated or {}
         fields = updated.get("fields") or {}
-        return {"identifier": work_item_id,
-                "status": fields.get("System.State"),
-                "labels": _tags_of(fields) or wanted}
+        return {"conflict": False, "rev": updated.get("rev"),
+                "tags": _tags_of(fields) if "System.Tags" in fields else list(tags),
+                "status": fields.get("System.State") or status}
 
-    def phase_status(self, phase, kind):
-        """Translate an abstract state into whatever this board calls it."""
-        states_by_phase = self.phase_states()
-        if phase not in states_by_phase:
-            known = ", ".join(sorted(states_by_phase))
-            fail(3, f"unknown phase '{phase}'. Known: {known}")
-        states = states_by_phase[phase]
-        if kind not in states:
-            if PHASE_STATES.get(phase, {}).get(kind):
-                fail(3, f"this board has no status for '{phase}' · '{kind}': the profile "
-                        f"sets it to null. Carry it with a tag instead — "
-                        '{"tag": "idp:..."} — or record that phase as a comment.')
-            known = ", ".join(sorted(states)) or "none"
-            fail(3, f"phase '{phase}' has no '{kind}' state. It has: {known}")
-        return states[kind]
+    def list_comments(self, identifier):
+        """Every comment on the work item, oldest first, with the server's timestamps.
 
-    def start_phase(self, identifier, phase):
-        """Claim the work item for a phase, or refuse and say why."""
-        issue = self.get_issue(identifier)
-        ready = self.phase_marker(phase, "ready")
-        active = self.phase_marker(phase, "active")
+        The comments API is still a preview on 7.1, so it is asked for by name.
+        A lease is read from these timestamps and never from the local clock.
+        """
+        work_item_id = str(_as_id(identifier))
+        found, token = [], None
+        while True:
+            query = {"$top": "200", "order": "asc"}
+            if token:
+                query["continuationToken"] = token
+            page = self._rest(f"wit/workItems/{work_item_id}/comments", query=query,
+                              api_version=COMMENTS_API_VERSION) or {}
+            for comment in page.get("comments") or []:
+                found.append({"id": str(comment.get("id")),
+                              "body": html_to_text(comment.get("text") or ""),
+                              "created_at": comment.get("createdDate")})
+            token = page.get("continuationToken")
+            if not token:
+                break
+        return sorted(found, key=lambda c: c.get("created_at") or "")
 
-        if self.position_of(issue, phase, "active"):
-            print(f"{identifier} is already in {self.describe_marker(active)}",
-                  file=sys.stderr)
-            return {"identifier": issue["identifier"], "status": issue["status"],
-                    "changed": False}
-
-        if not self.position_of(issue, phase, "ready"):
-            fail(3, f"{identifier} is in '{issue['status']}'"
-                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
-                    + f", but phase '{phase}' starts from "
-                      f"{self.describe_marker(ready)}. Nothing was changed.")
-
-        result = self.apply_marker(identifier, active)
-        result["changed"] = True
-        return result
-
-    def finish_phase(self, identifier, phase, kind="next"):
-        """Hand the work item on: from `active` to whatever comes next."""
-        issue = self.get_issue(identifier)
-        active = self.phase_marker(phase, "active")
-        target = self.phase_marker(phase, kind)
-
-        if not self.position_of(issue, phase, "active"):
-            fail(3, f"{identifier} is in '{issue['status']}'"
-                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
-                    + f", but phase '{phase}' finishes from "
-                      f"{self.describe_marker(active)}. Nothing was changed.")
-
-        result = self.apply_marker(identifier, target)
-        result["changed"] = True
-        return result
+    def server_now(self):
+        """The service's own clock, from the `Date` header of a cheap request."""
+        _, date = self._rest("wit/workitemtypes", query={"$top": "1"}, want_date=True)
+        if not date:
+            fail(EXIT.UNAVAILABLE, "Azure DevOps answered without a Date header, so there is "
+                                   "no server clock to measure a lease by",
+                 fix="retry; never fall back to the local clock")
+        return date
 
     # -- the mirror ---------------------------------------------------------
 
@@ -1547,15 +1490,17 @@ def _as_id(identifier):
     text = str(identifier).strip()
     if text.isdigit():
         return int(text)
-    fail(3, f"'{identifier}' is not an Azure DevOps work item id. Work items are "
-            "numbered; pass the number, not a board key.")
+    fail(EXIT.INVALID, f"'{identifier}' is not an Azure DevOps work item id. Work items are "
+                       "numbered; pass the number, not a board key.",
+         fix="pass the work item number, e.g. 4532")
 
 
 def _literal(value):
     text = str(value)
     if UNSAFE_LITERAL.search(text):
-        fail(3, f"'{value}' cannot go into a WIQL literal; it contains characters "
-                "that would change what the query means")
+        fail(EXIT.INVALID, f"'{value}' cannot go into a WIQL literal; it contains characters "
+                           "that would change what the query means",
+             fix="remove quotes and line breaks from the value")
     return "'" + text + "'"
 
 
@@ -1584,12 +1529,6 @@ def _header_type(body):
     return match.group(1).casefold() if match else None
 
 
-def _header_route(body):
-    """`route:` out of the same header. Which phases this card passes through."""
-    match = re.search(r'"?\broute"?\s*:\s*"?([A-Za-z-]+)"?', body or "")
-    return match.group(1).casefold() if match else None
-
-
 def _wiki_parts(address, title=None):
     """Split a wiki address into the wiki and the page path inside it.
 
@@ -1599,7 +1538,8 @@ def _wiki_parts(address, title=None):
     """
     raw = str(address or "").strip().rstrip("/")
     if not raw:
-        fail(3, "a wiki page needs an address; none was given")
+        fail(EXIT.INVALID, "a wiki page needs an address; none was given",
+             fix="pass the wiki address as <wiki>/<page path>")
 
     marker = "/_wiki/wikis/"
     if marker in raw:
@@ -1611,7 +1551,8 @@ def _wiki_parts(address, title=None):
     if not path:
         path = str(title or "").strip()
     if not path:
-        fail(3, f"the wiki address {address!r} names a wiki but no page")
+        fail(EXIT.INVALID, f"the wiki address {address!r} names a wiki but no page",
+             fix="add the page path after the wiki name: <wiki>/<page path>")
     return identifier, "/" + path.strip("/")
 
 

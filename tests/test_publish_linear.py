@@ -125,11 +125,11 @@ class PublishTests(ScriptTestCase):
         # with no status and then tagged — one extra write, because a work item
         # cannot be created already carrying a tag (IDE-129).
         board = StubBoard()
-        board.phase_marker = lambda phase, kind: {"tag": "idp:ready-for-design"}
+        board.phase_marker = lambda phase, kind: {"tag": "idp:design"}
         board, _ = self.publish(approved_package(), board=board)
 
         self.assertIsNone(board.created[0]["status"])
-        self.assertEqual(board.updated[-1]["marker"], {"tag": "idp:ready-for-design"})
+        self.assertEqual(board.updated[-1]["marker"], {"tag": "idp:design"})
 
     def test_writes_the_correlation_id_into_the_card_body(self):
         board, _ = self.publish(approved_package())

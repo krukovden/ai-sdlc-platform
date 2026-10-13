@@ -120,6 +120,7 @@ def issue_node(identifier="IDE-90", status="Ready for Design", status_type="unst
         "parent": None,
         "project": {"id": "project-uuid", "name": "AI SDLC Platform"},
         "labels": {"nodes": []},
+        "updatedAt": "2026-10-12T00:00:00.000Z",
     }
 
 
@@ -132,7 +133,13 @@ class FakeLinear:
 
     def __init__(self, issue):
         self.issue = issue
+        self.issue.setdefault("updatedAt", "2026-10-12T00:00:00.000Z")
         self.calls = []
+        self.comments = []
+        self.writes = 0
+        # Called once, between the writer's fence re-read and its mutation's
+        # arrival — the window Linear cannot close. A test puts a rival write here.
+        self.before_fence = None
         # Labels a team already has. Anything else is created on demand, which
         # is the asymmetry that lets a tag carry a phase where a status cannot:
         # labels are API-creatable, statuses are not.
@@ -141,6 +148,17 @@ class FakeLinear:
     @property
     def mutations(self):
         return [doc for doc, _ in self.calls if "mutation" in doc]
+
+    def bump(self):
+        """Every write moves `updatedAt`, which is all the fence has to go on."""
+        self.writes += 1
+        self.issue["updatedAt"] = f"2026-10-12T00:00:{self.writes:02d}.000Z"
+
+    def set_labels(self, *names):
+        self.issue["labels"] = {"nodes": [{"name": n} for n in names]}
+
+    def label_names(self):
+        return [l["name"] for l in self.issue["labels"]["nodes"]]
 
     def state_name(self, state_id):
         for state in TEAM["states"]["nodes"]:
@@ -162,7 +180,23 @@ class FakeLinear:
             created = {"id": f"lbl-{len(self.labels)}", "name": variables["input"]["name"]}
             self.labels.append(created)
             return {"issueLabelCreate": {"success": True, "issueLabel": created}}
+        if "query Fence" in document:
+            if self.before_fence is not None:
+                rival, self.before_fence = self.before_fence, None
+                rival()
+            return {"issue": {"id": self.issue["id"],
+                              "updatedAt": self.issue["updatedAt"]}}
+        if "query Comments" in document:
+            return {"issue": {"comments": {"nodes": list(self.comments)}}}
+        if "query Clock" in document:
+            return {"viewer": {"id": "me"}}
+        if "commentCreate" in document:
+            self.comments.append({"id": f"c{len(self.comments) + 1}",
+                                  "body": variables["input"]["body"],
+                                  "createdAt": "2026-10-12T00:00:00.000Z"})
+            return {"commentCreate": {"success": True, "comment": {"url": "https://c"}}}
         if "issueUpdate" in document:
+            self.bump()
             new_state = variables["input"].get("stateId")
             if new_state:
                 self.issue["state"] = {"name": self.state_name(new_state), "type": "started"}
@@ -172,6 +206,7 @@ class FakeLinear:
                                                   for i in label_ids]}
             return {"issueUpdate": {"success": True, "issue": {
                 "identifier": self.issue["identifier"],
+                "updatedAt": self.issue["updatedAt"],
                 "state": {"name": self.issue["state"]["name"]},
                 "labels": self.issue.get("labels", {"nodes": []}),
             }}}

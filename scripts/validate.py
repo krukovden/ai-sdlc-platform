@@ -186,8 +186,25 @@ class Violation(namedtuple("Violation", "layer rule message line")):
         return payload
 
 
-def fail(code, message):
-    print(f"ERROR: {message}", file=sys.stderr)
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / "exit_codes.py"
+    spec = importlib.util.spec_from_file_location("idp_exit_codes", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
+def fail(code, message, fix=None):
+    print(f"ERROR: {EXIT.with_fix(message, fix)}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -1029,7 +1046,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.stage and args.status:
-        fail(3, "--stage and --status say the same thing; pass one")
+        fail(EXIT.INVALID, "--stage and --status say the same thing; pass one",
+             fix="pass either --stage or --status, not both")
 
     collected = []
     try:
@@ -1040,9 +1058,11 @@ def main(argv=None):
                 language=args.language)
             collected.append((path, violations))
     except ConfigError as exc:
-        fail(6, str(exc))
+        fail(EXIT.CONFIG, str(exc),
+             fix="restore the schema or lint config the message names, from git")
     except RequestError as exc:
-        fail(3, str(exc))
+        fail(EXIT.INVALID, str(exc),
+             fix="correct the request as the message says")
 
     if args.json:
         payload = [violation.as_dict(path)
@@ -1053,7 +1073,7 @@ def main(argv=None):
             report(path, violations)
 
     if any(violations for _, violations in collected):
-        sys.exit(3)
+        sys.exit(EXIT.INVALID)
     return 0
 
 

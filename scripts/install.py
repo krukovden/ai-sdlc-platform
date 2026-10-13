@@ -33,8 +33,25 @@ VERSION = "0.1.0"
 STANDARD = "1.0"          # the authoring standard this build implements (IDE-78)
 
 
-def fail(code, message):
-    print(f"ERROR: {message}", file=sys.stderr)
+def _exit_codes():
+    """`scripts/exit_codes.py`: every exit code, named. No literal lives elsewhere."""
+    existing = sys.modules.get("idp_exit_codes")
+    if existing is not None:
+        return existing
+    import importlib.util
+    path = Path(__file__).resolve().parent / "exit_codes.py"
+    spec = importlib.util.spec_from_file_location("idp_exit_codes", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_exit_codes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EXIT = _exit_codes()
+
+
+def fail(code, message, fix=None):
+    print(f"ERROR: {EXIT.with_fix(message, fix)}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -54,7 +71,8 @@ def plan(target, force):
     """Decide before touching anything, so --dry-run and the real run agree."""
     steps = []
     if not SOURCE.exists():
-        fail(6, f"no {SOURCE} — run this from the platform checkout")
+        fail(EXIT.CONFIG, f"no {SOURCE} — run this from the platform checkout",
+             fix="run install.py from a full checkout of the platform repository")
 
     if target.exists() or target.is_symlink():
         existing = current_target(target)
@@ -65,12 +83,14 @@ def plan(target, force):
             # A real file, not a link. Overwriting someone's own script without
             # being told to is not an upgrade, it is data loss.
             if not force:
-                fail(3, f"{target} exists and is not a symlink. Move it, or pass --force.")
+                fail(EXIT.INVALID, f"{target} exists and is not a symlink. Move it, or pass --force.",
+                     fix="move the file away, or pass --force to replace it")
             steps.append(f"replace the regular file {target}")
         else:
             if not force:
-                fail(3, f"{target} already points at {existing}, not at this checkout. "
-                        "Pass --force to repoint it.")
+                fail(EXIT.INVALID, f"{target} already points at {existing}, not at this checkout. "
+                                   "Pass --force to repoint it.",
+                     fix="pass --force to repoint the link at this checkout")
             steps.append(f"repoint {target} from {existing}")
     else:
         steps.append(f"create {target.parent} if it is missing")
@@ -103,10 +123,12 @@ def uninstall(target, dry_run):
         return
     existing = current_target(target)
     if existing is not None and existing != SOURCE:
-        fail(3, f"{target} points at {existing}, not at this checkout. "
-                "Refusing to remove someone else's link.")
+        fail(EXIT.INVALID, f"{target} points at {existing}, not at this checkout. "
+                           "Refusing to remove someone else's link.",
+             fix="remove that link by hand if it is really yours")
     if existing is None:
-        fail(3, f"{target} is a regular file, not our link. Refusing to remove it.")
+        fail(EXIT.INVALID, f"{target} is a regular file, not our link. Refusing to remove it.",
+             fix="remove the file by hand if it is really yours")
 
     print(("would remove " if dry_run else "removed ") + str(target))
     if not dry_run:

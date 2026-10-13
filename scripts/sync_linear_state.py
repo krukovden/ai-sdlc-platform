@@ -19,11 +19,20 @@ grew the rest:
 
     python3 scripts/sync_linear_state.py [--project <id>] [--out <path>] [--stdout]
 
-Exit codes are defined by board.py and shared by every adapter:
-    0  success
-    2  the board rejected us, or could not be reached
-    3  the request was malformed
-    6  configuration failure
+Exit codes are named in `scripts/exit_codes.py` and shared by every adapter:
+UNAVAILABLE (the board rejected us or could not be reached), INVALID (the
+request was malformed or refused, nothing written), CONFIG (configuration
+failure). Every refusal ends with a FIX line.
+
+Claims on this board are fenced as tightly as Linear allows, which is not
+tightly enough to be airtight. Linear has no revision to test on a write, so
+the tag writer re-reads the card's `updatedAt` immediately before the mutation
+and refuses on a mismatch. **Two claimers that both pass that re-read in the
+milliseconds before either mutation lands both write, and the last one wins
+silently.** No conditional update exists in Linear's API to close the window.
+The race is stated in `scripts/tags.py` and in CLAUDE.md's Known gaps; where
+parallel claimers matter, the board is Azure DevOps, whose `test /rev` closes
+it.
 """
 
 import argparse
@@ -52,64 +61,46 @@ STATE_ORDER = {
 }
 
 # ---------------------------------------------------------------------------
-# The phase map: abstract state -> the status name this board uses.
+# Phases. A Feature's phase is one of the fixed `idp:` tags in scripts/tags.py,
+# carried here as a label, exactly as on every other board (IDE-147). Labels are
+# creatable through the API, which is what lets a tag carry a phase at all.
 #
-# Phases and the three abstract states are platform-level and identical on
-# every board. Only the right-hand column is Linear's, which is precisely why
-# it lives in the adapter and not in board.py.
-#
-# `ready`  nobody has taken it, an agent may claim it
-# `active` claimed, work in progress
-# `next`   where the card goes when the phase is done — for some phases that
-#          is a human gate, for others the next phase's queue
+# A sub-issue keeps real statuses: that is where a board readable by eye is
+# worth most. A foreign team maps its own under `phases.pbi` in the profile.
 # ---------------------------------------------------------------------------
 
-PHASE_STATES = {
-    "design": {
-        "ready": "Ready for Design",
-        "active": "In Design",
-        "next": "Design Review",          # a human gate
-    },
-    "planning": {
-        "ready": "Ready for Planning",
-        "active": "In Planning",
-        "next": "Ready for Development",  # no gate: straight to the next queue
-    },
-    "development": {
-        "ready": "Ready for Development",
-        "active": "In Development",
-        "next": "PR Review",              # a human gate
-    },
-    "pbi": {
-        "ready": "Todo",
-        "active": "In Progress",
-        "next": "In Review",
-        "blocked": "Blocked - Needs Design",
-    },
-}
+DEFAULT_PBI_STATES = {"ready": "Todo", "active": "In Progress", "next": "In Review"}
+
+# The Date header of the most recent response: the server's clock, which is the
+# only clock a lease may be measured by.
+LAST_SERVER_DATE = None
 
 
-def fail(code, message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(code)
-
-
-def _state_module():
-    """The phase-map vocabulary lives with the resolver; borrow it, do not copy.
-
-    Two definitions of what `{"tag": ...}` means is one definition too many,
-    and the one that rots is always the copy.
-    """
-    existing = sys.modules.get("idp_state")
+def _sibling(name, alias):
+    """A sibling script, loaded once and shared under one alias."""
+    existing = sys.modules.get(alias)
     if existing is not None:
         return existing
     import importlib.util
-    path = Path(__file__).resolve().parent / "state.py"
-    spec = importlib.util.spec_from_file_location("idp_state", path)
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(alias, path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["idp_state"] = module
+    sys.modules[alias] = module
     spec.loader.exec_module(module)
     return module
+
+
+EXIT = _sibling("exit_codes", "idp_exit_codes")
+
+
+def fail(code, message, fix=None):
+    print(f"ERROR: {EXIT.with_fix(message, fix)}", file=sys.stderr)
+    sys.exit(code)
+
+
+def _tags_module():
+    """The board model and its single writer. Every tag change goes through it."""
+    return _sibling("tags", "idp_tags")
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +120,12 @@ def build_ssl_context():
     for candidate in ("/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"):
         if os.path.exists(candidate):
             return ssl.create_default_context(cafile=candidate)
-    fail(6, "no CA bundle found; run the Install Certificates command for your Python")
+    fail(EXIT.CONFIG, "no CA bundle found; run the Install Certificates command for your Python",
+         fix="run 'Install Certificates.command' from your Python's folder, or install a CA bundle at /etc/ssl/cert.pem; never disable verification")
 
 
 def query(token, document, variables=None):
+    global LAST_SERVER_DATE
     payload = json.dumps({"query": document, "variables": variables or {}}).encode()
     request = urllib.request.Request(
         API_URL,
@@ -141,23 +134,29 @@ def query(token, document, variables=None):
     )
     try:
         with urllib.request.urlopen(request, timeout=30, context=build_ssl_context()) as response:
+            LAST_SERVER_DATE = response.headers.get("Date") or LAST_SERVER_DATE
             body = json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            fail(2, "Linear rejected the API key. Reissue it in Settings > Security & access.")
-        fail(2, f"Linear returned HTTP {exc.code}: {exc.read().decode()[:300]}")
+            fail(EXIT.UNAVAILABLE, "Linear rejected the API key. Reissue it in Settings > Security & access.",
+                 fix="issue a new key in Linear (Settings > Security & access) and write it to the token file the profile names, mode 0600")
+        fail(EXIT.UNAVAILABLE, f"Linear returned HTTP {exc.code}: {exc.read().decode()[:300]}",
+             fix="retry once Linear answers; if it keeps failing, read the response above")
     except urllib.error.URLError as exc:
-        fail(2, f"cannot reach Linear: {exc.reason}")
+        fail(EXIT.UNAVAILABLE, f"cannot reach Linear: {exc.reason}",
+             fix="check the network, then retry")
     except TimeoutError:
         # Raised bare, not wrapped in URLError, when the socket times out while
         # the response is being read. Without this clause it escapes as a
         # traceback and the promised exit code 2 never happens.
-        fail(2, "Linear did not answer within 30s. The request may or may not "
-                "have been applied; check the card before retrying a write.")
+        fail(EXIT.UNAVAILABLE, "Linear did not answer within 30s. The request may or may not "
+                               "have been applied; check the card before retrying a write.",
+             fix="look at the card on the board; retry the write only if it did not land")
 
     if body.get("errors"):
         message = "; ".join(e.get("message", "?") for e in body["errors"])
-        fail(3, f"Linear refused the request: {message}")
+        fail(EXIT.INVALID, f"Linear refused the request: {message}",
+             fix="read Linear's message above and correct the request; nothing was written")
     return body["data"]
 
 
@@ -176,11 +175,25 @@ query Team($key: String!) {
 ISSUE_QUERY = """
 query Issue($id: String!) {
   issue(id: $id) {
-    id identifier title url branchName description
+    id identifier title url branchName description updatedAt
     state { name type }
     parent { identifier }
     project { id name }
     labels(first: 10) { nodes { name } }
+  }
+}
+"""
+
+FENCE_QUERY = """
+query Fence($id: String!) {
+  issue(id: $id) { id updatedAt }
+}
+"""
+
+COMMENTS_QUERY = """
+query Comments($id: String!) {
+  issue(id: $id) {
+    comments(first: 100) { nodes { id body createdAt } }
   }
 }
 """
@@ -266,7 +279,7 @@ KIND_REFUSALS = {
 }
 
 
-class Board:
+class Board(_tags_module().PhaseMixin):
     """A connected board. Holds the token and the team it works against."""
 
     def __init__(self, token, profile):
@@ -282,7 +295,8 @@ class Board:
             key = self.profile["team_key"]
             nodes = query(self.token, TEAM_QUERY, {"key": key})["teams"]["nodes"]
             if not nodes:
-                fail(3, f"no team with key '{key}' in this workspace")
+                fail(EXIT.INVALID, f"no team with key '{key}' in this workspace",
+                     fix="set 'team_key' in .idp/profile.json to a team key this workspace has")
             self._team = nodes[0]
         return self._team
 
@@ -295,7 +309,8 @@ class Board:
             data = query(self.token, "query P($id: String!) { project(id: $id) { name } }",
                          {"id": project_id})
             if not data.get("project"):
-                fail(3, f"no project with id {project_id}")
+                fail(EXIT.INVALID, f"no project with id {project_id}",
+                     fix="set 'project_id' in .idp/profile.json to a project this workspace has")
             out["project_name"] = data["project"]["name"]
         return out
 
@@ -317,7 +332,8 @@ class Board:
             if state["name"].casefold() == wanted:
                 return state["id"]
         known = ", ".join(sorted(s["name"] for s in self.team["states"]["nodes"]))
-        fail(3, f"no status named '{name}' in team {self.team['key']}. Known: {known}")
+        fail(EXIT.INVALID, f"no status named '{name}' in team {self.team['key']}. Known: {known}",
+             fix="use one of the known statuses, or map this team's own names under phases.pbi in the profile")
 
     def resolve_label(self, name):
         """The id of a label, creating it if this team does not have it yet.
@@ -340,7 +356,8 @@ class Board:
                        {"input": {"teamId": self.team["id"], "name": name}})
         result = result["issueLabelCreate"]
         if not result["success"]:
-            fail(3, f"Linear refused to create the label '{name}'")
+            fail(EXIT.INVALID, f"Linear refused to create the label '{name}'",
+                 fix="create the label in Linear by hand, or check that the key may create labels")
         self._labels = None
         return result["issueLabel"]["id"]
 
@@ -355,41 +372,11 @@ class Board:
                                  {"id": self.team["id"]})["team"]["labels"]["nodes"]
         return self._labels
 
-    def set_phase_tag(self, identifier, tag):
-        """Put the card in one phase position, in one write.
-
-        Removing the old tag and adding the new one as two writes leaves a
-        window in which the card has no position at all, and a second agent
-        reads that window as an unclaimed card. One mutation, or the claim
-        protocol has a race in it.
-        """
-        state = _state_module()
-        issue = self.get_issue(identifier)
-        keep = [name for name in issue["labels"] if not name.startswith(state.TAG_PREFIX)]
-        wanted = keep + ([tag] if tag else [])
-        label_ids = [self.resolve_label(name) for name in wanted]
-
-        mutation = """
-        mutation Retag($id: String!, $input: IssueUpdateInput!) {
-          issueUpdate(id: $id, input: $input) {
-            success issue { identifier state { name } labels(first: 10) { nodes { name } } }
-          }
-        }
-        """
-        result = query(self.token, mutation,
-                       {"id": issue["id"], "input": {"labelIds": label_ids}})["issueUpdate"]
-        if not result["success"]:
-            fail(3, "Linear refused the label change")
-        return {
-            "identifier": result["issue"]["identifier"],
-            "status": result["issue"]["state"]["name"],
-            "labels": [l["name"] for l in result["issue"]["labels"]["nodes"]],
-        }
-
     def get_issue(self, identifier):
         issue = query(self.token, ISSUE_QUERY, {"id": identifier})["issue"]
         if not issue:
-            fail(3, f"no issue {identifier}")
+            fail(EXIT.INVALID, f"no issue {identifier}",
+                 fix="check the identifier; `board.py list` shows what exists")
         return {
             "id": issue["id"],
             "identifier": issue["identifier"],
@@ -406,13 +393,15 @@ class Board:
     def list_children(self, identifier):
         issue = query(self.token, CHILDREN_QUERY, {"id": identifier})["issue"]
         if not issue:
-            fail(3, f"no issue {identifier}")
+            fail(EXIT.INVALID, f"no issue {identifier}",
+                 fix="check the identifier; `board.py list` shows what exists")
         return [_brief(n) for n in issue["children"]["nodes"]]
 
     def list_project(self, project_id):
         data = query(self.token, PROJECT_ISSUES_QUERY, {"id": project_id})
         if not data.get("project"):
-            fail(3, f"no project with id {project_id}")
+            fail(EXIT.INVALID, f"no project with id {project_id}",
+                 fix="pass a project id this workspace has, or fix 'project_id' in the profile")
         return [_brief(n) for n in data["project"]["issues"]["nodes"]]
 
     # -- writes -------------------------------------------------------------
@@ -431,9 +420,10 @@ class Board:
 
     def verify_wiki(self, address):
         """Refuse a wiki this board cannot write. Called before a profile is saved."""
-        fail(6, f"this board has no wiki: {address!r} cannot be verified. On Linear the "
-                "role is played by the project's own documents, which the platform "
-                "already writes; leave --wiki unset")
+        fail(EXIT.CONFIG, f"this board has no wiki: {address!r} cannot be verified. On Linear the "
+                          "role is played by the project's own documents, which the platform "
+                          "already writes; leave --wiki unset",
+             fix="leave --wiki unset on a Linear profile")
 
     def write_wiki_page(self, address, title, content):
         """Linear has no wiki, and says so rather than being silently absent.
@@ -450,13 +440,16 @@ class Board:
     def check_kind(self, kind, parent):
         """Refuse before creating, naming the kind and the board."""
         if kind in KIND_REFUSALS and not (self.profile.get("kinds") or {}).get(kind):
-            fail(3, f"this board cannot express kind '{kind}': {KIND_REFUSALS[kind]}")
+            fail(EXIT.INVALID, f"this board cannot express kind '{kind}': {KIND_REFUSALS[kind]}",
+                 fix="use a kind this board can express, or map it under 'kinds' in the profile")
         needs_parent = KIND_NEEDS_PARENT.get(kind)
         if needs_parent is True and not parent:
-            fail(3, f"kind '{kind}' is a sub-issue on this board and needs --parent")
+            fail(EXIT.INVALID, f"kind '{kind}' is a sub-issue on this board and needs --parent",
+                 fix="pass --parent with the feature this belongs under")
         if needs_parent is False and parent:
-            fail(3, f"kind '{kind}' is a top-level issue on this board and cannot "
-                    "have a parent")
+            fail(EXIT.INVALID, f"kind '{kind}' is a top-level issue on this board and cannot "
+                               "have a parent",
+                 fix="drop --parent, or create it as a pbi")
 
     def create_issue(self, title, body=None, parent=None, status=None, project_id=None,
                      kind=None):
@@ -479,7 +472,8 @@ class Board:
         """
         result = query(self.token, mutation, {"input": payload})["issueCreate"]
         if not result["success"]:
-            fail(3, "Linear refused to create the issue")
+            fail(EXIT.INVALID, "Linear refused to create the issue",
+                 fix="read the card fields you sent; retry once whatever refused it is fixed")
         return result["issue"]
 
     def update_issue(self, identifier, title=None, body=None, status=None, parent=None):
@@ -493,7 +487,8 @@ class Board:
         if parent:
             payload["parentId"] = self.get_issue(parent)["id"]
         if not payload:
-            fail(3, "nothing to update")
+            fail(EXIT.INVALID, "nothing to update",
+                 fix="pass at least one of --title, --status, --body or --parent")
 
         issue_id = self.get_issue(identifier)["id"]
         mutation = """
@@ -505,7 +500,8 @@ class Board:
         """
         result = query(self.token, mutation, {"id": issue_id, "input": payload})["issueUpdate"]
         if not result["success"]:
-            fail(3, "Linear refused the update")
+            fail(EXIT.INVALID, "Linear refused the update",
+                 fix="read the card on the board; retry once whatever refused it is fixed")
         return {
             "identifier": result["issue"]["identifier"],
             "status": result["issue"]["state"]["name"],
@@ -521,7 +517,8 @@ class Board:
         result = query(self.token, mutation,
                        {"input": {"issueId": issue_id, "body": body}})["commentCreate"]
         if not result["success"]:
-            fail(3, "Linear refused the comment")
+            fail(EXIT.INVALID, "Linear refused the comment",
+                 fix="retry; if it keeps failing, check the key may comment on this team")
         return result["comment"]["url"]
 
     def attach_document(self, title, content, identifier=None, project_id=None):
@@ -531,7 +528,8 @@ class Board:
         elif project_id:
             payload["projectId"] = project_id
         else:
-            fail(3, "a document needs an issue or a project to hang from")
+            fail(EXIT.INVALID, "a document needs an issue or a project to hang from",
+                 fix="pass an issue identifier, or a project id")
 
         mutation = """
         mutation Doc($input: DocumentCreateInput!) {
@@ -540,7 +538,8 @@ class Board:
         """
         result = query(self.token, mutation, {"input": payload})["documentCreate"]
         if not result["success"]:
-            fail(3, "Linear refused the document")
+            fail(EXIT.INVALID, "Linear refused the document",
+                 fix="retry; if it keeps failing, check the key may create documents")
         # The slug, not only the url: a profile's `memory_doc` is a slug, and
         # deriving one by slicing a url is the kind of guess that works until
         # somebody renames a document.
@@ -556,7 +555,8 @@ class Board:
         """
         project = query(self.token, q, {"id": project_id})["project"]
         if not project:
-            fail(3, f"no project with id {project_id}")
+            fail(EXIT.INVALID, f"no project with id {project_id}",
+                 fix="pass a project id this workspace has, or fix 'project_id' in the profile")
         return project["documents"]["nodes"]
 
     def get_document(self, slug):
@@ -570,139 +570,99 @@ class Board:
         """
         nodes = query(self.token, q, {"slug": slug})["documents"]["nodes"]
         if not nodes:
-            fail(3, f"no document with slug '{slug}'")
+            fail(EXIT.INVALID, f"no document with slug '{slug}'",
+                 fix="check the slug; `board.py doc --list` shows what exists")
         return nodes[0]
 
-    # -- phase transitions --------------------------------------------------
+    # -- the two tag primitives, and the comments a lease is read from -------
+    #
+    # Phases, claims, hand-offs and leases are board-neutral and live in
+    # scripts/tags.py and scripts/lease.py, which this class inherits through
+    # `PhaseMixin`. What only this board knows is how to read a card with the
+    # nearest thing it has to a revision, and how to write one fenced on it.
 
-    def phase_states(self):
-        """This board's phase map, after the profile has had its say.
+    DEFAULT_PBI_STATES = DEFAULT_PBI_STATES
 
-        The names below are what we created in IdeaHub. A foreign team maps
-        its own statuses in the profile instead of creating nine new ones,
-        which is why the map lives there and only defaults here. A position
-        set to null means that board cannot express the phase as a status and
-        is not carrying it as a tag either; the phase is recorded as a comment
-        and claim degrades to comment order (IDE-71).
+    def read_card(self, identifier):
+        """The card as the tag writer decides on it. `updatedAt` stands in for `/rev`."""
+        issue = query(self.token, ISSUE_QUERY, {"id": identifier})["issue"]
+        if not issue:
+            fail(EXIT.INVALID, f"no issue {identifier}",
+                 fix="check the identifier; `board.py list` shows what exists")
+        return {
+            "id": issue["id"],
+            "identifier": issue["identifier"],
+            "rev": issue.get("updatedAt"),
+            "tags": [l["name"] for l in issue["labels"]["nodes"]],
+            "status": issue["state"]["name"],
+            "changed_at": issue.get("updatedAt"),
+            "parent": issue["parent"]["identifier"] if issue["parent"] else None,
+        }
+
+    def write_card(self, identifier, rev, tags, status=None):
+        """The closest fence Linear allows: re-read `updatedAt`, compare, then write.
+
+        Label ids are resolved first — resolving may create a label, which
+        touches the team, not the card — so the re-read sits immediately before
+        the mutation. **What is left is a race**: a write landing between that
+        re-read and this mutation is overwritten silently. Linear has no
+        conditional update; see the module docstring and CLAUDE.md.
+
+        One mutation for labels and status together, so a position never
+        exists half-written.
         """
-        configured = (self.profile or {}).get("phases")
-        if not configured:
-            return PHASE_STATES
+        label_ids = [self.resolve_label(name) for name in tags]
+        payload = {"labelIds": label_ids}
+        if status:
+            payload["stateId"] = self.resolve_state(status)
 
-        merged = {phase: dict(positions) for phase, positions in PHASE_STATES.items()}
-        for phase, positions in configured.items():
-            slot = merged.setdefault(phase, {})
-            for position, name in positions.items():
-                if name is None:
-                    slot.pop(position, None)
-                else:
-                    slot[position] = name
-        return merged
+        fence = query(self.token, FENCE_QUERY, {"id": identifier})["issue"]
+        if not fence or fence.get("updatedAt") != rev:
+            return {"conflict": True}
 
-    def phase_marker(self, phase, kind):
-        """What carries this position on this board: a status, or a tag."""
-        return _state_module().as_marker(self.phase_status(phase, kind))
-
-    def position_of(self, issue, phase, kind):
-        """Is the card in this position right now?
-
-        A carried tag decides on its own, and the status is not consulted. The
-        resolver already works this way and the two must not disagree: a card
-        tagged `idp:design-review` while still sitting in `New` is at `next`,
-        and a claim that read the status instead would happily start design on
-        work somebody had already finished.
+        mutation = """
+        mutation Retag($id: String!, $input: IssueUpdateInput!) {
+          issueUpdate(id: $id, input: $input) {
+            success issue { identifier updatedAt state { name } labels(first: 10) { nodes { name } } }
+          }
+        }
         """
-        marker = self.phase_marker(phase, kind)
-        carried = _state_module().phase_tags(issue["labels"])
-        if len(carried) > 1:
-            fail(3, f"{issue['identifier']} carries {len(carried)} phase tags: "
-                    f"{', '.join(sorted(carried))}. One card is in one position; "
-                    "pick which, then re-run. Nothing was changed.")
-        if carried:
-            return marker.get("tag") == carried[0]
-        return bool(marker.get("status")) and \
-            issue["status"].casefold() == marker["status"].casefold()
+        result = query(self.token, mutation,
+                       {"id": fence["id"], "input": payload})["issueUpdate"]
+        if not result["success"]:
+            fail(EXIT.INVALID, "Linear refused the label change",
+                 fix="read the card on the board; retry once whatever refused it is fixed")
+        written = result["issue"]
+        return {"conflict": False, "rev": written.get("updatedAt"),
+                "tags": [l["name"] for l in written["labels"]["nodes"]],
+                "status": written["state"]["name"]}
 
-    def describe_marker(self, marker):
-        """How a position reads in a message. Quoted, so a name with a space
-        does not silently become two words."""
-        if "tag" in marker:
-            return f"tag '{marker['tag']}'"
-        return f"'{marker['status']}'"
+    def list_comments(self, identifier):
+        """Every comment on the card, oldest first, with the server's timestamps."""
+        issue = query(self.token, COMMENTS_QUERY, {"id": identifier})["issue"]
+        if not issue:
+            fail(EXIT.INVALID, f"no issue {identifier}",
+                 fix="check the identifier; `board.py list` shows what exists")
+        found = [{"id": c["id"], "body": c.get("body") or "", "created_at": c["createdAt"]}
+                 for c in issue["comments"]["nodes"]]
+        return sorted(found, key=lambda c: c["created_at"] or "")
 
-    def apply_marker(self, identifier, marker):
-        if "tag" in marker:
-            return self.set_phase_tag(identifier, marker["tag"])
-        return self.update_issue(identifier, status=marker["status"])
-
-    def phase_status(self, phase, kind):
-        """Translate an abstract state into whatever this board calls it."""
-        states_by_phase = self.phase_states()
-        if phase not in states_by_phase:
-            known = ", ".join(sorted(states_by_phase))
-            fail(3, f"unknown phase '{phase}'. Known: {known}")
-        states = states_by_phase[phase]
-        if kind not in states:
-            if PHASE_STATES.get(phase, {}).get(kind):
-                # The default had it and the profile removed it, so this is a
-                # configured absence, not a typo. Say which, or the reader goes
-                # looking for a bug that is actually a setting.
-                fail(3, f"this board has no status for '{phase}' · '{kind}': the profile "
-                        f"sets it to null. Carry it with a tag instead — "
-                        '{"tag": "idp:..."} — or record that phase as a comment.')
-            known = ", ".join(sorted(states)) or "none"
-            fail(3, f"phase '{phase}' has no '{kind}' state. It has: {known}")
-        return states[kind]
-
-    def start_phase(self, identifier, phase):
-        """Claim the card for a phase, or refuse and say why.
-
-        This is the deterministic half of the signal check: a phase may only
-        start from its own `ready` status. Starting design on a card that
-        nobody approved is a process violation, not a shortcut, so the script
-        refuses instead of guessing.
-        """
-        issue = self.get_issue(identifier)
-        ready = self.phase_marker(phase, "ready")
-        active = self.phase_marker(phase, "active")
-
-        if self.position_of(issue, phase, "active"):
-            print(f"{identifier} is already in {self.describe_marker(active)}",
-                  file=sys.stderr)
-            return {"identifier": identifier, "status": issue["status"], "changed": False}
-
-        if not self.position_of(issue, phase, "ready"):
-            fail(3, f"{identifier} is in '{issue['status']}'"
-                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
-                    + f", but phase '{phase}' starts from "
-                      f"{self.describe_marker(ready)}. Nothing was changed.")
-
-        result = self.apply_marker(identifier, active)
-        result["changed"] = True
-        return result
-
-    def finish_phase(self, identifier, phase, kind="next"):
-        """Hand the card on: from `active` to whatever comes next."""
-        issue = self.get_issue(identifier)
-        active = self.phase_marker(phase, "active")
-        target = self.phase_marker(phase, kind)
-
-        if not self.position_of(issue, phase, "active"):
-            fail(3, f"{identifier} is in '{issue['status']}'"
-                    + (f" with {', '.join(issue['labels'])}" if issue["labels"] else "")
-                    + f", but phase '{phase}' finishes from "
-                      f"{self.describe_marker(active)}. Nothing was changed.")
-
-        result = self.apply_marker(identifier, target)
-        result["changed"] = True
-        return result
+    def server_now(self):
+        """The service's own clock, from the `Date` header of a cheap request."""
+        query(self.token, "query Clock { viewer { id } }")
+        if not LAST_SERVER_DATE:
+            fail(EXIT.UNAVAILABLE, "Linear answered without a Date header, so there is no "
+                                   "server clock to measure a lease by",
+                 fix="retry; never fall back to the local clock")
+        return LAST_SERVER_DATE
 
     # -- the mirror ---------------------------------------------------------
 
     def render_mirror(self, project_id, generated_at):
         project = query(self.token, MIRROR_QUERY, {"id": project_id}).get("project")
         if not project:
-            fail(3, f"no project with id {project_id}")
+            fail(EXIT.INVALID, f"no project with id {project_id}",
+                 fix="pass a project id this workspace has, or fix 'project_id' in the profile")
         return _render(project, generated_at)
 
 
