@@ -618,8 +618,26 @@ class Development:
         pr = self.event(pbi, PULL_REQUEST, branch=claim["branch"])
         head = self.merger_for().merged(pr, claim["branch"], self.feature_branch) \
             if pr else None
-        if head or self.event(pbi, MERGED, branch=claim["branch"]):
-            return self.after_merge(item, claim, head)
+        merged = self.event(pbi, MERGED, branch=claim["branch"])
+        if head or merged:
+            if head and merged is None:
+                done = self.event(pbi, FINALIZED, branch=claim["branch"]) or self.event(pbi,
+                                                                                         FINALIZED)
+                if done is None:
+                    self.block_pbi(pbi, "the pull request is merged but this PBI has no "
+                                        "finalized witness record to verify it against")
+                    return
+                if not self.landed_on_tested(item, claim, wt, done, head):
+                    return
+                lease.post_event(
+                    self.board, pbi, MERGED, f"{MERGED}:{claim['branch']}",
+                    text=f"Merged into `{self.feature_branch}` at `{head[:12]}`: recovered "
+                         f"from the existing pull request and re-verified against the pinned "
+                         f"witnesses for `{done['merge'][:12]}`.",
+                    branch=claim["branch"], head=head, merge=done["merge"],
+                    feature=done["feature"], pr=str((pr or {}).get("id")))
+                merged = self.event(pbi, MERGED, branch=claim["branch"])
+            return self.after_merge(item, claim, (merged or {}).get("head") or head)
         tip = self.git.tracking(claim["branch"])
         done = self.event(pbi, FINALIZED, branch=claim["branch"], merge=tip)
         if done:
@@ -898,6 +916,18 @@ class Development:
                     wt, claim["branch"], self.feature_branch, pinned, key,
                     self.declared(item), mention_of(pbi), pbi_sha,
                     feature_sha=retest_feature)
+            if outcome.kind != fin.INFRA:
+                return outcome
+        return outcome
+
+    def verify_landed(self, item, wt, landed_head, pbi_sha, feature_sha):
+        """Run the pinned witnesses directly on the landed commit, retried for infra."""
+        for wait in (0,) + INFRA_BACKOFF:
+            if wait:
+                self.sleep(wait)
+            pinned, key = self.witness_source(item)
+            outcome = self.finalizer.verify(wt, pinned, key, self.declared(item), pbi_sha,
+                                            feature_sha, landed_head)
             if outcome.kind != fin.INFRA:
                 return outcome
         return outcome
@@ -1181,8 +1211,15 @@ class Development:
                               "in the window before completion. The witnesses run again on "
                               f"`{head[:12]}`.",
                          head=head, parent=parent, tested=done["feature"])
-        outcome = self.finalize(item, claim, wt, retest_feature=head, pbi_sha=done["pbi"])
+        outcome = self.verify_landed(item, wt, head, done["pbi"], parent or head)
         if outcome.passed:
+            if outcome.tested.get("merge") != head:
+                self.halt = self.block_feature(
+                    f"{pbi} landed at `{head[:12]}`, but finalize proved "
+                    f"`{outcome.tested.get('merge', '')[:12]}` instead of the actual landed "
+                    "commit. FIX: re-run the witnesses on the landed commit, then remove "
+                    "idp:blocked")
+                return False
             lease.post_event(self.board, pbi, RACE, f"{RACE}:{head}:verified",
                              text=f"Re-verified on `{head[:12]}`: every witness passed.",
                              head=head, verified=True)

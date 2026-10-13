@@ -47,6 +47,7 @@ INVALID_KIND = "invalid"
 UNPROVEN_KIND = "unproven"
 OPT_IN = "development.azure_complete_unproven"
 EXPERIMENT = "experiment 8 (docs/experiments/README.md)"
+AZURE_COMPLETE_RETRIES = 3
 
 
 class MergeRefused(Exception):
@@ -129,6 +130,21 @@ def writable_target(target, git, extra=()):
 
 def merge_message(title, mention, branch, merged):
     return f"{title} {mention}\n\n{MERGE_MARK} {branch}@{merged}\n"
+
+
+def _commit_id(value):
+    if isinstance(value, dict):
+        value = value.get("commitId")
+    text = str(value or "").strip()
+    return text or None
+
+
+def _merged_commit(answer):
+    for key in ("lastMergeCommit", "mergeCommit", "lastMergeTargetCommit"):
+        commit = _commit_id((answer or {}).get(key))
+        if commit:
+            return commit
+    return None
 
 
 class Merger:
@@ -227,8 +243,18 @@ class AzureReposMerger(Merger):
             return None
         self.board.complete_pull_request(self.repository, pr["id"], merged,
                                          merge_message(title, mention, branch, merged))
+        answer = {}
+        for _ in range(AZURE_COMPLETE_RETRIES):
+            answer = self.board.get_pull_request(self.repository, pr["id"]) or {}
+            if str(answer.get("status") or "").casefold() == "completed":
+                break
+        if str(answer.get("status") or "").casefold() != "completed":
+            return None
+        source = _commit_id(answer.get("lastMergeSourceCommit"))
+        if source and source != merged:
+            return None
         self.git.fetch()
-        return self.git.tracking(target)
+        return _merged_commit(answer)
 
     def merged(self, pr, branch, target):
         if not pr:
@@ -236,8 +262,7 @@ class AzureReposMerger(Merger):
         answer = self.board.get_pull_request(self.repository, pr["id"]) or {}
         if str(answer.get("status") or "").casefold() != "completed":
             return None
-        self.git.fetch()
-        return self.git.remote_sha(target)
+        return _merged_commit(answer)
 
     def comment(self, board, pr, work_item, text, key):
         self.board.comment_pull_request(self.repository, pr["id"], text)

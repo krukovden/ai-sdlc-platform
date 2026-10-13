@@ -66,6 +66,9 @@ class StateMover:
     def move(self, board, identifier, bucket, evidence, run, owner=None):
         raise NotImplementedError
 
+    def reopen(self, board, identifier, evidence, run, owner=None):
+        raise NotImplementedError
+
 
 def _lost(identifier, run, holder):
     return lease.OwnershipLost(identifier, run, holder)
@@ -129,6 +132,32 @@ class AdapterStates(StateMover):
                          status=target)
         return {"moved": moved, "bucket": bucket}
 
+    def reopen(self, board, identifier, evidence, run, owner=None):
+        issue = board.get_issue(identifier)
+        current = self.bucket(issue)
+        names = self.names(issue)
+        target = names.get("doing")
+        done = names.get("done")
+        if current == "doing":
+            lease.post_event(board, identifier, "move", f"move:{identifier}:doing",
+                             text=f"Moved to {target}: {evidence}", bucket="doing",
+                             status=target)
+            return {"moved": False, "bucket": "doing"}
+        if current != "done":
+            return {"moved": False, "bucket": current,
+                    "reason": f"{identifier} is in '{current}', not in done"}
+        if not target or not done:
+            return {"moved": False, "bucket": current,
+                    "reason": f"this board has no 'doing' state for {identifier}"}
+        written = lease.tags.move_status(board, identifier, done, target)
+        if written["outcome"] in ("conflict", "refused"):
+            raise _lost(identifier, owner or run,
+                        lease.tags.owner_of(written.get("tags")) or "another run")
+        lease.post_event(board, identifier, "move", f"move:{identifier}:doing",
+                         text=f"Reopened in {target}: {evidence}", bucket="doing",
+                         status=target, reopened=True)
+        return {"moved": True, "bucket": "doing"}
+
 
 class CatalogStates(AdapterStates):
     """engineering-catalog's `ado-board move`, read through `--json`.
@@ -169,6 +198,9 @@ class CatalogStates(AdapterStates):
             data = {}
         self.expect(board, identifier, run, owner)
         return {"moved": True, "bucket": bucket, "catalog": data}
+
+    def reopen(self, board, identifier, evidence, run, owner=None):
+        return AdapterStates.reopen(self, board, identifier, evidence, run, owner=owner)
 
     @staticmethod
     def expect(board, identifier, run, owner):

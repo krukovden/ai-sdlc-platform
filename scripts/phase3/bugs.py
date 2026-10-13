@@ -83,12 +83,16 @@ def entry(issue, settings):
     """(plan entry, None) or (None, why it has no witness)."""
     bug = str(issue["identifier"])
     criteria = card_criteria(issue.get("description"))
-    stated = [c for c in criteria if c[2] is not None]
+    missing = [ac for ac, _, witness in criteria if witness is None]
     rule = (settings or {}).get("bug_witness") or {}
     regression = None
-    if stated:
+    if criteria and missing:
+        return None, (f"Bug {bug} states acceptance criteria without witnesses: "
+                      f"{', '.join(missing)}. FIX: add a `Witness:` line under every "
+                      "acceptance criterion on the Bug, then remove idp:blocked")
+    if criteria:
         acceptance = [{"id": ac, "text": text, "witness": witness}
-                      for ac, text, witness in stated]
+                      for ac, text, witness in criteria]
     elif rule.get("command"):
         slug = re.sub(r"[^a-z0-9]+", "_", str(bug).casefold()).strip("_")
         def fill(template):

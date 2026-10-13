@@ -493,6 +493,17 @@ class OutcomeTests(Phase3TestCase):
         self.assertIn("- Exit: 0", text)
         self.assertIn("- Duration: 0.0 s", text)
 
+    def test_a_witness_that_changes_tracked_files_is_blocked_not_passed(self):
+        witness = {"command": "printf 'VALUE = 2\\n' > src/a.py && grep -q 'VALUE = 2' src/a.py",
+                   "timeout": 30}
+        world = self.one(witness=witness)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        reason = world.events(world.items()["a"]["id"], lease.BLOCK)[-1]["reason"]
+        self.assertIn("changed tracked", reason)
+        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "src/a.py"),
+                          "the source-mutating validation must not merge")
+
     def test_files_outside_the_declared_paths_are_a_comment_not_a_failure(self):
         world = self.one()
         world.behaviors["a"] = [ok(extra={"docs/notes.md": "why\n"})]
@@ -661,6 +672,20 @@ class BugTests(Phase3TestCase):
         self.assertIsNone(phase3.bugs.pinned(world.board, BUG))
         self.assertEqual(self.status(world, "a"), "Resolved")       # the rest still built
 
+    def test_a_bug_with_a_missing_witness_is_blocked_before_any_worker(self):
+        description = """Reported by QA: src/900.py is missing.
+
+- **AC-1** — src/900.py exposes VALUE = 1
+  Witness: {"command": "grep -q 'VALUE = 1' src/900.py", "timeout": 30}
+- **AC-2** — the CLI shows the same value
+"""
+        world = self.world_with_bug(description=description, rule=BUG_RULE)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertNotIn(BUG, world.sessions["worker"])
+        reason = world.events(BUG, lease.BLOCK)[-1]["reason"]
+        self.assertIn("AC-2", reason)
+        self.assertIsNone(phase3.bugs.pinned(world.board, BUG))
+
     def test_the_regression_rule_demands_the_test_and_that_it_fails_without_the_fix(self):
         world = self.world_with_bug(description="VALUE is missing from src/900.py.",
                                     rule=BUG_RULE)
@@ -761,6 +786,9 @@ class RacingMerger(phase3.merge.GitMerger):
         super().__init__(git)
         self.world, self.root, self.breaks = world, root, breaks
         self.raced = None
+
+    def open(self, branch, target, title, description, work_item):
+        return {"id": f"pr:{branch}", "url": f"https://fake/pr/{branch}"}
 
     def complete(self, pr, branch, target, feature_sha, merged, title, mention):
         if self.raced is None:
@@ -880,6 +908,23 @@ class ReviewTests(Phase3TestCase):
         self.assertEqual(caught.exception.code, EXIT.BLOCKED)
         self.assertIn("review", caught.exception.message)
         self.assertEqual(world.board.side_effects, 0)
+
+
+class ReviewParserTests(unittest.TestCase):
+
+    def read(self, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "review.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return phase3.review.read_findings(path)
+
+    def test_a_non_object_finding_blocks_the_review(self):
+        with self.assertRaises(phase3.review.ReviewError):
+            self.read({"findings": ["critical: src/a.py:1 loses data"]})
+
+    def test_an_unknown_severity_blocks_the_review(self):
+        with self.assertRaises(phase3.review.ReviewError):
+            self.read({"findings": [finding("urgent", "src/a.py", 1)]})
 
 
 class EnvironmentTests(Phase3TestCase):
@@ -1127,6 +1172,44 @@ class PinnedWitnessSchemaTests(unittest.TestCase):
                 self.assertEqual(outcome.kind, fin.MALFORMED)
                 self.assertEqual(ran, [])
 
+    class BugRepo:
+        def __init__(self, path, plan_text):
+            self.path = Path(path)
+            self.plan_text = plan_text
+
+        def show(self, commit, path):
+            return self.plan_text if path.endswith(".json") else "test\n"
+
+        def changed_files(self, base, head):
+            return ["tests/bug_900.sh"]
+
+        def run(self, *args, **kwargs):
+            return type("Answer", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def test_a_bug_budget_counts_the_red_and_green_runs(self):
+        plan = {"pbis": [dict(pbi("a"), key="900", regression_test="tests/bug_900.sh",
+                             acceptance_criteria=[{"id": "AC-1", "text": "bug fixed",
+                                                   "witness": {"command": "sh tests/bug_900.sh",
+                                                               "timeout": 10}}])]}
+        text = phase3.plan.plan_text(plan)
+        pinned = {"commit": "c0", "path": "docs/plans/X.plan.json",
+                  "sha256": phase3.plan.digest(text)}
+        ticks = [0.0]
+
+        def clock():
+            return ticks[0]
+
+        def runner(*args, **kwargs):
+            first = ticks[0] == 0.0
+            ticks[0] += 9.0
+            return subprocess.CompletedProcess(args[0], 1 if first else 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.BugRepo(tmp, text)
+            finalizer = fin.Finalizer({"witness_budget_seconds": 10}, run=runner, clock=clock)
+            outcome, _ = finalizer.witnesses(repo, pinned, "900", "F", "M")
+        self.assertEqual(outcome.kind, fin.BUDGET)
+
 
 class StatesTests(unittest.TestCase):
 
@@ -1153,6 +1236,119 @@ class StatesTests(unittest.TestCase):
                                      environ={"IDP_ADO_BOARD": "/nowhere"})
         self.assertEqual(mover.name, "adapter")
         self.assertIn("not installed", out.getvalue())
+
+    def test_a_done_qa_item_can_be_reopened_for_a_new_cycle(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("7", kind="pbi", status="Resolved")
+        mover = phase3.states.AdapterStates(board, PROFILE)
+        reopened = mover.reopen(board, "7", "qa resumes", "run-1")
+        self.assertTrue(reopened["moved"])
+        self.assertEqual(board.cards["7"]["status"], "Active")
+
+
+class JournalUploadTests(unittest.TestCase):
+
+    def test_upload_refreshes_from_the_board_before_replacing_history(self):
+        from fakeboard import FakeBoard
+        with tempfile.TemporaryDirectory() as tmp:
+            board = FakeBoard(profile=PROFILE)
+            title = run.memory.feature_file(FEATURE, "history")
+            board.attach_document(title, f"# {FEATURE} — feature journal\n\n## Development\n\n- from board\n",
+                                  identifier=FEATURE)
+            original = board.list_attachments
+            seen = []
+
+            def list_attachments(identifier):
+                seen.append(identifier)
+                return original(identifier)
+
+            board.list_attachments = list_attachments
+            path = Path(tmp) / "history.md"
+            path.write_text(
+                f"# {FEATURE} — feature journal\n\n## Development\n\n- from local\n",
+                encoding="utf-8")
+            journal = phase3.journal.Journal(board, FEATURE, path)
+            journal.upload()
+            self.assertEqual(seen, [FEATURE])
+            content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
+            self.assertIn("- from board", content)
+            self.assertIn("- from local", content)
+
+
+class RecoveryTests(unittest.TestCase):
+
+    def test_resuming_a_merged_pr_rechecks_the_landed_head_before_closing_the_pbi(self):
+        from fakeboard import FakeBoard
+        dev = object.__new__(orchestrator.Development)
+        item = {"id": "5", "planned": {}}
+        claim = {"branch": "pbi/5-x/g1", "start": "S"}
+        pr = {"id": "9"}
+        done = {"feature": "F", "pbi": "P", "merge": "M"}
+        calls = []
+        dev.board = FakeBoard(profile=PROFILE)
+        dev.board.add_card("5", kind="pbi")
+
+        class Git:
+            def fetch(self):
+                calls.append("fetch")
+
+            def tracking(self, branch):
+                return "tip"
+
+        class Merger:
+            def merged(self, pr_, branch, target):
+                calls.append(("merged", pr_, branch, target))
+                return "HEAD"
+
+        dev.git = Git()
+        dev.feature_branch = FEATURE_BRANCH
+        dev.run_id = "run-1"
+        dev.claim = lambda issue: claim
+        dev.ensure_bug_plan = lambda issue: True
+        dev.worktree = lambda claim_, pbi: "WT"
+
+        def event(card, kind, **match):
+            if kind == orchestrator.PULL_REQUEST:
+                return pr
+            if kind == orchestrator.MERGED:
+                return None
+            if kind == orchestrator.FINALIZED:
+                return done
+            return None
+
+        dev.event = event
+        dev.merger_for = lambda: Merger()
+        dev.landed_on_tested = lambda *args: calls.append(("landed", args[3]["merge"], args[4])) or True
+        dev.after_merge = lambda *args: calls.append(("after", args[2]))
+        dev.start_worker = lambda *args: calls.append("worker")
+        dev.advance(item)
+        self.assertEqual(calls[-2:], [("landed", "M", "HEAD"), ("after", "HEAD")])
+        self.assertNotIn("worker", calls)
+
+    def test_a_raced_retest_must_pass_on_the_actual_landed_head(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, tags_=[tags.DEVELOPMENT])
+        board.add_card("5", kind="pbi")
+        dev = object.__new__(orchestrator.Development)
+        dev.board = board
+        dev.feature = FEATURE
+        dev.feature_branch = FEATURE_BRANCH
+        dev.run_id = "run-1"
+        dev.halt = None
+        dev.block_feature = lambda reason: lease.block(board, FEATURE, "run-1", reason) or reason
+        dev.finalizer = type("Verifier", (), {"verify": staticmethod(lambda *a, **k: fin.Outcome(
+            None, tested={"feature": "HEAD", "pbi": "P", "merge": "LOCAL"}))})()
+        dev.witness_source = lambda item: ({"path": "plan.json"}, "5")
+        dev.declared = lambda item: []
+        dev.sleep = lambda _: None
+        dev.git = type("Git", (), {"run": staticmethod(lambda *a, **k: type(
+            "Answer", (), {"returncode": 0, "stdout": "OTHER\n"})())})()
+        item, claim, done = {"id": "5"}, {"branch": "pbi/5-x/g1"}, {"feature": "F", "pbi": "P",
+                                                                      "merge": "M"}
+        self.assertFalse(dev.landed_on_tested(item, claim, object(), done, "HEAD"))
+        self.assertIn("actual landed", board.list_comments(FEATURE)[-1]["body"])
 
 
 # ---------------------------------------------------------------------------
@@ -1551,6 +1747,10 @@ class AzureReposMergerTests(unittest.TestCase):
             def complete_pull_request(self, *args):
                 calls.append(("complete",) + args)
 
+            def get_pull_request(self, *args):
+                return {"status": "completed", "lastMergeSourceCommit": {"commitId": "M"},
+                        "lastMergeCommit": {"commitId": "S"}}
+
         merger = phase3.merge.AzureReposMerger(Board(), StubGit(), "repo", unproven=True)
         pr = merger.open("pbi/5-x/g1", FEATURE_BRANCH, "X", "d", "5")
         self.assertEqual(calls[0], ("create", "repo", "pbi/5-x/g1", FEATURE_BRANCH, "X", "d",
@@ -1562,6 +1762,17 @@ class AzureReposMergerTests(unittest.TestCase):
         merger = phase3.merge.AzureReposMerger(object(), StubGit(head="G"), "repo",
                                                unproven=True)
         self.assertIsNone(merger.complete({"id": 1}, "b", "t", "F", "M", "X", "#5"))
+
+    def test_completion_waits_for_a_completed_pr_before_reporting_success(self):
+        class Board:
+            def complete_pull_request(self, *args):
+                pass
+
+            def get_pull_request(self, *args):
+                return {"status": "active"}
+
+        merger = phase3.merge.AzureReposMerger(Board(), StubGit(), "repo", unproven=True)
+        self.assertIsNone(merger.complete({"id": 9}, "b", "t", "F", "M", "X", "#5"))
 
     def test_completion_is_refused_by_default_until_experiment_8_proves_a_fence(self):
         calls = []
@@ -1605,6 +1816,15 @@ class AzureReposMergerTests(unittest.TestCase):
                     merger.complete({"id": 9}, "pbi/5-x/g1", target, "F", "M", "X", "#5")
                 self.assertEqual(caught.exception.kind, phase3.merge.PROTECTED_KIND)
         self.assertEqual(calls, [])
+
+    def test_a_recovered_completed_pr_reports_its_merge_commit_not_the_target_tip(self):
+        class Board:
+            def get_pull_request(self, *args):
+                return {"status": "completed", "lastMergeCommit": {"commitId": "LAND"}}
+
+        merger = phase3.merge.AzureReposMerger(Board(), StubGit(head="TARGET"), "repo",
+                                               unproven=True)
+        self.assertEqual(merger.merged({"id": 9}, "b", "t"), "LAND")
 
 
 if __name__ == "__main__":

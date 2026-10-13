@@ -165,6 +165,18 @@ class AssignmentTests(IntegrationTestCase):
         self.assertTrue(any("FIX:" in c["body"] and "approvers" in c["body"] for c in event))
 
 
+class FeaturePullRequestTests(IntegrationTestCase):
+
+    def test_an_unsupported_feature_pr_provider_blocks_the_qa_handoff(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        merger = phase3.merge.GitMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertFalse(world.events(FEATURE, integration.FEATURE_PR))
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+        self.assertEqual(self.qa(world)["status"], "New")
+        self.assertNotEqual(self.feature_tags(world), [tags.QA])
+
+
 # ---------------------------------------------------------------------------
 # Rounds: findings become PBIs, at most two rounds of fixes
 # ---------------------------------------------------------------------------
@@ -371,6 +383,17 @@ class BugsLoopBackTests(IntegrationTestCase):
         world.runner().run_feature(FEATURE)
         self.assertEqual(world.board.snapshot(), before)
 
+    def test_a_closed_qa_card_is_reopened_for_the_next_qa_cycle(self):
+        world = self.world()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        qa = self.qa(world)
+        world.board.cards[qa["identifier"]]["status"] = "Resolved"
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.board.add_card("900", kind="bug", parent=FEATURE, title="Bug: no value",
+                             description=self.BUG)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.qa(world)["status"], "Active")
+
 
 # ---------------------------------------------------------------------------
 # The documenter: the model writes, the script decides
@@ -511,6 +534,22 @@ class DocumenterTests(IntegrationTestCase):
         self.assertIn("src/a.py", attempts[0]["text"])
         self.assertFalse(world.events(FEATURE, integration.HANDED))
         self.assertNotEqual(self.feature_tags(world), [tags.QA])
+
+    def test_a_no_op_documenter_still_checks_existing_blueprints_for_broken_links(self):
+        world = self.world()
+        seed_blueprint_on_main(world)
+        target = world.repo / "docs" / "blueprint" / "modules.md"
+        target.write_text(BLUEPRINT.replace("../../src/a.py", "../../src/old.py"),
+                          encoding="utf-8")
+        git(world.repo, "commit", "-qam", "docs: stale link")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = None
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("src/old.py", attempts[0]["text"])
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
 
 
 def seed_blueprint_on_main(world):

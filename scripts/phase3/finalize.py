@@ -112,6 +112,15 @@ def tail(text, lines=LOG_TAIL_LINES):
     return "\n".join(str(text or "").splitlines()[-lines:])
 
 
+def _remaining(deadline, now, timeout):
+    if deadline is None:
+        return timeout, False
+    left = deadline - now
+    if left <= 0:
+        return 0, True
+    return min(timeout, max(1, int(left))), left < timeout
+
+
 class Finalizer:
     """Steps 1–5 for one PBI. `run`, `env`, `clock` are injected for the tests."""
 
@@ -164,7 +173,7 @@ class Finalizer:
 
     # -- step 3 -------------------------------------------------------------
 
-    def witnesses(self, wt, pinned, key, feature_sha, merged):
+    def witnesses(self, wt, pinned, key, feature_sha, merged, deadline=None):
         """Step 3 for one PBI: (outcome or None, records)."""
         try:
             plan = plans.read_pinned(wt, pinned)
@@ -198,15 +207,18 @@ class Finalizer:
                                    "Bug is fixed failing test first (W2) — add the test that "
                                    "reproduces it"), []
         worst = sum(int(c[2].get("timeout") or 0) for c in commands)
+        if regression:
+            worst *= 2
         if self.scanner:
             worst += SCANNER_TIMEOUT
         if worst > self.budget:
             return Outcome(BUDGET, f"the witnesses' worst case is {worst} s and the phase "
                                    f"budget is {self.budget} s; the plan's witnesses are "
                                    "wrong, not the code"), []
+        deadline = self.clock() + self.budget if deadline is None else deadline
 
         if regression:
-            red = self.red(wt, feature_sha, merged, regression, commands)
+            red = self.red(wt, feature_sha, merged, regression, commands, deadline)
             if red is not None:
                 return red, []
         records, failure = [], None
@@ -216,9 +228,16 @@ class Finalizer:
                 records.append(self.record_static(criterion, merged))
                 continue
             record = self.execute(wt, criterion[0], witness["command"],
-                                  int(witness["timeout"]), merged)
+                                  int(witness["timeout"]), merged, deadline=deadline)
             records.append(record)
-            if failure is None and record["timed_out"]:
+            if failure is None and record.get("mutation"):
+                failure = Outcome(MALFORMED, f"{record['ac']} changed tracked files or HEAD "
+                                             "while finalize was validating it: validation "
+                                             "must not rewrite the source tree")
+            elif failure is None and record["timed_out"] and record.get("budget_limited"):
+                failure = Outcome(BUDGET, f"{record['ac']} ran out the shared witness budget "
+                                          f"of {self.budget} s before it finished")
+            elif failure is None and record["timed_out"]:
                 failure = Outcome(WITNESS_TIMEOUT, f"{record['ac']} did not finish in "
                                                    f"{witness['timeout']} s: the witness "
                                                    "is wrong, not the code")
@@ -227,7 +246,7 @@ class Finalizer:
                                           f"exited {record['exit']}\n{record['tail']}")
         return failure, records
 
-    def red(self, wt, feature_sha, merged, test, commands):
+    def red(self, wt, feature_sha, merged, test, commands, deadline):
         """W2, proved: the Bug's witness fails on the feature head with only its test added.
 
         A regression test that passes without the fix does not reproduce the Bug.
@@ -244,7 +263,15 @@ class Finalizer:
             probe = type(wt)(target)
             for ac, _, witness in commands:
                 record = self.execute(probe, ac, witness["command"], int(witness["timeout"]),
-                                      feature_sha)
+                                      feature_sha, deadline=deadline)
+                if record.get("mutation"):
+                    return Outcome(MALFORMED, f"{ac} changed tracked files or HEAD while "
+                                              "finalize was validating it: validation must "
+                                              "not rewrite the source tree")
+                if record["timed_out"] and record.get("budget_limited"):
+                    return Outcome(BUDGET, f"{ac} ran out the shared witness budget of "
+                                           f"{self.budget} s on the feature head without the "
+                                           "fix")
                 if record["timed_out"]:
                     return Outcome(WITNESS_TIMEOUT, f"{ac} did not finish in "
                                                     f"{witness['timeout']} s on the feature "
@@ -258,11 +285,16 @@ class Finalizer:
         finally:
             wt.run("worktree", "remove", "--force", str(target), check=False)
 
-    def execute(self, wt, ac, command, timeout, sha):
+    def execute(self, wt, ac, command, timeout, sha, deadline=None):
         started = self.clock()
+        allowed, budget_limited = _remaining(deadline, started, timeout)
+        if allowed <= 0:
+            return {"ac": ac, "command": command, "sha": sha, "exit": None,
+                    "duration": 0.0, "timed_out": True, "tail": "",
+                    "budget_limited": True, "mutation": False}
         try:
             answer = self.call(["/bin/sh", "-c", command], cwd=str(wt.path), env=self.env,
-                               capture_output=True, text=True, timeout=timeout,
+                               capture_output=True, text=True, timeout=allowed,
                                stdin=subprocess.DEVNULL)
             code, output, timed_out = answer.returncode, \
                 (answer.stdout or "") + (answer.stderr or ""), False
@@ -270,9 +302,11 @@ class Finalizer:
             out = exc.stdout or ""
             out = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
             code, output, timed_out = None, out, True
+        mutation = self.mutated(wt, sha)
         return {"ac": ac, "command": command, "sha": sha, "exit": code,
                 "duration": round(self.clock() - started, 1), "timed_out": timed_out,
-                "tail": tail(output)}
+                "tail": tail(output), "budget_limited": budget_limited,
+                "mutation": mutation}
 
     @staticmethod
     def record_static(criterion, sha):
@@ -300,12 +334,41 @@ class Finalizer:
     def scan(self, wt, merged):
         if not self.scanner:
             return None
-        record = self.execute(wt, "security", self.scanner, SCANNER_TIMEOUT, merged)
+        return self._scan(wt, merged, None)
+
+    def _scan(self, wt, merged, deadline):
+        record = self.execute(wt, "security", self.scanner, SCANNER_TIMEOUT, merged,
+                              deadline=deadline)
+        if record.get("mutation"):
+            return Outcome(MALFORMED, "the security scanner changed tracked files or HEAD "
+                                      "while finalize was validating the work",
+                           records=[record])
+        if record["timed_out"] and record.get("budget_limited"):
+            return Outcome(BUDGET, f"the shared witness budget of {self.budget} s ran out "
+                                   "before the security scanner finished",
+                           records=[record])
         if record["timed_out"] or record["exit"] != EXIT.OK:
             return Outcome(DEFECT, f"the security scanner `{self.scanner}` failed "
                                    f"(exit {record['exit']}):\n{record['tail']}",
                            records=[record])
         return None
+
+    def mutated(self, wt, sha):
+        head = getattr(wt, "head", None)
+        if callable(head):
+            try:
+                if wt.head() != sha:
+                    return True
+            except GitError:
+                return True
+        runner = getattr(wt, "run", None)
+        if callable(runner):
+            try:
+                status = wt.run("status", "--porcelain", "--untracked-files=no", check=False)
+            except GitError:
+                return True
+            return bool((status.stdout if hasattr(status, "stdout") else status).strip())
+        return False
 
     # -- the whole of it ----------------------------------------------------
 
@@ -330,13 +393,22 @@ class Finalizer:
             merged, failed = self.merge(wt, branch, feature_sha, mention, feature_branch)
             if failed:
                 return failed
+            return self.verify(wt, pinned, key, declared, pbi_sha, feature_sha, merged)
+        except (GitError, OSError, subprocess.SubprocessError) as exc:
+            return Outcome(INFRA, f"finalize could not reach git: {exc}")
+
+    def verify(self, wt, pinned, key, declared, pbi_sha, feature_sha, merged):
+        """Steps 3–5 on an already landed commit."""
+        try:
+            wt.reset_to(merged)
             tested = {"feature": feature_sha, "pbi": pbi_sha, "merge": merged}
-            failure, records = self.witnesses(wt, pinned, key, feature_sha, merged)
+            deadline = self.clock() + self.budget
+            failure, records = self.witnesses(wt, pinned, key, feature_sha, merged, deadline)
             if failure is not None:
                 failure.tested, failure.records = tested, records
                 return failure
             outside = self.outside(wt, feature_sha, merged, declared)
-            scanned = self.scan(wt, merged)
+            scanned = self._scan(wt, merged, deadline) if self.scanner else None
             if scanned is not None:
                 scanned.tested = tested
                 return scanned

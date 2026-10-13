@@ -132,6 +132,13 @@ def default_plan():
             "pbis": [pbi("a"), pbi("b"), pbi("c", depends_on=["a"])]}
 
 
+class TestMerger(phase3.merge.GitMerger):
+    """A git-level merger whose open() models a real feature PR in the tests."""
+
+    def open(self, branch, target, title, description, work_item):
+        return {"id": f"pr:{branch}->{target}", "url": f"https://fake/pr/{branch}"}
+
+
 # Several tests read the bare remote directly. Git hardened with
 # `safe.bareRepository=explicit` refuses `-C <bare repo>`; a command-line `-c` is
 # protected configuration, so it is honoured, and it is the only place it is set.
@@ -305,7 +312,8 @@ class World:
 
         def development(owner):
             return phase3.Development(
-                owner, pool=pool or phase3.InlinePool(), merger=merger,
+                owner, pool=pool or phase3.InlinePool(),
+                merger=merger or TestMerger(phase3.gitops.Git(self.repo)),
                 sleep=sleep or self.slept.append, planning_home=self.planning_home,
                 worktrees=self.home / "worktrees",
                 finalizer=finalizer or phase3.finalize.Finalizer(

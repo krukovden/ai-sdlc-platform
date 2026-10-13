@@ -937,6 +937,9 @@ class Integration:
             product = [p for p in feature_changed if not p.startswith(DIRECTORY + "/")
                        and not p.startswith(plans.PLAN_DIR + "/")
                        and not p.startswith(".idp/")]
+            if product and not changed:
+                touched = sorted(set(touched)
+                                 | {str(p.relative_to(wt.path)) for p in post_change})
             if product and not post_change:
                 # Nothing to write is a pass only where an area is already covered;
                 # a feature that brings product code to a product with no area
@@ -1024,6 +1027,11 @@ class Integration:
                                  f"{mention_of(self.feature)} — phase 3 is done; the human "
                                  "tests it through the QA Testing PBI and merges this.",
                                  self.feature)
+            if not opened.get("url"):
+                return dev.block_feature(
+                    f"the feature pull request `{self.branch}` → `{main}` was not opened: "
+                    "this merger does not create a real feature PR for the human or the "
+                    "QA pipeline. FIX: configure a PR-capable provider, then re-run")
             lease.post_event(
                 self.board, self.feature, FEATURE_PR, f"{FEATURE_PR}:{self.feature}",
                 text=(f"Pull request `{self.branch}` → `{main}` opened for the AI review "
@@ -1036,9 +1044,14 @@ class Integration:
         if qa is None:
             return dev.block_feature("the Feature has no QA Testing PBI to hand to the human; "
                                      "planning creates it. FIX: re-run planning")
-        dev.mover.move(self.board, qa["id"], "doing",
-                       f"phase 3 is done at `{head[:12]}`; the pull request into `{main}` is "
-                       f"{pr.get('url') or pr.get('id')}", self.runner.run_id)
+        evidence = (f"phase 3 is done at `{head[:12]}`; the pull request into `{main}` is "
+                    f"{pr.get('url') or pr.get('id')}")
+        moved = dev.mover.reopen(self.board, qa["id"], evidence, self.runner.run_id) \
+            if dev.mover.bucket(self.board.get_issue(qa["id"])) == "done" else \
+            dev.mover.move(self.board, qa["id"], "doing", evidence, self.runner.run_id)
+        if moved.get("bucket") != "doing":
+            return dev.block_feature(f"QA Testing {qa['id']} was not reopened for the next "
+                                     "cycle. FIX: move it to doing, then re-run")
         self.assign(qa["id"])
         moved = self.moved_from(candidate, remote=True)
         if moved:
