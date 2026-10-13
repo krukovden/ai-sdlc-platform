@@ -1,0 +1,17 @@
+{
+  "name": "ai-sdlc-platform",
+  "description": "AI SDLC Platform skills and shared Python tools",
+  "version": "0.1.0",
+  "author": {
+    "name": "krukovden"
+  },
+  "repository": "https://github.com/krukovden/ai-sdlc-platform",
+  "skills": [
+    "./skills/feature-discovery",
+    "./skills/design",
+    "./skills/planning",
+    "./skills/establish-project",
+    "./skills/platform-freshness"
+  ],
+  "hooks": "./hooks/hooks.json"
+}

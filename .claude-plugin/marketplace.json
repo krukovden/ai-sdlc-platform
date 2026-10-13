@@ -1,0 +1,17 @@
+{
+  "name": "ai-sdlc-platform",
+  "owner": {
+    "name": "krukovden"
+  },
+  "metadata": {
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "ai-sdlc-platform",
+      "source": "./",
+      "description": "AI SDLC Platform skills and shared Python tools",
+      "version": "0.1.0"
+    }
+  ]
+}
