@@ -40,6 +40,12 @@ def pinned(board, feature):
     return found[-1] if found else None
 
 
+def first_pinned(board, feature):
+    """The planning event that pinned the plan as planning cut it, before any amendment."""
+    found = events_with_text(board, feature, PLANNING)
+    return found[0] if found else None
+
+
 def pin(board, feature, text, commit, path, branch, run):
     """The planning comment: the plan's hash, bound to a commit. Idempotent."""
     value = digest(text)

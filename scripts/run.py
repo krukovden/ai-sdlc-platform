@@ -38,9 +38,11 @@ Usage:
                   --load-bearing yes|no
                          a session's record of a call it made with nobody to ask
 
-Phases served so far: 2 (design) and 3.1–3.2 (development: planning, then
-building — `scripts/phase3/`). A Feature that reaches a phase this runner does
-not serve yet is left where it is, waiting, and the run stops there.
+Phases served: 2 (design) and 3 (development: planning, building, integration,
+then the hand-off to the human's QA — `scripts/phase3/`). Phase 4 is the
+human's for now: a Feature at `idp:qa` waits for them, and the run stops there.
+Each route checks its own gate (`state.ROUTE_TABLE`). At the end of every phase
+engineering-catalog's `reconcile` runs, when it is installed.
 
 At a gate the runner never moves the card. Approving a design is setting
 `idp:development` on the card, and sending it back is a comment and
@@ -307,7 +309,8 @@ class Runner:
 
     def __init__(self, board, profile, executor, run_id, repo=None, ask=None,
                  worktree_for=None, base_sha=None, design=None,
-                 heartbeat_minutes=lease.HEARTBEAT_MINUTES, out=None, development=None):
+                 heartbeat_minutes=lease.HEARTBEAT_MINUTES, out=None, development=None,
+                 reconcile=None):
         self.board = board
         self.profile = {k: v for k, v in (profile or {}).items()}
         self.executor = executor
@@ -328,6 +331,8 @@ class Runner:
         # Why this run must stop before its next session, or None: `run.py stop`
         # or `idp:stop` on the card (scripts/agent_mode.py).
         self.stopping = lambda card: None
+        self.reconcile = reconcile or phase3.states.reconciler(self.profile, out=self.out,
+                                                               cwd=str(self.repo))
 
     def say(self, text):
         print(text, file=self.out)
@@ -367,8 +372,14 @@ class Runner:
                 self.say(f"{feature}: stopping before its next phase — {stop}.")
                 return EXIT.DONE if moved else EXIT.REFUSED
             tag = tags.phase_of(self.board.read_card(feature).get("tags"))
+            if tag == tags.DESIGN and not state.starts_with_design(answer["route"]):
+                self.say(f"{feature} is on the '{answer['route']}' route, which has no design "
+                         f"review: it starts at {tags.DEVELOPMENT}, and creating it there is "
+                         f"the approval.\nFIX: set {tags.DEVELOPMENT} on {feature} in place "
+                         f"of {tags.DESIGN}")
+                return EXIT.REFUSED
             if tag == tags.DESIGN:
-                code = self.phase_design(feature)
+                code = self.ended("design", self.phase_design, feature)
                 if code != EXIT.DONE:
                     return code
                 moved = True
@@ -380,12 +391,24 @@ class Runner:
                 moved = True
                 continue
             if tag == tags.DEVELOPMENT:
-                return self.phase_development(feature)
+                return self.ended("development", self.phase_development, feature)
+            if tag == tags.QA:
+                self.say(f"{feature} waits for the human's QA: test it through its QA Testing "
+                         f"PBI, then close that and merge the pull request into main — or "
+                         f"file Bugs under it and set {tags.DEVELOPMENT}.")
+                return EXIT.DONE
             self.say(f"{feature} is at {tag or 'no phase tag'}: this runner serves design and "
-                     "development so far (integration and QA are IDE-147 build steps 4 and "
-                     "9). It stays there, waiting.")
+                     "development (automated QA is IDE-147 build step 9). It stays there, "
+                     "waiting.")
             return EXIT.DONE if moved else EXIT.REFUSED
         return EXIT.DONE
+
+    def ended(self, phase, run, feature):
+        """Run a phase; at its end, however it ended, engineering-catalog reconciles."""
+        try:
+            return run(feature)
+        finally:
+            self.reconcile(phase)
 
     # -- phase 3 ------------------------------------------------------------
 
