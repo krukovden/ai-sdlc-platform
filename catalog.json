@@ -1,7 +1,7 @@
 {
   "name": "ai-sdlc-platform",
   "source": "https://github.com/krukovden/ai-sdlc-platform",
-  "payload": ["scripts", "registry", "schemas", "templates", "lint", "cli", "bin", "package.json", "catalog.json"],
+  "payload": ["scripts", "hooks", "registry", "schemas", "templates", "lint", "cli", "bin", "package.json", "catalog.json"],
   "skills": [
     {"name": "feature-discovery", "path": "skills/feature-discovery"},
     {"name": "design", "path": "skills/design"},

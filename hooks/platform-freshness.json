@@ -1,9 +1,14 @@
 {
   "name": "platform-freshness",
-  "description": "Invoke the portable freshness skill once per session; compose with an existing context hook rather than registering a second Copilot hook.",
+  "description": "Once per session, print at most one line when a newer platform release exists. Silent when nothing is due; never fails a session and never updates.",
   "event": "SessionStart",
   "script": "skills/platform-freshness/check.js",
   "runtime": "node",
-  "automaticRegistration": false,
-  "intervalDays": 7
+  "registration": "hooks/hooks.json",
+  "platforms": [
+    "claude"
+  ],
+  "intervalDays": 7,
+  "timeoutSec": 30,
+  "composition": "Copilot has no hook of its own: a second SessionStart context hook can make Copilot drop both messages, so it reaches the skill through its installed instructions file."
 }

@@ -8,6 +8,8 @@ function check({home = os.homedir(), cwd = process.cwd(), now = Date.now(), getL
   while (!fs.existsSync(path.join(base, '.idp/platform/receipt.json')) && path.dirname(base) !== base) base = path.dirname(base);
   let state = path.join(base, '.idp/platform');
   if (!fs.existsSync(path.join(state, 'receipt.json'))) state = path.join(home, '.idp/platform');
+  // `update` without --local reads the home receipt, so a project-local installation has to say so.
+  const scope = path.resolve(state) === path.resolve(home, '.idp/platform') ? '' : ' --local';
   let receipt;
   if (fs.existsSync(path.join(state, 'receipt.json'))) receipt = JSON.parse(fs.readFileSync(path.join(state, 'receipt.json')));
   else {
@@ -27,7 +29,7 @@ function check({home = os.homedir(), cwd = process.cwd(), now = Date.now(), getL
   fs.writeFileSync(cache, JSON.stringify({checked: now}));
   try {
     const version = getLatest(receipt.source);
-    if (version && compare(version, receipt.version) > 0) out(`AI SDLC Platform ${receipt.version} → ${version} available. Update: npx git+${receipt.source} update`);
+    if (version && compare(version, receipt.version) > 0) out(`AI SDLC Platform ${receipt.version} → ${version} available. Update: npx git+${receipt.source} update${scope}`);
   } catch {}
 }
 if (require.main === module) { try { check(); } catch {} }
