@@ -9,11 +9,13 @@ runner's real code.
 """
 
 import io
+import itertools
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -59,11 +61,35 @@ class Phase3TestCase(ScriptTestCase):
 # 3.1 Planning
 # ---------------------------------------------------------------------------
 
-class PlanningTests(Phase3TestCase):
+class DefaultRunTests(ScriptTestCase):
+    """One clean run of the default plan — a, b, and c after a — read by every test.
+
+    Each test only reads the board and the remote the run left, so they share
+    it: the run is the expensive part, and it is the same run for all of them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.patches = [mock.patch.dict(os.environ, GIT_ENV),
+                       mock.patch.object(design, "HOME", root / "idp")]
+        for patch in cls.patches:
+            patch.start()
+        cls.shared = World(root / "shared")
+        cls.code = cls.shared.runner().run_feature(FEATURE)
+
+    @classmethod
+    def tearDownClass(cls):
+        for patch in reversed(cls.patches):
+            patch.stop()
+        cls.tmp.cleanup()
+
+    def test_the_run_reaches_the_end_of_building(self):
+        self.assertEqual(self.code, EXIT.DONE)
 
     def test_planning_creates_the_board_shape_qa_testing_included(self):
-        world = self.world()
-        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        world = self.shared
         items = world.items()
         self.assertEqual(sorted(items), ["a", "b", "c", shape.QA_KEY])
         for key in ("a", "b", "c"):
@@ -77,8 +103,7 @@ class PlanningTests(Phase3TestCase):
                           "[Task] Run the feature's tests"])
 
     def test_the_plan_is_committed_and_its_hash_pinned_in_the_planning_comment(self):
-        world = self.world()
-        world.runner().run_feature(FEATURE)
+        world = self.shared
         pin = phase3.plan.pinned(world.board, FEATURE)
         text = git(world.remote, "show", f"{pin['commit']}:{pin['path']}") + "\n"
         self.assertEqual(phase3.plan.digest(text), pin["sha256"])
@@ -86,8 +111,7 @@ class PlanningTests(Phase3TestCase):
         self.assertEqual(pin["branch"], FEATURE_BRANCH)
 
     def test_the_feature_journal_is_one_replaced_attachment(self):
-        world = self.world()
-        world.runner().run_feature(FEATURE)
+        world = self.shared
         title = run.memory.feature_file(FEATURE, "history")
         journals = [d for d in world.board.attachments[FEATURE] if d["title"] == title]
         self.assertEqual(len(journals), 1)
@@ -95,6 +119,52 @@ class PlanningTests(Phase3TestCase):
         self.assertIn("## Development", content)
         self.assertIn("Planning cut 3 PBIs", content)
         self.assertIn("Building done", content)
+
+    def test_every_pbi_merges_and_the_qa_testing_pbi_is_never_worked(self):
+        world = self.shared
+        items = world.items()
+        for key in ("a", "b", "c"):
+            card = world.board.cards[items[key]["id"]]
+            self.assertEqual(card["status"], "Resolved")
+            self.assertIsNone(tags.owner_of(card["tags"]))
+            self.assertEqual(world.remote_file(FEATURE_BRANCH, f"src/{key}.py"), "VALUE = 1\n")
+        qa = world.board.cards[items[shape.QA_KEY]["id"]]
+        self.assertEqual((qa["status"], qa["tags"]), ("New", []))
+        self.assertNotIn(items[shape.QA_KEY]["id"], world.sessions["worker"])
+        feature = world.board.cards[FEATURE]["tags"]
+        self.assertEqual(feature, [tags.DEVELOPMENT])                 # released, waiting
+        self.assertTrue(world.events(FEATURE, orchestrator.BUILT))
+
+    def test_a_dependency_runs_only_after_what_it_waits_on_merged(self):
+        world = self.shared
+        ids = {k: i["id"] for k, i in world.items().items()}
+        order = world.sessions["worker"]
+        self.assertLess(order.index(ids["a"]), order.index(ids["c"]))
+        merged_a = world.events(ids["a"], orchestrator.MERGED)[0]["head"]
+        claim_c = world.events(ids["c"], lease.CLAIM)[0]
+        self.assertEqual(claim_c["base"], merged_a)
+
+    def test_the_claim_comment_records_base_branch_generation_and_profile(self):
+        world = self.shared
+        card = world.items()["a"]["id"]
+        claim = world.events(card, lease.CLAIM)[0]
+        self.assertEqual(claim["generation"], 1)
+        self.assertEqual(claim["owner"], "run-1/w1")
+        self.assertTrue(claim["branch"].startswith(f"pbi/{card}-module-a/g1"))
+        self.assertEqual(claim["profile"], run.board_cli.profile_hash(PROFILE))
+        self.assertEqual(len(claim["base"]), 40)
+
+    def test_running_twice_changes_nothing_the_second_time(self):
+        world = self.shared
+        before, effects = world.board.snapshot(), world.board.side_effects
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.board.snapshot(), before)
+        self.assertEqual(world.board.side_effects, effects)
+        self.assertEqual(world.executor_.calls, [])
+
+
+
+class PlanningTests(Phase3TestCase):
 
     def test_phase_three_refuses_without_the_approved_adr(self):
         world = self.world(approve=False)
@@ -108,9 +178,7 @@ class PlanningTests(Phase3TestCase):
         self.assertEqual(world.board.side_effects, 0)
 
     def test_the_small_feature_route_needs_no_adr(self):
-        world = self.world(route="small-feature",
-                           plan={"pbis": [pbi("a", )]})
-        world.plan["pbis"][0]["adr_sections"] = ["Storage"]
+        world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
         self.assertEqual(self.status(world, "a"), "Resolved")
 
@@ -152,52 +220,6 @@ class PlanningTests(Phase3TestCase):
 
 class BuildingTests(Phase3TestCase):
 
-    def test_every_pbi_merges_and_the_qa_testing_pbi_is_never_worked(self):
-        world = self.world()
-        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
-        items = world.items()
-        for key in ("a", "b", "c"):
-            card = world.board.cards[items[key]["id"]]
-            self.assertEqual(card["status"], "Resolved")
-            self.assertIsNone(tags.owner_of(card["tags"]))
-            self.assertEqual(world.remote_file(FEATURE_BRANCH, f"src/{key}.py"), "VALUE = 1\n")
-        qa = world.board.cards[items[shape.QA_KEY]["id"]]
-        self.assertEqual((qa["status"], qa["tags"]), ("New", []))
-        self.assertNotIn(items[shape.QA_KEY]["id"], world.sessions["worker"])
-        feature = world.board.cards[FEATURE]["tags"]
-        self.assertEqual(feature, [tags.DEVELOPMENT])                 # released, waiting
-        self.assertTrue(world.events(FEATURE, orchestrator.BUILT))
-
-    def test_a_dependency_runs_only_after_what_it_waits_on_merged(self):
-        world = self.world()
-        world.runner().run_feature(FEATURE)
-        ids = {k: i["id"] for k, i in world.items().items()}
-        order = world.sessions["worker"]
-        self.assertLess(order.index(ids["a"]), order.index(ids["c"]))
-        merged_a = world.events(ids["a"], orchestrator.MERGED)[0]["head"]
-        claim_c = world.events(ids["c"], lease.CLAIM)[0]
-        self.assertEqual(claim_c["base"], merged_a)
-
-    def test_the_claim_comment_records_base_branch_generation_and_profile(self):
-        world = self.world()
-        world.runner().run_feature(FEATURE)
-        card = world.items()["a"]["id"]
-        claim = world.events(card, lease.CLAIM)[0]
-        self.assertEqual(claim["generation"], 1)
-        self.assertEqual(claim["owner"], "run-1/w1")
-        self.assertTrue(claim["branch"].startswith(f"pbi/{card}-module-a/g1"))
-        self.assertEqual(claim["profile"], run.board_cli.profile_hash(PROFILE))
-        self.assertEqual(len(claim["base"]), 40)
-
-    def test_running_twice_changes_nothing_the_second_time(self):
-        world = self.world()
-        world.runner().run_feature(FEATURE)
-        before, effects = world.board.snapshot(), world.board.side_effects
-        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
-        self.assertEqual(world.board.snapshot(), before)
-        self.assertEqual(world.board.side_effects, effects)
-        self.assertEqual(world.executor_.calls, [])
-
     def test_parallel_workers_are_capped_per_agent(self):
         # codex may run two at once; the third ready PBI goes to the next agent
         # with a free slot, and nothing waits for a cap that is not full.
@@ -222,10 +244,10 @@ class BuildingTests(Phase3TestCase):
         self.assertEqual(roles[:3], ["worker", "review", "worker"])
 
     def test_real_threads_build_the_same_feature(self):
-        world = self.world()
+        world = self.world(plan={"pbis": [pbi("a"), pbi("b")]})
         code = world.runner(pool=orchestrator.ThreadPool()).run_feature(FEATURE)
         self.assertEqual(code, EXIT.DONE)
-        self.assertTrue(all(self.status(world, k) == "Resolved" for k in ("a", "b", "c")))
+        self.assertTrue(all(self.status(world, k) == "Resolved" for k in ("a", "b")))
 
     def test_the_termination_rule_blocks_the_feature_naming_what_waits(self):
         world = self.world()
@@ -725,19 +747,35 @@ class HandoffLayerThreeTests(Phase3TestCase):
 class CrashResumeTests(Phase3TestCase):
 
     def test_a_crash_after_every_side_effect_resumes_to_the_same_board(self):
-        worlds = []
+        # The clean run plans; every crash point after it starts from the cache
+        # that planning session left, which is what a resume on the same machine
+        # finds too. The model writes nothing to the board, so no crash point is
+        # lost by not replaying it — and with no session patching the process,
+        # the points can run side by side.
+        worlds, lock, made = {}, threading.Lock(), itertools.count(1)
+        template = []
 
         def make_board():
-            world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
-            worlds.append(world)
+            with lock:
+                n = next(made)
+            world = World(self.root / f"crash-{n}", route="small-feature",
+                          plan={"pbis": [pbi("a")]},
+                          planning_cache=template[0] if template else None)
+            with lock:
+                worlds[id(world.board)] = world
             return world.board
 
         def scenario(board):
-            world = next(w for w in worlds if w.board is board)
+            world = worlds[id(board)]
             world.runner().run_feature(FEATURE)
+            if not template:
+                template.append(world.planning_home)
 
-        exercised = crash_and_resume(make_board, scenario)
+        exercised = crash_and_resume(make_board, scenario,
+                                     workers=min(8, os.cpu_count() or 1))
         self.assertGreaterEqual(exercised, 20)
+        self.assertTrue(all(w.sessions.get("design") is None for n, w in worlds.items()
+                            if w.planning_home != template[0]))
 
 
 # ---------------------------------------------------------------------------

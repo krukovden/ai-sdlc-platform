@@ -24,6 +24,7 @@ with a crash right after it, resumes, and requires the same final board.
 
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from support import board as _board_module
@@ -244,7 +245,7 @@ class FakeBoard(phases.PhaseMixin):
         }, sort_keys=True))
 
 
-def crash_and_resume(make_board, scenario, max_resumes=3):
+def crash_and_resume(make_board, scenario, max_resumes=3, workers=1):
     """Crash after every side effect of `scenario`, resume, demand the same board.
 
     `make_board()` returns a fresh board in the starting state; `scenario(board)`
@@ -255,6 +256,11 @@ def crash_and_resume(make_board, scenario, max_resumes=3):
     For each k in 1..N (N = side effects of a clean run): arm a crash after the
     k-th side effect, run, require that the crash fired, then resume — up to
     `max_resumes` times — and require the final board to equal the clean one.
+
+    `workers` runs the crash points side by side, for scenarios whose world —
+    a git remote, say — makes one point slow. Each point has its own board and
+    world, so they share nothing but the clean run's snapshot; `make_board` and
+    `scenario` must then be safe to call from several threads.
     """
     clean = make_board()
     scenario(clean)
@@ -263,7 +269,7 @@ def crash_and_resume(make_board, scenario, max_resumes=3):
     if total == 0:
         raise AssertionError("the scenario has no side effects to crash after")
 
-    for k in range(1, total + 1):
+    def point(k):
         board = make_board()
         board.crash_after(k)
         try:
@@ -286,4 +292,12 @@ def crash_and_resume(make_board, scenario, max_resumes=3):
                 f"after a crash at side effect {k} ({board.log[k - 1]!r}) and a resume, "
                 f"the board differs from a clean run:\n  clean:   {expected}\n"
                 f"  resumed: {actual}")
+
+    if workers <= 1:
+        for k in range(1, total + 1):
+            point(k)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for future in [pool.submit(point, k) for k in range(1, total + 1)]:
+                future.result()
     return total

@@ -20,6 +20,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -142,7 +143,8 @@ def coverage(plan, adr_text, planner_model, **_):
 class World:
     """One remote, one clone, one board, one home: everything a run touches."""
 
-    def __init__(self, root, route="feature", plan=None, approve=True, comment_bumps=False):
+    def __init__(self, root, route="feature", plan=None, approve=True, comment_bumps=False,
+                 planning_cache=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.remote = self.root / "remote.git"
@@ -159,6 +161,10 @@ class World:
         git(self.root, "clone", "-q", str(self.remote), str(self.repo))
         self.home = self.root / "idp"
         self.planning_home = self.root / "planning"
+        if planning_cache is not None:
+            # A planning session another world already ran: the cache it left is
+            # what this one finds, so no session runs here.
+            shutil.copytree(planning_cache, self.planning_home)
         self.plan = plan or default_plan()
         self.route = route
         self.skip_finalize = False
