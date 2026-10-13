@@ -30,7 +30,16 @@ What it serves today:
 ## Commands
 
 ```bash
+python3 scripts/board.py pipeline IDE-88
+python3 scripts/board.py design IDE-88
+python3 scripts/board.py develop IDE-88
+python3 scripts/board.py qa IDE-88
+python3 scripts/board.py setup
+python3 scripts/board.py status IDE-88
+python3 scripts/board.py status
 python3 scripts/run.py IDE-88
+python3 scripts/run.py IDE-88 --phase design
+python3 scripts/run.py IDE-88 --phase development
 python3 scripts/run.py --agent
 python3 scripts/run.py --agent --serve design,development
 python3 scripts/run.py stop
@@ -42,7 +51,14 @@ python3 scripts/run.py report --code 0 --reason "ADR ready"
 
 | Command | What it does |
 | --- | --- |
+| `board.py pipeline <feature-id>` | Backing command for `/idp <feature-id>`: continue that Feature from its current phase to the next human gate. |
+| `board.py design <feature-id>` | Backing command for `/idp-design <feature-id>`: run phase 2 only and stop at `idp:design-review`. |
+| `board.py develop <feature-id>` | Backing command for `/idp-develop <feature-id>`: run phase 3 only and stop at `idp:qa`. |
+| `board.py qa <feature-id>` | Backing command for `/idp-qa <feature-id>`: print the QA Testing PBI state, PR/branch and acceptance checklist; it writes nothing to the board. |
+| `board.py setup` | Backing command for `/idp-setup`: derive `.idp/profile.json` from the repository and write it for editing. |
+| `board.py status [feature-id]` | Backing command for `/idp-status [feature-id]`: show where the Feature is and why it waits. Without an id it resolves the Feature from the current branch. |
 | `run.py <feature-id>` | Runs that Feature from its current phase to the next human gate. In a terminal it waits at gates; with `--no-ask` it stops and leaves the card waiting. |
+| `run.py <feature-id> --phase design|development` | Runs only that phase; if the card is not already in that phase and ready or active, it refuses with exit 3 and a FIX line. |
 | `run.py --agent` | Loops: reap, find a card waiting for a phase this machine can serve, claim it, run it, hand it on, repeat. |
 | `run.py stop` | Stops after the task in flight: finalize what is already running, commit a handoff where needed, pause held cards, exit. |
 | `run.py takeover <card>` | A human takes a dead run's card immediately, fenced on the revision just read. |

@@ -155,14 +155,14 @@ feature; the architect picks it up and turns it into an ADR; the human approves
 the ADR and it is attached to the feature as a file. The word *Spike* no longer
 means technical design — technical design is the ADR.
 
-The first revision's local commands still exist where they fit —
-`/idp-setup`, `/idp-establish`, `/idp-discovery`, `/idp-design`,
-`/idp-planning`, `/idp-development` and `/idp-status` — but IDE-147 added the
-runner commands that make the revised path autonomous:
-`run.py <feature>`, `run.py --agent`, `run.py stop`, `run.py takeover` and
-`run.py reap`. A command whose signal is absent refuses with a reason rather than
-guessing, and every command resumes from the last completed step instead of
-starting over.
+The operator entry points are now explicit:
+`/idp <feature>`, `/idp-design <feature>`, `/idp-develop <feature>`,
+`/idp-qa <feature>`, `/idp-setup` and `/idp-status [feature]`. They dispatch to
+`run.py <feature>`, `run.py <feature> --phase design|development` or the
+read-only board helpers behind them; `run.py --agent`, `run.py stop`,
+`run.py takeover` and `run.py reap` remain the autonomous runner controls. A
+command whose signal is absent refuses with a reason rather than guessing, and
+every command resumes from the last completed step instead of starting over.
 
 **Signal and signal delivery are different things.** The signal — "the ADR is approved" — is part of the contract and never changes. Delivery changes as the platform matures: a human today, board polling or a webhook later. The check itself lives in one shared **state resolver**, so moving to autonomy replaces the caller, not the logic.
 
@@ -187,7 +187,7 @@ These come from the project constitution and are not negotiable inside this repo
 |---|---|---|
 | 1 | Фундамент и контракты | The rules of the game, plus the cross-cutting services: tracker adapter, profile resolution, state resolver, project memory |
 | 2 | Research Skill for PO | The local Feature Discovery skill: research, independent LLM review, approved Feature artifacts published to Linear |
-| 3 | Технический дизайн и планирование | `/idp-design` turns a feature into an ADR, the human approves it, `/idp-planning` produces PBIs |
+| 3 | Технический дизайн и планирование | `/idp-design` runs phase 2 to the ADR gate; `/idp-develop` owns planning, PBIs and delivery through the QA hand-off |
 | 4 | Development | `run.py` owns phase 3: planning, one worker per PBI in parallel (code and tests), runner finalize, one cross-tool review, integration, the documenter, two levels of pull request (IDE-147) |
 | 5 | Пилот | The whole process run end to end on the pilot project. Not construction — verification |
 | 6 | Establish project | `/idp-establish`: start a whole project rather than a single feature — verify a supplied architecture, slice it into stages and features, block what nobody has thought through |

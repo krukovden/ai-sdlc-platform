@@ -20,6 +20,27 @@ npx git+https://github.com/krukovden/ai-sdlc-platform uninstall
 
 The Copilot layout follows engineering-catalog's verified CLI adapter. Orca uses the shared skills directory also read by Codex and Gemini. Symlinks require a filesystem that supports them; this release targets macOS and Linux.
 
+## Commands
+
+Every install ships the same six explicit entry points:
+
+| Command | Meaning |
+| --- | --- |
+| `/idp <IDE-nn>` | Continue the Feature from its current phase to the next human gate. |
+| `/idp-design <IDE-nn>` | Run phase 2 only and stop at design review. |
+| `/idp-develop <IDE-nn>` | Run phase 3 only and stop at QA. |
+| `/idp-qa <IDE-nn>` | Read-only QA summary: QA Testing PBI state, PR/branch and acceptance checklist. |
+| `/idp-setup` | Derive `.idp/profile.json` from the repository and write it for editing. |
+| `/idp-status [IDE-nn]` | Show where the Feature is and why it waits. |
+
+How each host gets them was checked on this machine before shipping:
+
+| Host | Verified with | What is installed |
+| --- | --- | --- |
+| Claude Code | `claude --help`, `claude plugin --help`, `claude plugin validate --help`, `ls ~/.claude/commands` | Real command files in `~/.claude/commands/` or `.claude/commands/`, plus plugin `commands/*.md` for marketplace validation and plugin installs. |
+| GitHub Copilot CLI | `copilot help`, `copilot help commands`, `copilot plugin --help`, `ls ~/.copilot ~/.copilot/skills ~/.copilot/agents` | No separate custom-command directory was exposed; explicit `/idp…` entry points ship as skills in `~/.copilot/skills/` or `.github/skills/`. |
+| Orca / Codex / shared agents | `ls ~/.agents` | No command directory exists there either; explicit `/idp…` entry points ship as skills in `~/.agents/skills/` or `.agents/skills/`. |
+
 The CLI copies registered skills, shared scripts, schemas, templates, registry and lint data into `~/.idp/platform/<version>/`. Skill links point into that tree so Python's resolved `__file__` still finds the shared modules. `~/.local/bin/idp` links to its `scripts/board.py`; add `~/.local/bin` to PATH. Local installs use the same paths under the current project; their launcher is `<project>/.local/bin/idp`. Run commands from your product repository: profile resolution still walks up from the working directory for `.idp/profile.json`.
 
 The receipt at `.idp/platform/receipt.json` records the version, targets, managed links and SHA-256 of each payload file. Targets in one scope share one payload: updates update all installed targets, and uninstall removes the whole installation (omit `--target`, or pass `--target all`; naming only some of several installed targets is refused). Installing an additional target preserves existing targets. Global and local scopes are independent.
