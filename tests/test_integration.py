@@ -176,6 +176,17 @@ class FeaturePullRequestTests(IntegrationTestCase):
         self.assertEqual(self.qa(world)["status"], "New")
         self.assertNotEqual(self.feature_tags(world), [tags.QA])
 
+    def test_a_cached_synthetic_feature_pr_event_is_replaced_before_qa(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        lease.post_event(world.board, FEATURE, integration.FEATURE_PR,
+                         f"{integration.FEATURE_PR}:{FEATURE}",
+                         text="legacy synthetic PR", id=f"git:{FEATURE_BRANCH}", url=None)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        prs = world.events(FEATURE, integration.FEATURE_PR)
+        self.assertEqual(len(prs), 2)
+        self.assertEqual(prs[-1]["url"], f"https://fake/pr/{FEATURE_BRANCH}")
+        self.assertEqual(self.feature_tags(world), [tags.QA])
+
 
 # ---------------------------------------------------------------------------
 # Rounds: findings become PBIs, at most two rounds of fixes
@@ -550,6 +561,39 @@ class DocumenterTests(IntegrationTestCase):
         self.assertEqual(len(attempts), 3)
         self.assertIn("src/old.py", attempts[0]["text"])
         self.assertFalse(world.events(FEATURE, integration.HANDED))
+
+    def test_editing_another_blueprint_still_checks_existing_affected_areas(self):
+        world = self.world()
+        seed_blueprint_on_main(world)
+        target = world.repo / "docs" / "blueprint" / "modules.md"
+        target.write_text(BLUEPRINT.replace("../../src/a.py", "../../src/old.py"),
+                          encoding="utf-8")
+        git(world.repo, "commit", "-qam", "docs: stale link")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = lambda world, worktree: write_blueprint(
+            world, worktree, text=BLUEPRINT.replace("Modules", "Other area"), name="other.md")
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertIn("src/old.py", attempts[0]["text"])
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+
+    def test_product_changes_must_be_covered_by_a_blueprint_path(self):
+        world = self.world()
+        other = world.repo / "docs" / "blueprint" / "other.md"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text(BLUEPRINT.replace("../../src/a.py", "../../docs/project-state.md")
+                         .replace("src/", "docs/")
+                         .replace("Modules", "Other area"), encoding="utf-8")
+        git(world.repo, "add", "-A")
+        git(world.repo, "commit", "-q", "-m", "docs: unrelated area")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = lambda world, worktree: EXIT.DONE
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertIn("src/a.py", attempts[0]["text"])
+        self.assertIn("no area blueprint covers", attempts[0]["text"])
 
 
 def seed_blueprint_on_main(world):

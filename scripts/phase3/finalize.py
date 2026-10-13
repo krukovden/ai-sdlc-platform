@@ -118,7 +118,7 @@ def _remaining(deadline, now, timeout):
     left = deadline - now
     if left <= 0:
         return 0, True
-    return min(timeout, max(1, int(left))), left < timeout
+    return min(timeout, left), left < timeout
 
 
 class Finalizer:
@@ -230,7 +230,10 @@ class Finalizer:
             record = self.execute(wt, criterion[0], witness["command"],
                                   int(witness["timeout"]), merged, deadline=deadline)
             records.append(record)
-            if failure is None and record.get("mutation"):
+            if failure is None and record.get("budget_exhausted"):
+                failure = Outcome(BUDGET, f"{record['ac']} ran out the shared witness budget "
+                                          f"of {self.budget} s before it finished")
+            elif failure is None and record.get("mutation"):
                 failure = Outcome(MALFORMED, f"{record['ac']} changed tracked files or HEAD "
                                              "while finalize was validating it: validation "
                                              "must not rewrite the source tree")
@@ -261,9 +264,14 @@ class Finalizer:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content or "", encoding="utf-8")
             probe = type(wt)(target)
+            baseline = self.snapshot(probe, feature_sha)
             for ac, _, witness in commands:
                 record = self.execute(probe, ac, witness["command"], int(witness["timeout"]),
-                                      feature_sha, deadline=deadline)
+                                      feature_sha, deadline=deadline, baseline=baseline)
+                if record.get("budget_exhausted"):
+                    return Outcome(BUDGET, f"{ac} ran out the shared witness budget of "
+                                           f"{self.budget} s on the feature head without the "
+                                           "fix")
                 if record.get("mutation"):
                     return Outcome(MALFORMED, f"{ac} changed tracked files or HEAD while "
                                               "finalize was validating it: validation must "
@@ -285,13 +293,15 @@ class Finalizer:
         finally:
             wt.run("worktree", "remove", "--force", str(target), check=False)
 
-    def execute(self, wt, ac, command, timeout, sha, deadline=None):
+    def execute(self, wt, ac, command, timeout, sha, deadline=None, baseline=None):
         started = self.clock()
         allowed, budget_limited = _remaining(deadline, started, timeout)
         if allowed <= 0:
             return {"ac": ac, "command": command, "sha": sha, "exit": None,
                     "duration": 0.0, "timed_out": True, "tail": "",
-                    "budget_limited": True, "mutation": False}
+                    "budget_limited": True, "mutation": False,
+                    "budget_exhausted": True}
+        baseline = baseline if baseline is not None else self.snapshot(wt, sha)
         try:
             answer = self.call(["/bin/sh", "-c", command], cwd=str(wt.path), env=self.env,
                                capture_output=True, text=True, timeout=allowed,
@@ -302,10 +312,12 @@ class Finalizer:
             out = exc.stdout or ""
             out = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
             code, output, timed_out = None, out, True
-        mutation = self.mutated(wt, sha)
+        finished = self.clock()
+        mutation = self.mutated(wt, baseline)
         return {"ac": ac, "command": command, "sha": sha, "exit": code,
-                "duration": round(self.clock() - started, 1), "timed_out": timed_out,
+                "duration": round(finished - started, 1), "timed_out": timed_out,
                 "tail": tail(output), "budget_limited": budget_limited,
+                "budget_exhausted": deadline is not None and finished > deadline,
                 "mutation": mutation}
 
     @staticmethod
@@ -339,6 +351,10 @@ class Finalizer:
     def _scan(self, wt, merged, deadline):
         record = self.execute(wt, "security", self.scanner, SCANNER_TIMEOUT, merged,
                               deadline=deadline)
+        if record.get("budget_exhausted"):
+            return Outcome(BUDGET, f"the shared witness budget of {self.budget} s ran out "
+                                   "before the security scanner finished",
+                           records=[record])
         if record.get("mutation"):
             return Outcome(MALFORMED, "the security scanner changed tracked files or HEAD "
                                       "while finalize was validating the work",
@@ -353,22 +369,27 @@ class Finalizer:
                            records=[record])
         return None
 
-    def mutated(self, wt, sha):
-        head = getattr(wt, "head", None)
-        if callable(head):
+    def snapshot(self, wt, sha):
+        head = sha
+        reader = getattr(wt, "head", None)
+        if callable(reader):
             try:
-                if wt.head() != sha:
-                    return True
+                head = wt.head()
             except GitError:
-                return True
+                head = None
         runner = getattr(wt, "run", None)
+        text = ""
         if callable(runner):
             try:
                 status = wt.run("status", "--porcelain", "--untracked-files=no", check=False)
             except GitError:
-                return True
-            return bool((status.stdout if hasattr(status, "stdout") else status).strip())
-        return False
+                text = None
+            else:
+                text = (status.stdout if hasattr(status, "stdout") else status).strip()
+        return {"head": head, "status": text}
+
+    def mutated(self, wt, baseline):
+        return self.snapshot(wt, baseline.get("head")) != baseline
 
     # -- the whole of it ----------------------------------------------------
 

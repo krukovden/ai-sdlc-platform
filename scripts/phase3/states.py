@@ -149,7 +149,8 @@ class AdapterStates(StateMover):
         if not target or not done:
             return {"moved": False, "bucket": current,
                     "reason": f"this board has no 'doing' state for {identifier}"}
-        written = lease.tags.move_status(board, identifier, done, target)
+        written = lease.tags.move_status_owned(board, identifier, done, target, run,
+                                              owner=owner)
         if written["outcome"] in ("conflict", "refused"):
             raise _lost(identifier, owner or run,
                         lease.tags.owner_of(written.get("tags")) or "another run")

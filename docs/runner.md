@@ -482,6 +482,10 @@ Two operational limits matter even before those experiments run:
 - **Azure PR completion stays off by default.** Until experiment 8 proves the
   target race away, the runner leaves Azure Repos PBI PRs open and blocks the
   Feature unless the profile opts in with `development.azure_complete_unproven`.
+- **Azure recovery needs the real merge commit.** If Azure reports a completed
+  PR but omits the actual merge commit SHA, the runner now refuses to guess
+  from target metadata or branch tips. It leaves recovery blocked on that PR
+  instead of certifying an unprovable landing.
 - **Copilot hook registration is manual.** This repository ships a hook file, not a
   Copilot plugin hook installer. Without that manual install, only the runner-side
   handoff guarantee exists for Copilot sessions.

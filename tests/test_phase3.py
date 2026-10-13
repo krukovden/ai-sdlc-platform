@@ -704,6 +704,22 @@ class BugTests(Phase3TestCase):
         self.assertIn("failing test first", prompt)
         self.assertIn("tests/bug_900.sh", prompt)
 
+    def test_an_existing_regression_test_may_be_rewritten_for_the_red_check(self):
+        world = self.world_with_bug(description="VALUE is missing from src/900.py.",
+                                    rule=BUG_RULE)
+        target = world.repo / "tests" / "bug_900.sh"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("true\n", encoding="utf-8")
+        git(world.repo, "add", "-A")
+        git(world.repo, "commit", "-q", "-m", "seed an old regression test")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        test = "grep -q 'VALUE = 1' src/900.py\n"
+        world.behaviors[BUG] = [ok(extra={"tests/bug_900.sh": test})]
+        world.runner().run_feature(FEATURE)
+        self.assertEqual(world.board.cards[BUG]["status"], "Resolved")
+        self.assertFalse(world.events(BUG, lease.BLOCK))
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "tests/bug_900.sh"), test)
+
     def test_no_diff_may_touch_a_pinned_plan_file(self):
         self.assertEqual(fin.protected_stem("docs/plans/IDE-88.bug-900.json"),
                          "docs/plans/IDE-88.")
@@ -813,6 +829,32 @@ class RacingMerger(phase3.merge.GitMerger):
         return super().complete(pr, branch, target, feature_sha, merged, title, mention)
 
 
+class SameParentDifferentTreeMerger(phase3.merge.GitMerger):
+
+    def __init__(self, git, world, root):
+        super().__init__(git)
+        self.world, self.root = world, root
+
+    def open(self, branch, target, title, description, work_item):
+        return {"id": f"pr:{branch}", "url": f"https://fake/pr/{branch}"}
+
+    def complete(self, pr, branch, target, feature_sha, merged, title, mention):
+        other = self.root / "same-parent"
+        if other.exists():
+            shutil.rmtree(other)
+        git(self.root, "clone", "-q", "-b", target, str(self.world.remote), str(other))
+        (other / "src" / "extra.py").write_text("VALUE = 1\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "same parent, different tree")
+        git(other, "push", "-q", "origin", "HEAD:refs/heads/tmp/same-parent-tree")
+        self.git.fetch()
+        tree = git(other, "rev-parse", "HEAD^{tree}")
+        squash = self.git.run("commit-tree", tree, "-p", feature_sha, "-m",
+                              phase3.merge.merge_message(title, mention, branch, merged))
+        self.git.push(squash, target, expect=feature_sha)
+        return squash
+
+
 class MergeRaceTests(Phase3TestCase):
 
     def racing(self, breaks):
@@ -841,6 +883,16 @@ class MergeRaceTests(Phase3TestCase):
         world = self.world(plan={"pbis": [pbi("a")]})
         world.runner().run_feature(FEATURE)
         self.assertEqual(world.events(world.items()["a"]["id"], orchestrator.RACE), [])
+
+    def test_a_same_parent_different_tree_is_reverified(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        merger = SameParentDifferentTreeMerger(phase3.gitops.Git(world.repo), world, self.root)
+        code = world.runner(merger=merger).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.BLOCKED)
+        races = phase3.common.events_with_text(world.board, world.items()["a"]["id"],
+                                               orchestrator.RACE)
+        self.assertTrue(races)
+        self.assertIn("exact tested", races[0]["text"])
 
 
 class ReviewTests(Phase3TestCase):
@@ -1210,6 +1262,30 @@ class PinnedWitnessSchemaTests(unittest.TestCase):
             outcome, _ = finalizer.witnesses(repo, pinned, "900", "F", "M")
         self.assertEqual(outcome.kind, fin.BUDGET)
 
+    def test_a_fractional_budget_overrun_is_budget_not_pass(self):
+        plan = {"pbis": [dict(pbi("a"), key="900", regression_test="tests/bug_900.sh",
+                             acceptance_criteria=[{"id": "AC-1", "text": "bug fixed",
+                                                   "witness": {"command": "sh tests/bug_900.sh",
+                                                               "timeout": 10}}])]}
+        text = phase3.plan.plan_text(plan)
+        pinned = {"commit": "c0", "path": "docs/plans/X.plan.json",
+                  "sha256": phase3.plan.digest(text)}
+        ticks = [0.0]
+
+        def clock():
+            return ticks[0]
+
+        def runner(*args, **kwargs):
+            first = ticks[0] == 0.0
+            ticks[0] = 0.8 if first else 1.6
+            return subprocess.CompletedProcess(args[0], 1 if first else 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.BugRepo(tmp, text)
+            finalizer = fin.Finalizer({"witness_budget_seconds": 1}, run=runner, clock=clock)
+            outcome, _ = finalizer.witnesses(repo, pinned, "900", "F", "M")
+        self.assertEqual(outcome.kind, fin.BUDGET)
+
 
 class StatesTests(unittest.TestCase):
 
@@ -1246,6 +1322,16 @@ class StatesTests(unittest.TestCase):
         self.assertTrue(reopened["moved"])
         self.assertEqual(board.cards["7"]["status"], "Active")
 
+    def test_reopening_qa_refuses_a_foreign_owner(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("7", kind="pbi", status="Resolved", tags_=["idp:owner:run-2"])
+        mover = phase3.states.AdapterStates(board, PROFILE)
+        with self.assertRaises(lease.OwnershipLost):
+            mover.reopen(board, "7", "qa resumes", "run-1")
+        self.assertEqual(board.cards["7"]["status"], "Resolved")
+        self.assertEqual(board.cards["7"]["tags"], ["idp:owner:run-2"])
+
 
 class JournalUploadTests(unittest.TestCase):
 
@@ -1274,6 +1360,26 @@ class JournalUploadTests(unittest.TestCase):
             content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
             self.assertIn("- from board", content)
             self.assertIn("- from local", content)
+
+    def test_upload_preserves_multiline_entries(self):
+        from fakeboard import FakeBoard
+        with tempfile.TemporaryDirectory() as tmp:
+            board = FakeBoard(profile=PROFILE)
+            title = run.memory.feature_file(FEATURE, "history")
+            board.attach_document(title, f"# {FEATURE} — feature journal\n\n## Development\n\n- from board\n",
+                                  identifier=FEATURE)
+            path = Path(tmp) / "history.md"
+            path.write_text(
+                f"# {FEATURE} — feature journal\n\n## Development\n\n"
+                "- Why this cut: first paragraph\n"
+                "  Second paragraph contains the decision.\n",
+                encoding="utf-8")
+            journal = phase3.journal.Journal(board, FEATURE, path)
+            journal.upload()
+            content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
+            self.assertIn("Second paragraph contains the decision.", content)
+            self.assertIn("Second paragraph contains the decision.", path.read_text(
+                encoding="utf-8"))
 
 
 class RecoveryTests(unittest.TestCase):
@@ -1825,6 +1931,16 @@ class AzureReposMergerTests(unittest.TestCase):
         merger = phase3.merge.AzureReposMerger(Board(), StubGit(head="TARGET"), "repo",
                                                unproven=True)
         self.assertEqual(merger.merged({"id": 9}, "b", "t"), "LAND")
+
+    def test_a_target_commit_is_not_used_as_a_fake_merge_commit(self):
+        class Board:
+            def get_pull_request(self, *args):
+                return {"status": "completed",
+                        "lastMergeTargetCommit": {"commitId": "TARGET"}}
+
+        merger = phase3.merge.AzureReposMerger(Board(), StubGit(head="TARGET"), "repo",
+                                               unproven=True)
+        self.assertIsNone(merger.merged({"id": 9}, "b", "t"))
 
 
 if __name__ == "__main__":

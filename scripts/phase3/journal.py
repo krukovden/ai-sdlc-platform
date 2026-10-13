@@ -44,14 +44,25 @@ class Journal:
 
     @staticmethod
     def _entries(text):
-        return [line for line in str(text or "").splitlines() if line.startswith("- ")]
+        found, current = [], []
+        for line in str(text or "").splitlines():
+            if line.startswith("- "):
+                if current:
+                    found.append("\n".join(current))
+                current = [line]
+                continue
+            if current:
+                current.append(line)
+        if current:
+            found.append("\n".join(current))
+        return found
 
     def _merged(self, remote, local):
         merged = remote
-        existing = set(remote.splitlines())
-        extra = [line for line in self._entries(local) if line not in existing]
+        existing = set(self._entries(remote))
+        extra = [entry for entry in self._entries(local) if entry not in existing]
         if extra:
-            merged = merged.rstrip("\n") + "\n" + "\n".join(extra) + "\n"
+            merged = merged.rstrip("\n") + "\n\n" + "\n\n".join(extra) + "\n"
         return merged
 
     def text(self):

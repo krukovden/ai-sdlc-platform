@@ -937,9 +937,9 @@ class Integration:
             product = [p for p in feature_changed if not p.startswith(DIRECTORY + "/")
                        and not p.startswith(plans.PLAN_DIR + "/")
                        and not p.startswith(".idp/")]
+            all_blueprints = sorted(str(p.relative_to(wt.path)) for p in post_change)
             if product and not changed:
-                touched = sorted(set(touched)
-                                 | {str(p.relative_to(wt.path)) for p in post_change})
+                touched = sorted(set(touched) | set(all_blueprints))
             if product and not post_change:
                 # Nothing to write is a pass only where an area is already covered;
                 # a feature that brings product code to a product with no area
@@ -954,12 +954,23 @@ class Integration:
                 if wt.path / path not in post_change:
                     problems.append(f"{path}: no blueprint remains for this touched area; "
                                     "restore a valid `<area>.md` before reporting done")
-                else:
-                    files.append(wt.path / path)
-            files += [wt.path / p for p in changed if p.startswith(DIRECTORY + "/")
-                      and p not in touched and (wt.path / p).is_file()]
+            files = [wt.path / p for p in all_blueprints]
             for name, found in blueprint.check(files, wt.path).items():
                 problems += found
+            if product and not changed:
+                covered = {path: False for path in product}
+                for path in all_blueprints:
+                    text = (wt.path / path).read_text(encoding="utf-8")
+                    for product_path in covered:
+                        if covers_blueprint(text, product_path):
+                            covered[product_path] = True
+                missing = [path for path, ok in covered.items() if not ok]
+                if missing:
+                    problems.append(
+                        "no area blueprint covers changed product path(s): "
+                        + ", ".join(missing[:5]) + (", …" if len(missing) > 5 else "")
+                        + ". FIX: update or add the blueprint file for every product area the "
+                          "feature changed")
             if problems:
                 wt.reset_to(tip)
                 raise IntegrationError("\n".join(problems))
@@ -1038,6 +1049,25 @@ class Integration:
                       f"pipeline and the full suite: {opened.get('url') or opened['id']}. "
                       "The runner never merges it; the human does, after QA."),
                 id=str(opened["id"]), url=opened.get("url"))
+            pr = self.event(FEATURE_PR)
+        elif not pr.get("url"):
+            title = self.board.get_issue(self.feature).get("title") or self.feature
+            opened = merger.open(self.branch, main, title,
+                                 f"{mention_of(self.feature)} — phase 3 is done; the human "
+                                 "tests it through the QA Testing PBI and merges this.",
+                                 self.feature)
+            if not opened.get("url"):
+                return dev.block_feature(
+                    f"the cached feature pull request `{pr.get('id')}` has no URL and this "
+                    "merger still cannot create a real feature PR for the human or the QA "
+                    "pipeline. FIX: configure a PR-capable provider, then re-run")
+            lease.post_event(
+                self.board, self.feature, FEATURE_PR,
+                f"{FEATURE_PR}:{self.feature}:{opened.get('id')}",
+                text=(f"Pull request `{self.branch}` → `{main}` reopened in place of the "
+                      f"legacy synthetic event: {opened.get('url') or opened['id']}. "
+                      "The runner never merges it; the human does, after QA."),
+                id=str(opened["id"]), url=opened.get("url"), supersedes=pr.get("id"))
             pr = self.event(FEATURE_PR)
         qa = next((i for i in shape.work_items(self.board, self.feature, dev.plan)
                    if shape.is_qa(i)), None)
@@ -1132,3 +1162,15 @@ def changed_paths(wt):
 
 def blueprint_module():
     return _sibling("blueprint", "idp_blueprint")
+
+
+def covers_blueprint(text, product_path):
+    current = Path(product_path)
+    markers = [product_path]
+    while True:
+        parent = current.parent.as_posix()
+        if not parent or parent == ".":
+            break
+        markers.append(parent.rstrip("/") + "/")
+        current = current.parent
+    return any(marker in text for marker in markers)

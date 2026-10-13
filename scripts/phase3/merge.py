@@ -140,7 +140,7 @@ def _commit_id(value):
 
 
 def _merged_commit(answer):
-    for key in ("lastMergeCommit", "mergeCommit", "lastMergeTargetCommit"):
+    for key in ("lastMergeCommit", "mergeCommit"):
         commit = _commit_id((answer or {}).get(key))
         if commit:
             return commit

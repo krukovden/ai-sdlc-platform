@@ -932,6 +932,10 @@ class Development:
                 return outcome
         return outcome
 
+    def tree(self, sha):
+        answer = self.git.run("rev-parse", f"{sha}^{{tree}}", check=False)
+        return answer.stdout.strip() if answer.returncode == EXIT.OK else None
+
     def after_session(self, item, claim, wt):
         outcome = self.finalize(item, claim, wt)
         if self.settle(item, claim, wt, outcome):
@@ -1203,13 +1207,16 @@ class Development:
         pbi = item["id"]
         parent = self.git.run("rev-parse", f"{head}^1", check=False)
         parent = parent.stdout.strip() if parent.returncode == EXIT.OK else None
-        if parent == done["feature"]:
+        if parent == done["feature"] and self.tree(head) == self.tree(done["merge"]):
             return True
         lease.post_event(self.board, pbi, RACE, f"{RACE}:{head}",
-                         text=f"The pull request completed onto `{(parent or '?')[:12]}`, not "
-                              f"onto the tested `{done['feature'][:12]}`: the feature head moved "
-                              "in the window before completion. The witnesses run again on "
-                              f"`{head[:12]}`.",
+                         text=("The pull request completed onto "
+                               f"`{(parent or '?')[:12]}`"
+                               + ("" if parent != done["feature"] else
+                                  " with a tree that differs from the tested merge")
+                               + f", not onto the exact tested `{done['merge'][:12]}` on "
+                                 f"`{done['feature'][:12]}`. The witnesses run again on "
+                                 f"`{head[:12]}`."),
                          head=head, parent=parent, tested=done["feature"])
         outcome = self.verify_landed(item, wt, head, done["pbi"], parent or head)
         if outcome.passed:
