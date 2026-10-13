@@ -18,6 +18,8 @@ from support import REPO_ROOT, ScriptTestCase
 from fakeboard import FakeBoard
 from scripted import ScriptedExecutor
 from test_runner import FEATURE, FEATURE_BODY, PROFILE, RunnerTestCase, new_board, run
+
+HASH = run.board_cli.profile_hash(PROFILE)
 from test_phase3 import Phase3TestCase
 from phase3_world import FEATURE_BRANCH, crashes, git, ok, pbi
 
@@ -254,7 +256,8 @@ class AgentLoopTests(AgentTestCase):
         board = new_board(tags.DEVELOPMENT, "idp:owner:run-9")
         lease.heartbeat(board, FEATURE, "run-9", 1)
         board.add_card("7", tags_=["idp:owner:run-9/w1"], kind="pbi", parent=FEATURE)
-        lease.post_event(board, "7", lease.CLAIM, "claim:7", branch="pbi/7-a/g1")
+        lease.post_event(board, "7", lease.CLAIM, "claim:7", branch="pbi/7-a/g1",
+                         profile=HASH)
         handoff = run.phase3.common.handoff_module()
         text = handoff.render("pbi/7-a/g1", "#7", "rate_limit", {"sha": "f" * 40,
                                                                  "subject": "wip"}, [], None,
@@ -403,7 +406,7 @@ class TakeoverTests(AgentTestCase):
         board = self.held()
         out, asked = io.StringIO(), []
         result = agent_mode.takeover(board, FEATURE, "run-1",
-                                     lambda q: asked.append(q) or "yes", False, out=out)
+                                     lambda q: asked.append(q) or "yes", False, out=out, profile=HASH)
         self.assertEqual(result["outcome"], "written")
         self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:owner:run-1"])
         self.assertTrue(lease.events(board.list_comments(FEATURE), lease.TAKEOVER))
@@ -417,7 +420,7 @@ class TakeoverTests(AgentTestCase):
         board = self.held()
         effects = board.side_effects
         result = agent_mode.takeover(board, FEATURE, "run-1", lambda q: "y", False,
-                                     out=io.StringIO())
+                                     out=io.StringIO(), profile=HASH)
         self.assertEqual(result["outcome"], "declined")
         self.assertEqual(board.side_effects, effects)
 
@@ -429,7 +432,7 @@ class TakeoverTests(AgentTestCase):
             return "yes"
 
         result = agent_mode.takeover(board, FEATURE, "run-1", answer, False,
-                                     out=io.StringIO())
+                                     out=io.StringIO(), profile=HASH)
         self.assertEqual(result["outcome"], "conflict")
         self.assertIn("idp:owner:run-9", board.cards[FEATURE]["tags"])
 
@@ -437,7 +440,7 @@ class TakeoverTests(AgentTestCase):
         board = self.held()
         effects = board.side_effects
         with self.assertRaises(agent_mode.AgentError) as caught:
-            agent_mode.takeover(board, FEATURE, "run-1", lambda q: "yes", True)
+            agent_mode.takeover(board, FEATURE, "run-1", lambda q: "yes", True, profile=HASH)
         self.assertEqual(caught.exception.code, EXIT.REFUSED)
         self.assertEqual(board.side_effects, effects)
 
@@ -453,25 +456,56 @@ class TakeoverTests(AgentTestCase):
     def test_a_paused_card_is_claimed_without_asking(self):
         board = new_board(tags.DESIGN, "idp:paused:run-9")
         result = agent_mode.takeover(board, FEATURE, "run-1",
-                                     lambda q: self.fail("asked"), False, out=io.StringIO())
+                                     lambda q: self.fail("asked"), False, out=io.StringIO(), profile=HASH)
         self.assertEqual(result["outcome"], "written")
         self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:owner:run-1"])
+
+    def test_claiming_a_paused_card_records_the_profile_hash(self):
+        # F12: `takeover --claim-only` used to write a claim with no profile hash.
+        board = new_board(tags.DESIGN, "idp:paused:run-9")
+        agent_mode.takeover(board, FEATURE, "run-1", lambda q: self.fail("asked"), False,
+                            out=io.StringIO(), profile=HASH)
+        claim = lease.events(board.list_comments(FEATURE), lease.CLAIM)[-1]
+        self.assertEqual(claim["profile"], HASH)
+
+    def test_a_takeover_without_the_profile_hash_is_refused_with_nothing_written(self):
+        for labels in (("idp:paused:run-9",), ("idp:owner:run-9",)):
+            with self.subTest(labels=labels):
+                board = new_board(tags.DESIGN, *labels)
+                with self.assertRaises(agent_mode.AgentError) as caught:
+                    agent_mode.takeover(board, FEATURE, "run-1", lambda q: "yes", False,
+                                        out=io.StringIO())
+                self.assertIn("profile hash", caught.exception.message)
+                self.assertEqual(board.side_effects, 0)
+
+    def test_the_command_passes_the_profile_hash(self):
+        board = new_board(tags.DESIGN, "idp:paused:run-9")
+        with mock.patch.object(run.board_cli, "open_board",
+                               return_value=(PROFILE, None, board)), \
+                mock.patch.object(run.sys.stdin, "isatty", return_value=True), \
+                mock.patch.dict(os.environ, {"IDP_AGENT_MODE": ""}), \
+                mock.patch.object(run, "git", return_value=""), \
+                mock.patch.object(run.sys, "stdout", io.StringIO()):
+            self.assert_exits(EXIT.DONE, run.main,
+                              ["takeover", FEATURE, "--claim-only", "--run-id", "run-1"])
+        claim = lease.events(board.list_comments(FEATURE), lease.CLAIM)[-1]
+        self.assertEqual(claim["profile"], HASH)
 
     def test_a_pbi_is_refused_toward_its_feature(self):
         board = new_board(tags.DEVELOPMENT, "idp:owner:run-9")
         board.add_card("7", tags_=["idp:owner:run-9/w1"], kind="pbi", parent=FEATURE)
         with self.assertRaises(agent_mode.AgentError) as caught:
-            agent_mode.takeover(board, "7", "run-1", lambda q: "yes", False)
+            agent_mode.takeover(board, "7", "run-1", lambda q: "yes", False, profile=HASH)
         self.assertIn(f"takeover {FEATURE}", caught.exception.fix)
 
     def test_a_free_card_has_nothing_to_take_over(self):
         with self.assertRaises(agent_mode.AgentError):
-            agent_mode.takeover(new_board(), FEATURE, "run-1", lambda q: "yes", False)
+            agent_mode.takeover(new_board(), FEATURE, "run-1", lambda q: "yes", False, profile=HASH)
 
     def test_after_a_takeover_the_new_owner_resumes_the_phase(self):
         board = self.held()
         agent_mode.takeover(board, FEATURE, "run-1", lambda q: "yes", False,
-                            out=io.StringIO())
+                            out=io.StringIO(), profile=HASH)
         self.assertEqual(self.runner(board).run_feature(FEATURE), EXIT.DONE)
         self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN_REVIEW])
         claims = lease.events(board.list_comments(FEATURE), lease.CLAIM)
@@ -499,7 +533,7 @@ class DecisionJournalTests(AgentTestCase):
                                         interval=interval)
 
     def test_a_decision_reaches_the_board_while_the_session_still_runs(self):
-        board = new_board()
+        board = new_board(tags.DESIGN, "idp:owner:run-1")
         seen = {}
 
         def step(role, card, worktree, prompt, context):
@@ -519,7 +553,7 @@ class DecisionJournalTests(AgentTestCase):
         self.assertIn('python3 "/a path/with spaces/run.py" decide', seen["prompt"])
 
     def test_a_post_that_fails_keeps_the_decision_for_the_next_collection(self):
-        board = new_board()
+        board = new_board(tags.DESIGN, "idp:owner:run-1")
         wt = self.worktree_for(FEATURE, "design", "x")
         executor = self.wrapped(board, lambda *a: EXIT.DONE)
         agent_mode.write_decision(wt, self.entry())
@@ -533,8 +567,20 @@ class DecisionJournalTests(AgentTestCase):
         self.assertEqual(len(decisions(board)), 2)
         self.assertEqual(list((wt / ".idp").glob("decisions.jsonl*")), [])
 
+    def test_a_session_that_outlived_its_lease_posts_no_decision(self):
+        # F5: the decision journal is a runner write like any other, fenced.
+        board = new_board(tags.DESIGN, "idp:owner:run-2")
+        wt = self.worktree_for(FEATURE, "design", "x")
+        executor = self.wrapped(board, lambda *a: EXIT.DONE)
+        agent_mode.write_decision(wt, self.entry())
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(executor.collect(FEATURE, wt), 0)
+        self.assertIn("lost its lease", err.getvalue())
+        self.assertEqual(decisions(board), [])
+        self.assertTrue(list((wt / ".idp").glob("decisions.jsonl.posting-*")))
+
     def test_decisions_a_handoff_carried_are_posted_before_the_next_session(self):
-        board = new_board()
+        board = new_board(tags.DESIGN, "idp:owner:run-1")
         handoff = run.phase3.common.handoff_module()
         wt = self.worktree_for(FEATURE, "design", "x")
         line = __import__("json").dumps(self.entry(), sort_keys=True)
