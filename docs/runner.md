@@ -203,17 +203,20 @@ is not asked twice. The agent set the profile accepts is unchanged; `grok`,
 
 ### Placement and bases
 
-The session works in the worktree the runner hands it: `--worktree path:<dir>`,
-with no `--setup` (Orca refuses it for an existing worktree). **Orca only knows
-worktrees it made or was shown**, not ones from plain `git worktree add`, and
-`~/.idp/worktrees/…` are the latter, so today such a session goes through
-`subprocess` (`last.fallback`: "Orca does not know the worktree"). Two ways to
-change that, both outside this backend: create the runner's worktrees with
-`orca worktree create --base-branch <sha>` when running inside Orca, or build the
-executor with `placement="new-child"`, which makes an Orca worktree from the
-given one's HEAD (`--base-branch <sha>`, never a branch name: `new-child`
-otherwise branches from `origin/main`) while the session still reports into the
-runner's worktree through the `IDP_*` values in its prompt.
+When this backend is selected, `run.py` makes each card's worktree **through Orca**
+(`orca worktree create --repo id:<repo> --base-branch <sha> --setup skip`) instead
+of `git worktree add`, so Orca knows it and the session is supervised in the very
+checkout the runner reads. The base is the explicit SHA in the claim comment. An
+earlier attempt's worktree is reused while its HEAD is still that SHA. A repository
+Orca does not know, or a creation Orca refuses, keeps the plain git worktree, and
+that session goes through `subprocess` (`last.fallback`: "Orca does not know the
+worktree"). The worktree is on a branch Orca names, not detached.
+
+The session is placed with `--worktree path:<dir>` and no `--setup` (Orca refuses it
+for an existing worktree). `placement="new-child"` stays available for a worktree
+the runner did not make through Orca: Orca makes one from the given worktree's HEAD
+(`--base-branch <sha>`; `new-child` otherwise branches from `origin/main`) while the
+session still reports into the runner's worktree.
 
 ### How a session ends
 
@@ -238,14 +241,22 @@ the inbox is a crash that stops and releases nothing, because contact loss is no
 process death. A worker's `ask` gets the standing answer "no person is available;
 decide conservatively and state the assumption".
 
-### What Orca cannot do for us
+### Board credentials and `IDP_*`
 
-Orca starts the agent with the environment Orca gives its terminals, not the
-allowlist the `subprocess` backend builds. The `IDP_*` values are put in the
-prompt instead, and **a board credential exported by the user's own shell
-profile is visible to an Orca-launched session**. Keep `AZURE_DEVOPS_EXT_PAT` and
-`LINEAR_API_KEY` out of the profile files your terminals source, or run the
-sessions that must not hold them with `backend: subprocess`.
+`worker-start` takes no custom command, so Orca starts the agent in a terminal with
+the environment Orca gives its terminals, not the allowlist the `subprocess`
+backend builds. The guarantee that model processes hold no board credential is
+therefore **checked, not assumed**: before the first Orca session of a run the
+backend opens a terminal in the worktree, has it write the *names* (never the
+values) of its variables to a private file, and closes it. If `environment.denied()`
+rejects any name (`AZURE_DEVOPS_EXT_PAT`, `LINEAR_API_KEY`, `*_PAT`, `ADO_*`, …) the
+backend is refused for the run, with a FIX line naming the variable, and every
+session goes through `subprocess`. If the probe cannot run, it is refused as well.
+
+The `IDP_*` values cannot be set at process start either. They are the first lines
+of the prompt, with the instruction to run them before anything else; `run.py
+report` falls back to the worktree it runs in, so the result file does not depend
+on them.
 
 A Run belongs to the terminal that created it and a runner started inside a
 dispatched worker is refused (`nested_worker_depth_exceeded`): start `run.py`

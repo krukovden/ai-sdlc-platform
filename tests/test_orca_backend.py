@@ -506,6 +506,149 @@ class DependencyAndGateTests(ScriptTestCase):
         self.assertIsNone(executor.mirror_gate("IDE-1", "q?"))
 
 
+class CredentialTests(ScriptTestCase):
+    """Model processes hold no board credential: measured, and refused when they would."""
+
+    def refused(self, names=None, **scenario):
+        harness = Harness(self, terminal_env=names or ["PATH", "HOME"], **scenario)
+        sub = FakeSubprocess()
+        executor = harness.executor(fallback=lambda: sub)
+        code = executor.run_role("worker", "IDE-1", harness.worktree, "p")
+        return harness, executor, sub, code
+
+    def test_a_board_credential_in_orcas_terminal_environment_refuses_the_backend(self):
+        for name in ("AZURE_DEVOPS_EXT_PAT", "LINEAR_API_KEY", "SYSTEM_ACCESSTOKEN",
+                     "ADO_ORG", "HAL_ADO_ENV_FILE", "MY_PAT"):
+            with self.subTest(name=name):
+                harness, executor, sub, code = self.refused(["PATH", name])
+                self.assertEqual(len(sub.calls), 1)
+                self.assertIn(name, executor.last.fallback)
+                self.assertIn("FIX:", executor.last.fallback)
+                self.assertIn("subprocess", executor.last.fallback)
+                self.assertNotIn("worker-start", harness.verbs())
+                self.assertNotIn("task-create", harness.verbs())
+
+    def test_the_refusal_holds_for_the_whole_run_and_the_probe_runs_once(self):
+        harness, executor, sub, _ = self.refused(["AZURE_DEVOPS_EXT_PAT"])
+        executor.run_role("worker", "IDE-2", harness.worktree, "p")
+        self.assertEqual(len(sub.calls), 2)
+        self.assertEqual(harness.verbs().count("terminal create"), 1)
+        self.assertIn("AZURE_DEVOPS_EXT_PAT", executor.disabled)
+
+    def test_a_probe_that_cannot_run_fails_closed(self):
+        harness, executor, sub, _ = self.refused(terminal_probe_fails=True)
+        self.assertEqual(len(sub.calls), 1)
+        self.assertIn("could not inspect the environment", executor.last.fallback)
+        self.assertIn("FIX:", executor.last.fallback)
+        self.assertNotIn("worker-start", harness.verbs())
+
+    def test_a_clean_environment_lets_orca_run_and_the_probe_is_cleaned_up(self):
+        harness = Harness(self, agents={"claude": {"then": "done:succeeded", "result": {"code": 0}}},
+                          terminal_env=["PATH", "HOME", "ORCA_TERMINAL_HANDLE", "PATH_EXTRA"])
+        executor = harness.executor()
+        self.assertEqual(executor.run_role("worker", "IDE-1", harness.worktree, "p"), EXIT.DONE)
+        self.assertEqual(executor.last.backend, "orca")
+        verbs = harness.verbs()
+        self.assertEqual(verbs.count("terminal create"), 1)
+        self.assertEqual(verbs.count("terminal close"), 1)
+        self.assertLess(verbs.index("terminal create"), verbs.index("worker-start"))
+
+    def test_the_probe_writes_names_never_values(self):
+        harness = Harness(self, agents={"claude": {"then": "done:succeeded", "result": {"code": 0}}})
+        harness.executor().run_role("worker", "IDE-1", harness.worktree, "p")
+        command = flag(harness.calls_of("terminal create")[0], "--command")
+        self.assertIn("sed 's/=.*//'", command)
+        self.assertNotIn("env >", command)
+
+    def test_the_new_child_probe_does_not_need_a_worktree_orca_knows(self):
+        harness = Harness(self, known=False, agents={
+            "claude": {"then": "done:succeeded", "result": {"code": 0}}})
+        executor = harness.executor(placement="new-child", git=lambda w: "b" * 40)
+        self.assertEqual(executor.run_role("worker", "IDE-1", harness.worktree, "p"), EXIT.DONE)
+        self.assertNotIn("--worktree", harness.calls_of("terminal create")[0])
+
+
+class SessionEnvironmentTests(ScriptTestCase):
+
+    def test_the_idp_values_are_the_first_thing_a_launched_worker_does(self):
+        harness = Harness(self, agents={"claude": {"then": "done:succeeded", "result": {"code": 0}}})
+        harness.executor().run_role("worker", "IDE-9", harness.worktree, "do the thing",
+                                    context={"IDP_CONTEXT_DIR": "/ctx dir"})
+        state = json.loads((harness.dir / "state" / "state.json").read_text())
+        spec = next(iter(state["tasks"].values()))["spec"]
+        self.assertTrue(spec.startswith("Before anything else"))
+        self.assertLess(spec.index("export IDP_CARD"), spec.index("do the thing"))
+        seen = next(iter(state["dispatches"].values()))["worker_env"]     # what the fake worker got
+        self.assertEqual(seen["IDP_CARD"], "IDE-9")
+        self.assertEqual(seen["IDP_ROLE"], "worker")
+        self.assertEqual(seen["IDP_WORKTREE"], str(harness.worktree))
+        self.assertEqual(seen["IDP_RESULT"], f"{harness.worktree}/.idp/result.json")
+        self.assertEqual(seen["IDP_CONTEXT_DIR"], "/ctx dir")
+
+
+class RunnerPathTests(ScriptTestCase):
+    """The real `run.py` selection and worktree path, with the fake `orca` CLI."""
+
+    def test_the_runner_makes_its_worktree_through_orca_and_supervises_the_session(self):
+        import io
+        from unittest import mock
+        import test_runner as tr
+        harness = Harness(self, known=False, agents={
+            "claude": {"then": "done:succeeded", "result": {"code": 0}}})
+        repo = harness.dir / "repo"
+        repo.mkdir()
+        (harness.dir / "scenario.json").write_text(json.dumps({
+            "agents": {"claude": {"then": "done:succeeded", "result": {"code": 0}}},
+            "known_worktrees": [str(repo)]}))
+        config = {"backend": "auto", "roles": {"design": ["claude:opus"]}}
+        handle = executors.Resolver(config, launchable=lambda a: True, probe=lambda c: True)
+        with mock.patch.dict(os.environ, harness.environ):
+            executor = executors.select(config, resolver=handle,
+                                        orca_probe=executors.orca_reachable,
+                                        environ=harness.environ, fallback=FakeSubprocess)
+        self.assertIsInstance(executor, executors.OrcaExecutor)
+        runner = tr.run.Runner(tr.new_board(), tr.PROFILE, executor, "run-1", repo=repo,
+                               base_sha=lambda: "c" * 40, design=tr.design,
+                               heartbeat_minutes=0, out=io.StringIO())
+        home = harness.dir / "idp"
+        with mock.patch.object(tr.design, "HOME", home), \
+                mock.patch.object(tr.design, "SESSIONS", home / "design"), \
+                mock.patch.object(tr.design, "CURRENT", home / "design-current"):
+            runner.run_feature(tr.FEATURE)        # the fake worker writes no ADR: it ends blocked
+        verbs = harness.verbs()
+        created = harness.calls_of("worktree create")[0]
+        self.assertEqual(flag(created, "--base-branch"), "c" * 40)
+        start = harness.calls_of("worker-start")[0]
+        self.assertTrue(flag(start, "--worktree").startswith(f"path:{harness.dir}/state/worktrees/"))
+        self.assertEqual(executor.last.backend, "orca")
+        self.assertLess(verbs.index("worktree create"), verbs.index("worker-start"))
+        self.assertIn("worker-release", verbs)
+
+    def test_a_repository_orca_does_not_know_keeps_a_plain_worktree(self):
+        harness = Harness(self, known=False)
+        executor = harness.executor()
+        made = []
+        make = executor.worktree_factory(
+            harness.dir, lambda card, phase, base: made.append(card) or "plain")
+        self.assertEqual(make("IDE-1", "design", "d" * 40), "plain")
+        self.assertEqual(made, ["IDE-1"])
+        self.assertNotIn("worktree create", harness.verbs())
+
+    def test_a_refused_creation_keeps_a_plain_worktree(self):
+        harness = Harness(self, worktree_create_fails=True)
+        executor = harness.executor()
+        make = executor.worktree_factory(harness.worktree, lambda card, phase, base: "plain")
+        self.assertEqual(make("IDE-1", "design", "e" * 40), "plain")
+
+    def test_a_second_attempt_reuses_the_worktree_when_the_base_is_unchanged(self):
+        harness = Harness(self)
+        executor = harness.executor()
+        make = executor.worktree_factory(harness.worktree, lambda *a: "plain")
+        first = make("IDE-1", "design", "f" * 40)
+        self.assertEqual(make("IDE-1", "design", "f" * 40), first)
+        self.assertEqual(len(harness.calls_of("worktree create")), 1)
+
+
 class BoardStaysAuthoritativeTests(unittest.TestCase):
 
     def test_the_backend_imports_nothing_that_could_decide_ownership(self):

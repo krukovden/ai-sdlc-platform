@@ -29,6 +29,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -41,7 +42,7 @@ OK_EXIT, FAIL_EXIT = 0, 1
 def verb_of(argv):
     if argv[0] == "orchestration":
         return argv[1]
-    return " ".join(argv[:2]) if argv[0] == "worktree" else argv[0]
+    return " ".join(argv[:2]) if argv[0] in ("worktree", "terminal") else argv[0]
 
 
 def load_trace(directory):
@@ -99,12 +100,43 @@ def main():
     if verb == "status":
         emit(recorded("e5-run", "status"))
     if verb == "worktree show":
-        path = option(argv, "--worktree", "").removeprefix("path:")
-        if path in SCENARIO.get("known_worktrees", []):
+        selector = option(argv, "--worktree", "")
+        created = state.setdefault("created", {})
+        path = selector.removeprefix("path:")
+        if selector.startswith("name:"):
+            path = created.get(selector.removeprefix("name:"), {}).get("path", "")
+        known = SCENARIO.get("known_worktrees", []) + [c["path"] for c in created.values()]
+        if path and path in known:
             doc = misc("worktree-show-known")
             doc["result"]["worktree"]["path"] = path
+            for entry in created.values():
+                if entry["path"] == path:
+                    doc["result"]["worktree"]["head"] = entry["head"]
             emit(doc)
         emit(misc("worktree-show-unknown"), FAIL_EXIT)
+    if verb == "worktree create":
+        if SCENARIO.get("worktree_create_fails"):
+            emit({"ok": False, "error": {"code": "runtime_error", "message": "no"}}, FAIL_EXIT)
+        name = option(argv, "--name")
+        path = STATE / "worktrees" / name
+        path.mkdir(parents=True, exist_ok=True)
+        state.setdefault("created", {})[name] = {"path": str(path), "head": option(argv, "--base-branch")}
+        save_state(state)
+        doc = misc("worktree-create")
+        doc["result"]["worktree"].update(path=str(path), head=option(argv, "--base-branch"),
+                                         displayName=name)
+        emit(doc)
+    if verb == "worktree rm":
+        emit({"ok": True, "result": {"removed": True}})
+    if verb == "terminal create":
+        # run the probe command's effect: write the scenario's variable names where it says
+        found = re.search(r"mv (\S+) (\S+);", option(argv, "--command", ""))
+        if found and not SCENARIO.get("terminal_probe_fails"):
+            names = SCENARIO.get("terminal_env", ["PATH", "HOME", "ORCA_TERMINAL_HANDLE"])
+            Path(found.group(2)).write_text("\n".join(names) + "\n")
+        emit(misc("terminal-create"))
+    if verb == "terminal close":
+        emit(misc("terminal-close"))
     if verb == "run-create":
         doc = recorded("e5-run", "run-create")
         doc["result"]["run"]["id"] = state["run"]
@@ -169,6 +201,23 @@ def worker_start(argv, state):
     emit(doc)
 
 
+def exports_at_start(spec):
+    """What a worker that does what its prompt's first lines say has in its environment."""
+    env = {}
+    for line in spec.splitlines():
+        if line.startswith("Before anything else") or not line.strip():
+            if env:
+                break
+            continue
+        if not line.startswith("export "):
+            if env:
+                break
+            continue
+        name, _, value = line[len("export "):].partition("=")
+        env[name] = shlex.split(value)[0] if value else ""
+    return env
+
+
 def worktree_of(entry, state):
     """Where the simulated worker puts its result file: the worktree it was placed in, or,
     for a new Orca worktree, the one its prompt told it to export as IDP_WORKTREE."""
@@ -205,6 +254,7 @@ def check(argv, state):
             target = Path(where) / ".idp" / "result.json"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(behaviour["result"]))
+        entry["worker_env"] = exports_at_start(state["tasks"].get(entry["task"], {}).get("spec") or "")
         template = recorded("e5-run", "check")["result"]["messages"][0]
         message = dict(template, id=next_id(state, "msg"))
         if then.startswith("done:"):

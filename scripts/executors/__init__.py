@@ -132,6 +132,10 @@ class Executor:
     def resolve(self, role, author=None, busy=None):
         return self.resolver.resolve(role, author=author, busy=busy)
 
+    def worktree_factory(self, repo, plain):
+        """How run.py makes a card's worktree. The default is the plain git one."""
+        return plain
+
     def run_role(self, role, card, worktree, prompt, context=None, author=None):
         raise NotImplementedError
 

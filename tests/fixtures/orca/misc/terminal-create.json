@@ -1,0 +1,21 @@
+{
+  "id": "49f16802-8580-47fa-a564-49f63f6abb25",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_410e17a4-c088-40a6-a79f-1b4751c08a73",
+      "tabId": "87d269b3-6b83-4776-91cc-ba7ff2d2d902",
+      "paneKey": "87d269b3-6b83-4776-91cc-ba7ff2d2d902:fbcf50b3-8fa4-4683-bdb1-d447d45645fc",
+      "ptyId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe@@6b19a903",
+      "worktreeId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+      "title": null,
+      "executionHostId": "local",
+      "incarnationId": "1ffa3f2d-8c62-409a-894c-93718f8016d1",
+      "hostPlatform": "darwin",
+      "surface": "visible"
+    }
+  },
+  "_meta": {
+    "runtimeId": "2424e90d-081c-462a-a050-5ab8209074bf"
+  }
+}

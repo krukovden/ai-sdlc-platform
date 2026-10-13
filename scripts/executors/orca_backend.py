@@ -49,21 +49,39 @@ two are combined, never one instead of the other:
   claude, codex, cursor and opencode. An agent that cannot be launched, or whose
   model cannot be set, goes through `subprocess` for that session.
 
-**What Orca cannot do for us.** It starts the agent in a terminal with the
-environment Orca gives its terminals, not the allowlist the subprocess backend
-builds (`environment.py`). The `IDP_*` values are therefore written into the
-prompt, and a board credential exported by the user's own shell profile is
-visible to the session. That guarantee is only as good as the profile; it is
-stated in docs/runner.md rather than assumed.
+**No board credential in a model process, enforced.** `worker-start` takes no
+custom command, so a wrapper that starts the agent from a clean allowlisted
+environment is not possible: Orca starts the agent in a terminal with the
+environment Orca gives its terminals. Before the first session the backend
+therefore *measures* that environment — it opens a terminal in the session's
+worktree, has it write the names (never the values) of its variables to a
+private file, and closes it — and refuses the backend, with a FIX line naming
+the variable, if `environment.denied()` rejects any name. If the probe cannot be
+run or read, the backend is refused as well: it fails closed, and every session
+goes through `subprocess`, which does build the allowlisted environment.
+
+**The `IDP_*` values cannot be set at process start either**, for the same
+reason. They are the first lines of the prompt, ahead of everything else, with an
+instruction to run them before any other action; the result file's location does
+not depend on them (`run.py report` falls back to the worktree it runs in).
+
+**The runner's worktrees are made through Orca** when this backend is selected
+(`worktree_factory`): `orca worktree create --base-branch <sha>` instead of
+`git worktree add`, so `--worktree path:<dir>` resolves and the session is
+supervised in the very checkout the runner reads. A repository Orca does not
+know keeps plain git worktrees, and its sessions go through `subprocess`.
 """
 
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 from collections import namedtuple
 
 from . import EXIT, Executor, Session, clear_result, environment, read_result, result_path
@@ -73,6 +91,7 @@ CLI_TIMEOUT = 60              # seconds one `orca` call may take, `worker-start`
 START_TIMEOUT_MS = 90000
 SLICE_MS = 30000              # one `check --wait`; the runner's heartbeat hook fires per slice
 INSPECT_EVERY = 2             # slices between looks at the worker itself
+ENV_PROBE_WAIT_S = 20          # how long the terminal-environment probe may take
 SETTLE_SLICE_MS = 3000        # one more look at the inbox before an exit is called a crash
 
 # Agents whose `--model` Orca sets. For the others the model comes from the
@@ -229,14 +248,14 @@ class OrcaExecutor(Executor):
 
     def __init__(self, resolver, environ=None, cli=None, fallback=None, heartbeat=None,
                  placement="existing", timeout=None, clock=time.monotonic, git=None,
-                 slice_ms=SLICE_MS):
+                 slice_ms=SLICE_MS, sleep=time.sleep):
         super().__init__(resolver)
         self.environ = dict(os.environ if environ is None else environ)
         self.cli = cli or Cli(self.environ)
         self.fallback_factory = fallback or (
             lambda: SubprocessExecutor(resolver, environ=self.environ, timeout=timeout))
         self.heartbeat, self.placement, self.timeout = heartbeat, placement, timeout
-        self.clock, self.slice_ms = clock, slice_ms
+        self.clock, self.slice_ms, self.sleep = clock, slice_ms, sleep
         self.git = git or self._git_head
         self.disabled = None             # why the whole backend is off for this run
         self.unlaunchable = {}           # agent -> why Orca cannot start it
@@ -248,6 +267,7 @@ class OrcaExecutor(Executor):
         self._poll = threading.RLock()   # one `check --wait` at a time
         self._inbox = {}                 # dispatch -> [messages]
         self._ack = None
+        self._env_refusal = None         # None = not measured yet, "" = clean
 
     # -- the interface --------------------------------------------------------
 
@@ -317,7 +337,105 @@ class OrcaExecutor(Executor):
         if self.placement == "existing" and not self.knows(worktree):
             return (f"Orca does not know the worktree {worktree} (it was not made through "
                     "Orca); the session runs through subprocess")
+        refusal = self.credential_refusal(worktree)
+        if refusal:
+            raise Unavailable(refusal, scope="backend")
         return None
+
+    def credential_refusal(self, worktree):
+        """Why Orca's sessions may not be used: a board credential in their environment.
+
+        Measured once per run. Returns "" when the environment is clean, else the
+        refusal with its FIX line.
+        """
+        with self._lock:
+            if self._env_refusal is None:
+                self._env_refusal = self.measure_terminal_env(worktree)
+            return self._env_refusal
+
+    def measure_terminal_env(self, worktree):
+        names = self.terminal_env_names(worktree)
+        if names is None:
+            return EXIT.with_fix(
+                "could not inspect the environment Orca gives its terminals, and a model "
+                "session must not start with a board credential it cannot rule out",
+                "run again from a plain Orca terminal, or set executors.backend to "
+                "\"subprocess\"")
+        found = sorted(name for name in names if environment.denied(name))
+        if not found:
+            return ""
+        return EXIT.with_fix(
+            f"Orca would start the session with {', '.join(found)} in its environment, "
+            "and model sessions hold no board credential",
+            f"unset {', '.join(found)} in the shell profile Orca's terminals source, then "
+            "re-run; or set executors.backend to \"subprocess\", which builds its own "
+            "allowlisted environment")
+
+    def terminal_env_names(self, worktree):
+        """The variable names (never values) of a fresh Orca terminal, or None."""
+        folder = Path(tempfile.mkdtemp(prefix="idp-orca-env-"))
+        target = folder / "names"
+        command = (f"env | sed 's/=.*//' > {shlex.quote(str(target) + '.part')}; "
+                   f"mv {shlex.quote(str(target) + '.part')} {shlex.quote(str(target))}; exit")
+        argv = ["terminal", "create", "--command", command]
+        if self.placement == "existing":
+            argv += ["--worktree", f"path:{worktree}"]
+        handle = None
+        try:
+            made = self.cli(*argv)
+            handle = (result_of(made).get("terminal") or {}).get("handle")
+            if not succeeded(made) or not handle:
+                return None
+            for _ in range(ENV_PROBE_WAIT_S):
+                if target.exists():
+                    return [line for line in target.read_text(encoding="utf-8").split()
+                            if line]
+                self.sleep(1)
+            return None
+        except OSError:
+            return None
+        finally:
+            if handle:
+                self.cli("terminal", "close", "--terminal", handle)
+            shutil.rmtree(folder, ignore_errors=True)
+
+    # -- the runner's worktrees ------------------------------------------------------
+
+    def worktree_factory(self, repo, plain):
+        """`make(card, phase, base)` for run.py: a worktree Orca knows, at exactly `base`.
+
+        Falls back to `plain` (a git worktree) when Orca does not know the
+        repository or refuses; such a session then goes through `subprocess`.
+        """
+        def make(card, phase, base):
+            if self.disabled:
+                return plain(card, phase, base)
+            try:
+                shown = self.cli("worktree", "show", "--worktree", f"path:{repo}")
+                known = result_of(shown).get("worktree") or {}
+                repo_id = known.get("repoId")
+                if not succeeded(shown) or not repo_id:
+                    return plain(card, phase, base)
+                name = f"{slug(card)}-{phase}"
+                old = result_of(self.cli("worktree", "show", "--worktree", f"name:{name}")) \
+                    .get("worktree") or {}
+                if old.get("repoId") == repo_id and old.get("path"):
+                    if str(old.get("head")) == base:       # an earlier attempt's, still right
+                        with self._lock:
+                            self._known[str(old["path"])] = True
+                        return Path(old["path"])
+                    self.cli("worktree", "rm", "--worktree", f"path:{old['path']}", "--force")
+                made = self.cli("worktree", "create", "--name", name, "--repo",
+                                f"id:{repo_id}", "--base-branch", base, "--setup", "skip")
+                path = (result_of(made).get("worktree") or {}).get("path")
+                if not succeeded(made) or not path:
+                    return plain(card, phase, base)
+            except OSError:
+                return plain(card, phase, base)
+            with self._lock:
+                self._known[str(path)] = True
+            return Path(path)
+        return make
 
     def knows(self, worktree):
         path = str(worktree)
@@ -365,8 +483,9 @@ class OrcaExecutor(Executor):
             k: v for k, v in extra.items() if k != "depends_on"})
         lines = "\n".join(f"export {name}={shlex.quote(value)}"
                           for name, value in sorted(values.items()))
-        return (f"Orca starts you without the runner's environment. Before you run "
-                f"`run.py report`, set:\n{lines}\n\n{prompt}\n\n{CLOSING}")
+        return (f"Before anything else — before you read a file or run any other command — "
+                f"run these lines in your shell. Orca cannot set them when it starts you, and "
+                f"the runner's scripts expect them:\n{lines}\n\n{prompt}\n\n{CLOSING}")
 
     def deps_for(self, context):
         wanted = (context or {}).get("depends_on") or []

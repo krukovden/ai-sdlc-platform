@@ -1,0 +1,124 @@
+{
+  "id": "a166ed22-a4f7-4e2a-888b-641ec1122253",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+      "identity": {
+        "key": "wt2:local:6e56c5ae-5a5a-493f-b794-fb9c8dc7a436",
+        "executionHostId": "local",
+        "instanceId": "6e56c5ae-5a5a-493f-b794-fb9c8dc7a436"
+      },
+      "instanceId": "6e56c5ae-5a5a-493f-b794-fb9c8dc7a436",
+      "repoId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c",
+      "projectId": "github:krukovden/ai-sdlc-platform",
+      "hostId": "local",
+      "projectHostSetupId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c",
+      "creatorProvenance": {
+        "kind": "host"
+      },
+      "path": "/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+      "head": "3bb6d0f07ba23996adcaf99aa1e412a623f87c96",
+      "branch": "refs/heads/krukovden/zz-t7fix-probe",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "zz-t7fix-probe",
+      "displayNameMode": "fixed",
+      "comment": "",
+      "linkedIssue": null,
+      "linkedPR": null,
+      "linkedLinearIssue": null,
+      "linkedLinearIssueWorkspaceId": null,
+      "linkedLinearIssueOrganizationUrlKey": null,
+      "linkedGitLabMR": null,
+      "linkedGitLabIssue": null,
+      "linkedBitbucketPR": null,
+      "linkedAzureDevOpsPR": null,
+      "linkedGiteaPR": null,
+      "linkedWorkItem": null,
+      "linkedTaskSourceContext": null,
+      "isArchived": false,
+      "isUnread": false,
+      "isPinned": false,
+      "sortOrder": 1791858878176,
+      "lastActivityAt": 1791858878176,
+      "createdAt": 1791858878176,
+      "cliProvenance": {
+        "kind": "created-by-cli",
+        "createdAt": 1791858877294,
+        "callerTerminalHandle": "term_abdfbc2a-56c8-41c8-a053-69c61325c2c1"
+      },
+      "baseRef": "3bb6d0f07ba23996adcaf99aa1e412a623f87c96",
+      "workspaceStatus": "in-progress",
+      "parentWorktreeId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+      "childWorktreeIds": [],
+      "lineage": {
+        "worktreeId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+        "worktreeInstanceId": "6e56c5ae-5a5a-493f-b794-fb9c8dc7a436",
+        "parentWorktreeId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+        "parentWorktreeInstanceId": "455a66ab-d002-4683-bc2d-9dca7a59cfee",
+        "origin": "cli",
+        "capture": {
+          "source": "env-workspace",
+          "confidence": "inferred"
+        },
+        "createdByTerminalHandle": "term_abdfbc2a-56c8-41c8-a053-69c61325c2c1",
+        "createdAt": 1791858878176
+      },
+      "workspaceLineage": {
+        "childWorkspaceKey": "worktree:a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+        "childInstanceId": "6e56c5ae-5a5a-493f-b794-fb9c8dc7a436",
+        "parentWorkspaceKey": "worktree:a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+        "parentInstanceId": "455a66ab-d002-4683-bc2d-9dca7a59cfee",
+        "origin": "cli",
+        "capture": {
+          "source": "env-workspace",
+          "confidence": "inferred"
+        },
+        "createdByTerminalHandle": "term_abdfbc2a-56c8-41c8-a053-69c61325c2c1",
+        "createdAt": 1791858878176
+      },
+      "git": {
+        "path": "/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+        "head": "3bb6d0f07ba23996adcaf99aa1e412a623f87c96",
+        "branch": "refs/heads/krukovden/zz-t7fix-probe",
+        "isBare": false,
+        "isMainWorktree": false
+      }
+    },
+    "lineage": {
+      "worktreeId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+      "worktreeInstanceId": "6e56c5ae-5a5a-493f-b794-fb9c8dc7a436",
+      "parentWorktreeId": "a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+      "parentWorktreeInstanceId": "455a66ab-d002-4683-bc2d-9dca7a59cfee",
+      "origin": "cli",
+      "capture": {
+        "source": "env-workspace",
+        "confidence": "inferred"
+      },
+      "createdByTerminalHandle": "term_abdfbc2a-56c8-41c8-a053-69c61325c2c1",
+      "createdAt": 1791858878176
+    },
+    "workspaceLineage": {
+      "childWorkspaceKey": "worktree:a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/zz-t7fix-probe",
+      "childInstanceId": "6e56c5ae-5a5a-493f-b794-fb9c8dc7a436",
+      "parentWorkspaceKey": "worktree:a4eeb5c5-27aa-40c4-87d0-ba626a6e5f0c::/Users/denyskriukov/orca/workspaces/ai-sdlc-platform/idp-t7-orca",
+      "parentInstanceId": "455a66ab-d002-4683-bc2d-9dca7a59cfee",
+      "origin": "cli",
+      "capture": {
+        "source": "env-workspace",
+        "confidence": "inferred"
+      },
+      "createdByTerminalHandle": "term_abdfbc2a-56c8-41c8-a053-69c61325c2c1",
+      "createdAt": 1791858878176
+    },
+    "warnings": [],
+    "catalogVersion": {
+      "epoch": "7a6d0fba-c31d-469e-bc75-9bae661eb1c5",
+      "sequence": 514
+    }
+  },
+  "_meta": {
+    "runtimeId": "2424e90d-081c-462a-a050-5ab8209074bf"
+  }
+}
