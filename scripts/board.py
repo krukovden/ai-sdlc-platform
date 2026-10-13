@@ -195,7 +195,8 @@ REMOVED_KEYS = {
     "epic_id": ("'epic_id' is gone with the registry on the epic. The repository's "
                 "memory/index.md is the registry now, and the feature's files hang "
                 "from the Feature (IDE-147).",
-                "delete 'epic_id' from the profile; attach documents to a work item"),
+                "on Azure DevOps, rename 'epic_id' to 'documents_item' (the work item "
+                "project-level documents hang from); on any other board, delete it"),
 }
 
 

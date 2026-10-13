@@ -103,7 +103,7 @@ class RemovedKeyTests(ScriptTestCase):
     def test_epic_id_is_a_hard_error_with_a_fix(self):
         with self.assertRaises(board.ProfileError) as caught:
             board.check_profile(profile(epic_id="10"))
-        self.assertIn("delete 'epic_id'", caught.exception.fix)
+        self.assertIn("rename 'epic_id' to 'documents_item'", caught.exception.fix)
 
     def test_load_profile_exits_config_and_prints_the_fix(self):
         with tempfile.TemporaryDirectory() as tmp:

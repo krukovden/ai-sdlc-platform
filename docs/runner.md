@@ -23,7 +23,8 @@ runner does not serve yet stays where it is, waiting.
 
    A profile without `schema_version` is version 0 and is migrated in memory; the
    file is never rewritten. Two keys are gone and refused by name: `agents` (the
-   per-agent token map) and `epic_id`.
+   per-agent token map) and `epic_id`. On Azure DevOps, the work item that
+   carries project-level documents is now named `documents_item`.
 
 2. **An `executors` block**, or the defaults below. Each role is an ordered list
    of `agent[:model]`; agents are `claude`, `codex`, `copilot`, `cursor`,

@@ -43,7 +43,9 @@ expired PAT, which `az login` cannot renew (IDE-130).
     workspace         the organization: `contoso` or `https://dev.azure.com/contoso`
     project_id        the Azure DevOps *project name* — ADO has no project uuid here
     team_key          the team, as `az devops team show` knows it
-    epic_id           work item that carries project-level attachments (IDE-76)
+    documents_item    the work item that carries project-level attachments: Azure
+                      DevOps has no project documents. Replaces `epic_id`, which
+                      the profile refuses since IDE-147
     area_path         optional, stamped on every work item this platform creates
     iteration_path    optional, likewise
     work_item_types   optional map: {"feature": "Feature", "pbi": "Product Backlog Item"}
@@ -1163,19 +1165,21 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
         Azure DevOps has no documents, only files.
 
-        Project-level documents hang from the epic named by the profile
-        (IDE-76: the epic carries the feature registry and Tried & Rejected).
-        Without that key there is nowhere for them to go, and that is a
-        configuration failure, not a malformed request.
+        Project-level documents hang from the work item the profile names as
+        `documents_item` — the epic, usually (IDE-76). Without that key there
+        is nowhere for them to go, and that is a configuration failure, not a
+        malformed request. `epic_id` was the old name and the profile refuses
+        it (IDE-147).
         """
         host = identifier
         if not host:
-            host = self.profile.get("epic_id")
+            host = self.profile.get(DOCUMENTS_ITEM)
             if not host:
-                fail(EXIT.CONFIG, "the profile has no 'epic_id'. Azure DevOps has no project-level "
-                                  "documents; the epic carries them as attachments (IDE-76). Add "
-                                  "the epic's work item id, then re-run.",
-                     fix="add 'epic_id' — the work item id of the project's epic — to .idp/profile.json, then re-run")
+                fail(EXIT.CONFIG, f"the profile has no '{DOCUMENTS_ITEM}'. Azure DevOps has no "
+                                  "project-level documents; a work item carries them as "
+                                  "attachments (IDE-76).",
+                     fix=f"add '{DOCUMENTS_ITEM}' — the id of the work item that carries the "
+                         "project's documents, usually its epic — to .idp/profile.json, then re-run")
 
         work_item_id = str(_as_id(host))
         project = self._project(project_id)
@@ -1285,7 +1289,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         """
         project = self._project(project_id)
         documents = []
-        epic = self.profile.get("epic_id")
+        epic = self.profile.get(DOCUMENTS_ITEM)
         if epic:
             documents.extend(self._attachments_of(epic))
 
@@ -1351,7 +1355,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                  fix="check the attachment id; `board.py doc --list` shows what is attached")
 
         title = slug
-        epic = self.profile.get("epic_id")
+        epic = self.profile.get(DOCUMENTS_ITEM)
         if epic:
             for document in self._attachments_of(epic):
                 if document["slugId"] == slug:
@@ -1595,6 +1599,11 @@ def _wiki_parts(address, title=None):
 
 
 ATTACH_ATTEMPTS = 3
+
+# The profile key naming the work item project-level documents hang from. It
+# outlives the feature registry on the epic: IDE-147 moves that registry to
+# memory/index.md, and whatever project-level documents remain still need a host.
+DOCUMENTS_ITEM = "documents_item"
 
 
 def _relation_title(relation):

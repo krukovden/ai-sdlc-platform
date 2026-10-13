@@ -36,7 +36,7 @@ PROFILE = {
     "team_key": "IdeaHub",
     "workspace": "contoso",
     "project_id": "Contoso Platform",
-    "epic_id": "10",
+    "documents_item": "10",
 }
 
 
@@ -1075,13 +1075,14 @@ class AttachmentTests(ScriptTestCase):
         patch = fake.rest_matching("PATCH", "wit/workitems/10")
         self.assertEqual(len(patch), 1)
 
-    def test_a_project_level_document_without_an_epic_is_a_configuration_failure(self):
-        profile = {k: v for k, v in PROFILE.items() if k != "epic_id"}
+    def test_a_project_level_document_without_a_host_is_a_configuration_failure(self):
+        profile = {k: v for k, v in PROFILE.items() if k != "documents_item"}
         fake = FakeAz()
         with stub(fake):
             message = self.assert_exits(6, azure.Board(None, profile).attach_document,
                                         "registry", "x", project_id="Contoso Platform")
-        self.assertIn("epic_id", message)
+        self.assertIn("documents_item", message)
+        self.assertNotIn("epic_id", message)
         self.assertEqual(fake.calls, [])
         self.assertEqual(fake.rest_calls, [])
 
@@ -1148,6 +1149,39 @@ class AttachmentTests(ScriptTestCase):
             azure.Board("pat-secret", PROFILE).attach_document("t", "x\n", identifier="42")
         self.assertEqual(len(fake.rest_matching("PATCH", "wit/workitems/42")), 2)
         self.assertEqual(len(self.attached(fake)), 1)
+
+    # -- through the validated profile, the only way a real run gets one ----
+
+    def test_the_test_profile_is_one_the_validated_loader_accepts(self):
+        board.check_profile(PROFILE)
+
+    def test_a_validated_profile_reaches_the_project_level_document_path(self):
+        import tempfile
+        from pathlib import Path
+        from support import chdir, write_profile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            write_profile(root, **PROFILE)
+            with chdir(root):
+                loaded = board.load_profile()
+        fake = FakeAz(work_item("10"))
+        with stub(fake):
+            azure.Board("pat-secret", loaded).attach_document(
+                "registry", "x", project_id="Contoso Platform")
+        self.assertEqual(len(fake.rest_matching("PATCH", "wit/workitems/10")), 1)
+
+    def test_a_profile_still_carrying_epic_id_is_refused_with_the_rename(self):
+        import tempfile
+        from pathlib import Path
+        from support import chdir, write_profile
+        legacy = dict(PROFILE, epic_id=PROFILE["documents_item"])
+        del legacy["documents_item"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            write_profile(root, **legacy)
+            with chdir(root):
+                message = self.assert_exits(board.EXIT.CONFIG, board.load_profile)
+        self.assertIn("rename 'epic_id' to 'documents_item'", message)
 
     def test_documents_are_listed_from_the_relations_of_the_work_items(self):
         items = work_item("10")

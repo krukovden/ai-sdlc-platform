@@ -197,6 +197,11 @@
         }
       }
     },
+    "documents_item": {
+      "description": "Azure DevOps: the work item project-level documents are attached to, usually the epic. Azure DevOps has no project documents. Replaces the removed 'epic_id'.",
+      "type": "string",
+      "minLength": 1
+    },
     "area_path": {
       "type": "string",
       "minLength": 1
