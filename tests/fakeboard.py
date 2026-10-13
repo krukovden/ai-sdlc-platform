@@ -2,7 +2,7 @@
 
 It answers the adapter surface the board-neutral code calls — `read_card`,
 `write_card`, comments, children, attachments, creation — and inherits the
-phase surface from `tags.PhaseMixin` exactly as both real adapters do. What
+phase surface from `phases.PhaseMixin` exactly as both real adapters do. What
 makes it worth having is that it **honours `test /rev`**: every write carries
 the revision it was decided on, and a write against a card that moved is a
 conflict, never applied. Comments carry the server's timestamp from a clock
@@ -28,16 +28,17 @@ from datetime import datetime, timedelta, timezone
 
 from support import board as _board_module
 
-# The instance every adapter shares, so a PhaseMapError raised here is the one
-# a caller catches.
+# The instances every adapter shares, so a PhaseMapError raised here is the
+# one a caller catches.
 tags = _board_module.state.tags
+phases = _board_module.state.phase_model
 
 
 class Crash(Exception):
     """The process died right after a side effect landed."""
 
 
-class FakeBoard(tags.PhaseMixin):
+class FakeBoard(phases.PhaseMixin):
     """An in-memory board. Not a stub of one adapter: a model of a board."""
 
     DEFAULT_PBI_STATES = {"ready": "New", "active": "Active", "next": "Resolved"}

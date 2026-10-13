@@ -92,28 +92,30 @@ def parse_machine_header(text):
     return header
 
 
-def _tags_module():
-    """The board model lives in `scripts/tags.py`; borrow it, never copy it."""
-    existing = sys.modules.get("idp_tags")
+def _sibling(name, alias):
+    """The board model lives in `scripts/tags.py` and `scripts/phases.py`; borrow
+    it, never copy it."""
+    existing = sys.modules.get(alias)
     if existing is not None:
         return existing
     import importlib.util
-    path = Path(__file__).resolve().parent / "tags.py"
-    spec = importlib.util.spec_from_file_location("idp_tags", path)
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(alias, path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["idp_tags"] = module
+    sys.modules[alias] = module
     spec.loader.exec_module(module)
     return module
 
 
-tags = _tags_module()
+tags = _sibling("tags", "idp_tags")
+phase_model = _sibling("phases", "idp_phases")
 
-# One vocabulary, defined in tags.py. Re-exported because every caller already
-# asks this module, and two definitions of what `{"tag": ...}` means is one too
-# many.
+# One vocabulary, defined in tags.py and phases.py. Re-exported because every
+# caller already asks this module, and two definitions of what `{"tag": ...}`
+# means is one too many.
 TAG_PREFIX = tags.TAG_PREFIX
-PhaseMapError = tags.PhaseMapError
-as_marker = tags.as_marker
+PhaseMapError = phase_model.PhaseMapError
+as_marker = phase_model.as_marker
 phase_tags = tags.phase_tags
 
 
@@ -125,7 +127,7 @@ def phase_map(profile, adapter_default):
     has already applied the profile. The profile is still checked here, so a
     profile that maps a Feature phase fails at `init` and not on first use.
     """
-    tags.check_profile_phases((profile or {}).get("phases"))
+    phase_model.check_profile_phases((profile or {}).get("phases"))
     merged = {}
     for phase, positions in (adapter_default or {}).items():
         cells = {}

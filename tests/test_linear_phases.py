@@ -132,7 +132,8 @@ class StartPhaseTests(ScriptTestCase):
             result = board_handle.start_phase("IDE-90", "design")
 
         self.assertFalse(result["changed"])
-        self.assertIn("already", note.getvalue())
+        # Quiet: saying so is the CLI's business (`board.py start`), not the library's.
+        self.assertEqual(note.getvalue(), "")
         self.assertEqual(fake.writes, 0, "an already-claimed card must not be written again")
 
     def test_a_card_held_by_another_run_is_refused_and_untouched(self):

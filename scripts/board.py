@@ -650,6 +650,9 @@ def cmd_start(args):
     """Claim: one fenced write adding this run's owner tag. A lost race exits INVALID."""
     _, _, board = open_board()
     result = board.start_phase(args.id, args.phase)
+    if not result.get("changed", True):
+        print(f"{result['identifier']} is already {args.phase} · active, held by this run",
+              file=sys.stderr)
     print(f"{result['identifier']}  {result['status']}  "
           f"{', '.join(result.get('labels') or []) or '—'}")
 

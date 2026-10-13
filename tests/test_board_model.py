@@ -19,7 +19,7 @@ every phase to:
 import threading
 import unittest
 
-from fakeboard import Crash, FakeBoard, crash_and_resume, tags
+from fakeboard import Crash, FakeBoard, crash_and_resume, phases, tags
 from support import ScriptTestCase, load_script
 
 lease = load_script("lease")
@@ -88,7 +88,7 @@ class TransitionTableTests(ScriptTestCase):
         import os
         from unittest import mock
         with mock.patch.dict(os.environ, {"IDP_RUN_ID": A}):
-            message = self.assert_exits(tags.EXIT.INVALID, board.set_phase_tag, "1",
+            message = self.assert_exits(phases.EXIT.INVALID, board.set_phase_tag, "1",
                                         tags.DEVELOPMENT)
         self.assertIn("FIX:", message)
 
@@ -249,7 +249,7 @@ class HumanPhaseTests(ScriptTestCase):
     def test_qa_is_the_humans_and_cannot_be_claimed_through_start(self):
         board = FakeBoard()
         feature(board, "1", tags.QA)
-        message = self.assert_exits(tags.EXIT.INVALID, board.start_phase, "1", "qa")
+        message = self.assert_exits(phases.EXIT.INVALID, board.start_phase, "1", "qa")
         self.assertIn("no 'active' position", message)
         self.assertEqual(board.side_effects, 0)
 

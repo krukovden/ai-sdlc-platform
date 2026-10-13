@@ -98,11 +98,6 @@ def fail(code, message, fix=None):
     sys.exit(code)
 
 
-def _tags_module():
-    """The board model and its single writer. Every tag change goes through it."""
-    return _sibling("tags", "idp_tags")
-
-
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
@@ -286,7 +281,7 @@ KIND_REFUSALS = {
 }
 
 
-class Board(_tags_module().PhaseMixin):
+class Board(_sibling("phases", "idp_phases").PhaseMixin):
     """A connected board. Holds the token and the team it works against."""
 
     def __init__(self, token, profile):
@@ -584,8 +579,8 @@ class Board(_tags_module().PhaseMixin):
     # -- the two tag primitives, and the comments a lease is read from -------
     #
     # Phases, claims, hand-offs and leases are board-neutral and live in
-    # scripts/tags.py and scripts/lease.py, which this class inherits through
-    # `PhaseMixin`. What only this board knows is how to read a card with the
+    # scripts/tags.py, scripts/phases.py and scripts/lease.py; this class
+    # inherits the phase surface through `phases.PhaseMixin`. What only this board knows is how to read a card with the
     # nearest thing it has to a revision, and how to write one fenced on it.
 
     DEFAULT_PBI_STATES = DEFAULT_PBI_STATES

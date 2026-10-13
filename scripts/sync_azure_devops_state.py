@@ -250,11 +250,6 @@ def fail(code, message, fix=None):
     sys.exit(code)
 
 
-def _tags_module():
-    """The board model and its single writer. Every tag change goes through it."""
-    return _sibling("tags", "idp_tags")
-
-
 def _sections_module():
     """`scripts/sections.py`, borrowed the same way `state.py` is."""
     return _sibling("sections", "idp_sections")
@@ -758,7 +753,7 @@ def organization_url(profile):
 # Adapter interface. Every board adapter implements these.
 # ---------------------------------------------------------------------------
 
-class Board(_tags_module().PhaseMixin):
+class Board(_sibling("phases", "idp_phases").PhaseMixin):
     """A connected Azure DevOps organization, project and team."""
 
     def __init__(self, token, profile):
@@ -1373,8 +1368,8 @@ class Board(_tags_module().PhaseMixin):
     # -- the two tag primitives, and the comments a lease is read from -------
     #
     # Phases, claims, hand-offs and leases are board-neutral and live in
-    # scripts/tags.py and scripts/lease.py, which this class inherits through
-    # `PhaseMixin`. What only this board knows is how to read a card with its
+    # scripts/tags.py, scripts/phases.py and scripts/lease.py; this class
+    # inherits the phase surface through `phases.PhaseMixin`. What only this board knows is how to read a card with its
     # revision and how to write one fenced on it.
 
     DEFAULT_PBI_STATES = DEFAULT_PBI_STATES
