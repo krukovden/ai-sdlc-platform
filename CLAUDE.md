@@ -70,42 +70,72 @@ Note that `project.issues` excludes archived issues by default. Pass `includeArc
 
 ## The pipeline
 
+IDE-147 rewrote the delivery path after task formation. `/idp-establish` and
+`/idp-discovery` still exist, but once a Feature is on the board the platform now
+speaks in **four phases, one owner per phase, and two human gates**:
+
+| # | Phase | Owner | What runs here | Ends with |
+|---|---|---|---|---|
+| 1 | **Task formation** | engineering-catalog, not this repository | `grilling` + `ado-pbi`, or the equivalent path on Linear | A Feature with requirements on the board. Creating it is the Product Owner's approval |
+| 2 | **Design** | the `design` executor role | `/idp-design`, ADR upload, critic record, approval hash | ADR attached to the Feature, then **human gate 1** at `idp:design-review` |
+| 3 | **Development** | one `run.py` owner for the whole Feature | 3.1 planning, 3.2 building, 3.3 integration and documenter | All PBIs merged into the feature branch, QA Testing PBI in `doing`, feature PR open, `idp:qa` |
+| 4 | **QA** | the human for now | QA Testing PBI, the feature PR into `main`, Bugs back to development when needed | **human gate 2**: merge into `main`, or return to `idp:development` |
+
+One owner per phase replaced the old participant chart because the board needs to
+know **who holds the card**, not which internal sub-role happens to be speaking.
+Design still has architect and critic, development still has planning, worker,
+review and documenter, but those are executor roles and sub-phases, not board
+states.
+
+Routes are now expressed as phase sequences:
+
+| Route | Phases |
+|---|---|
+| `feature` | 1 -> 2 -> 3 -> 4 |
+| `small-feature` | 1 -> 3 -> 4 |
+| `bug` | 1 -> 2 as a short verdict with no review gate -> 3 with one PBI -> 4 |
+
+`run.py` owns the loop and the claims. In a terminal it runs one Feature to its
+next gate; in agent mode it keeps taking cards until stopped:
+
+```bash
+python3 scripts/run.py IDE-88
+python3 scripts/run.py --agent
+python3 scripts/run.py stop
+python3 scripts/run.py takeover IDE-88
+python3 scripts/run.py reap
 ```
-Product Owner with a whole project already thought through
-   │  /idp-establish
-   ▼  coverage · independent challenge · traversal of end-to-end scenarios
-Project ADR on the epic, stages, feature cards for the open stage
-   │  a feature the architecture said too little about carries `discovery: required`
-   │  and goes to /idp-discovery first — nothing else lifts that block
-   ▼
-Product Owner with one idea
-   │  /idp-discovery
-   ▼  grilling · evidence · independent second-model review
-Feature card, created by the Product Owner          ← GATE 1 (implicit: creating it approves it)
-   │  /idp-design
-   ▼  architect (subphases: architect, critic, alternative, best practice)
-ADR — how we build it and what it costs             ← GATE 2: Design Review
-   │  the approved ADR is attached to the feature as a file
-   │  /idp-planning
-   ▼  planner: PBIs + the feature branch
-Implementation PBIs
-   │  /idp-development
-   ▼  one agent per PBI, in parallel, synchronised through the board
-   │
-   │  a script runs the chain inside each PBI:
-   │  coder → reviewer → security → rubber duck → tester → lead
-   │  only the coder changes code; everyone else hands work back
-   │        │
-   │        ▼  lead opens the PBI PR → documenter
-   ▼  all PBIs closed
-Global PR into main                                 ← GATE 3: PR Review
-```
 
-Branch chain: `PBI → feature branch → main`, two levels of pull request, the human approves the second.
+The executor roles are fixed: `design` for phase 2 and the bug-route verdict,
+`worker` for one PBI, `review` for the rubber duck, `integration` for 3.3 and the
+documenter. Models never orchestrate other models; `run.py` starts each session,
+checks its result and routes it by the closed exit-code table in
+`scripts/exit_codes.py`.
 
-Three routes by kind of work: **feature** — three gates, **small feature** — two (no ADR is written), **bug** — one, with the architect issuing a verdict instead of an ADR. Any chain participant can stop work with `Blocked - Needs Design`; escalation always reaches the human, even on the bug route. See IDE-90.
+The Feature's board tags are now a phase model, not a sub-phase diary:
 
-**The route is proposed, not assumed.** The model reads the request and proposes a route with one clause of justification; the human confirms or overrides it in a word. Where the model is unsure it asks rather than guesses. The chosen route is written into the artifact's machine header, because it decides how many gates the state resolver has to check.
+| Tag | Meaning | Set by |
+|---|---|---|
+| `idp:design` | Needs design | task formation |
+| `idp:design-review` | ADR attached, waiting for a human | design |
+| `idp:development` | Approved; phase 3 may start | human |
+| `idp:qa` | Development is done; feature PR is open; QA Testing PBI is with the human | development |
+| `idp:pr-review` | Reserved for automated QA later | QA, later |
+| `idp:blocked` | Modifier: keep the phase tag, add the reason in a comment | runner or human |
+| `idp:owner:<run>` | Claimed by one run | runner |
+| `idp:paused:<run>` | Stopped deliberately or at the cliff; any run may take it immediately | runner or hook path |
+
+Planning always creates a visible **QA Testing** PBI that depends on every
+development PBI. It holds two Tasks: *Write test cases and Playwright* for the
+tester, and *Run the feature's tests* for the later automated QA phase. Until that
+phase exists, the pipeline stops at the human's QA gate rather than pretending the
+feature is done.
+
+**The route is proposed, not assumed.** The model reads the request and proposes a
+route with one clause of justification; the human confirms or overrides it in a
+word. Where the model is unsure it asks rather than guesses. The chosen route is
+written into the artifact's machine header, because it decides how many gates the
+state resolver has to check.
 
 **The feature's files live on the board, not in the repository.** The ADR, the feature history and the feature's Tried & Rejected are attachments on the feature card in Linear or Azure DevOps; the project's Tried & Rejected is an attachment on the epic, and the feature registry is the product repository's `memory/index.md`. There is no directory here for them and there will not be one — the board is the synchronisation point, and an agent working from another machine or inside a different product repository has to find them without git access.
 
@@ -113,13 +143,26 @@ Three routes by kind of work: **feature** — three gates, **small feature** —
 
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
-Nine logical capabilities, **sixteen participants** — twelve inside the phases and four cross-cutting services: Feature Discovery (interview skill, independent reviewer) · Technical Design (design agent) · Planning (planner) · Development Execution (the leading script, coder, reviewer, security reviewer, rubber duck, tester, lead) · Documentation (documenter) · Profile Resolution · Work Tracking Adapter · Project Memory · State Resolution. The human is not counted: they do not take part in the chain, they authorise it.
+The revision no longer counts "**sixteen participants**". That was a staffing
+chart, and the board cannot coordinate a staffing chart. What replaced it is the
+phase model above: four phases, each with one owner, plus the cross-cutting
+services that stay stable whichever agent, model or host fills the role.
 
 Core artifacts: Project Profile · Feature · ADR · PBI · feature history · Tried & Rejected · feature registry · QA evidence · Pull Request Summary · Documentation Change Set. The full table, with who writes each and what carries it, is in the [reference architecture](https://linear.app/krukov-idea-hub/document/referensnaya-arhitektura-951bc7c33b59).
 
-**The artifact chain is `Feature → ADR → PBI`.** The Product Owner creates the feature; the architect picks it up and turns it into an ADR; the human approves the ADR and it is attached to the feature as a file. The word *Spike* no longer means technical design — technical design is the ADR.
+**The artifact chain is `Feature → ADR → PBI`.** The Product Owner creates the
+feature; the architect picks it up and turns it into an ADR; the human approves
+the ADR and it is attached to the feature as a file. The word *Spike* no longer
+means technical design — technical design is the ADR.
 
-Seven local commands in the first revision, every phase started by a human: `/idp-setup` → `/idp-establish` → `/idp-discovery` → `/idp-design` → `/idp-planning` → `/idp-development`, plus `/idp-status` at any point. `/idp-establish` is the only one that works at the level of a project rather than a feature: it takes an architecture the Product Owner already wrote, proves it can carry the product, and slices it. Everything after it is unchanged. A command whose signal is absent refuses with a reason rather than guessing, and every command resumes from the last completed step instead of starting over.
+The first revision's local commands still exist where they fit —
+`/idp-setup`, `/idp-establish`, `/idp-discovery`, `/idp-design`,
+`/idp-planning`, `/idp-development` and `/idp-status` — but IDE-147 added the
+runner commands that make the revised path autonomous:
+`run.py <feature>`, `run.py --agent`, `run.py stop`, `run.py takeover` and
+`run.py reap`. A command whose signal is absent refuses with a reason rather than
+guessing, and every command resumes from the last completed step instead of
+starting over.
 
 **Signal and signal delivery are different things.** The signal — "the ADR is approved" — is part of the contract and never changes. Delivery changes as the platform matures: a human today, board polling or a webhook later. The check itself lives in one shared **state resolver**, so moving to autonomy replaces the caller, not the logic.
 
@@ -127,7 +170,7 @@ Seven local commands in the first revision, every phase started by a human: `/id
 
 These come from the project constitution and are not negotiable inside this repository:
 
-1. **Humans own the decisions that matter.** AI prepares material and recommends; a human decides. Three gates: the feature, the ADR, the global pull request. Who approves is a list in the Project Profile, not a role baked into the platform.
+1. **Humans own the decisions that matter.** AI prepares material and recommends; a human decides. Two gates in the revised path: design approval, then QA acceptance together with the merge into `main`. Who approves is a list in the Project Profile, not a role baked into the platform.
 2. **Only ask a human when necessary.** Models and tools resolve facts and low-risk questions before escalating.
 3. **Structured artifacts over raw conversations.** Approved specifications and compact Decision Traces are the record — never chat transcripts.
 4. **Stable contracts, swappable executors.** Skills, models, agents, scripts and services may change while artifact contracts stay stable.
@@ -155,7 +198,27 @@ Pilot project: **Private AI Knowledge Platform MVP** (also in Linear, currently 
 
 **Milestone 1 is closed** — 18 August 2026. Both of its features are done: IDE-79 settled the rules of the game (six approved design Spikes, every contract with exactly one place where it is defined — see the *rules of the game* table on the [HUB](https://linear.app/krukov-idea-hub/document/00-hub-read-this-before-any-work-4d61e3161927)), and IDE-92 built the cross-cutting services. The gate that blocked every other milestone is lifted.
 
-**Six capabilities have shipped**, all registered on the HUB: Work Tracking Adapter and Profile Resolution (`scripts/board.py`, `scripts/sync_linear_state.py`), State Resolution (`scripts/state.py`), Project Memory (`scripts/memory.py`), Agent Identity, and Platform Installation (`scripts/install.py`) — with 276 tests that never touch the network. The adapter shipped before its card existed, which is a process violation; the lapse is recorded in [IDE-93](https://linear.app/krukov-idea-hub/issue/IDE-93/work-item-ide-92-tracker-adapter-and-profile-resolution) rather than quietly corrected.
+**IDE-147 shipped the revision core.** The platform now has the deterministic
+runner and the scripts around it:
+
+- **Runner and phase routing** — `scripts/run.py`, `scripts/phases.py`,
+  `scripts/exit_codes.py`
+- **Claims, leases, tags and takeovers** — `scripts/lease.py`, `scripts/tags.py`,
+  `scripts/agent_mode.py`, `scripts/sync_azure_devops_state.py`,
+  `scripts/sync_linear_state.py`
+- **Phase 3 orchestration** — `scripts/phase3/plan.py`, `shape.py`, `states.py`,
+  `bugs.py`, `review.py`, `finalize.py`, `merge.py`, `integration.py`,
+  `journal.py`, `gitops.py`, `orchestrator.py`
+- **Executors, handoff and hooks** — `scripts/executors/`, `scripts/handoff.py`,
+  `scripts/hooks/`
+- **Worker and documenter skills** — `skills/development/SKILL.md`,
+  `skills/documenter/SKILL.md`
+- **Area blueprints and experiment harness** — `scripts/blueprint.py`,
+  `docs/runner.md`, `scripts/experiments/`, `docs/experiments/`
+
+On Azure DevOps the runner now calls engineering-catalog's `ado-board` unit for
+todo / doing / done moves and `reconcile` when it is installed. That unit is the
+one merged in [krukovden/engineering-catalog#3](https://github.com/krukovden/engineering-catalog/pull/3).
 
 **Milestone 2 is in progress.** Under IDE-80 the design is approved (IDE-68) and three work items are closed — repository structure (IDE-83), the deterministic core (IDE-84), the Linear publishing adapter (IDE-86). Reviewer integration (IDE-85) is in progress. Four remain open: the content validator (IDE-102), the evaluation harness (IDE-88), the Azure DevOps adapter (IDE-87), and skill installation for Codex and Copilot (IDE-101, still a child of IDE-92 but tracked here — there is nothing to install until the first skill exists).
 
@@ -168,27 +231,35 @@ Note on vocabulary: our own cards are still labelled *Spike*, and there the word
 Layout — what exists, and what is planned:
 
 ```
-scripts/       board.py (front door) + sync_<board>_state.py (one adapter per tracker)   ✅
-               state.py (the resolver), memory.py (the registry), install.py             ✅
-tests/         deterministic tests, none touch the network                                ✅
-docs/          project-state.md (generated)                                               ✅
-templates/     six artifact templates; the default language at the top,               ✅
-               every other one in a directory named for it (templates/ru/)
-schemas/       frontmatter, reviewer, practice, alternatives, challenge              ✅
-lint/          one markdownlint config per artifact structure (MD043)                  ✅
-               validate.py in scripts/ enforces them plus the content layer            ✅
-skills/        feature-discovery/, design/, planning/, establish-project/              ✅
-registry/      slots.json (feature coverage), project_slots.json (project coverage)    ✅
-               providers.json, sections.json (section ids and their wording)           ✅
+scripts/       run.py, phases.py, exit_codes.py, lease.py, tags.py, handoff.py          ✅
+               board.py + sync_<board>_state.py (front door and adapters)               ✅
+               phase3/ (planning, building, integration, merge, review, states)         ✅
+               executors/ (roles, local launches, Orca backend, environment)            ✅
+               hooks/ (cliff handoff, context watch, status line)                        ✅
+               experiments/ (e2, e3, e4, e7 live probes)                                ✅
+skills/        feature-discovery/, design/, planning/, establish-project/               ✅
+               development/, documenter/, platform-freshness/                            ✅
+docs/          project-state.md (generated), runner.md, install.md                       ✅
+               experiments/ (pre-registered live checks)                                 ✅
+docker/        install smoke and package e2e harness                                     ✅
+cli/           version.js, marketplace helpers                                           ✅
+package.json   package version and payload definition                                    ✅
+catalog.json   marketplace skill registry                                                ✅
+tests/         deterministic tests, none touch the network                               ✅
+templates/     artifact templates and localisation roots                                 ✅
+schemas/       profile, frontmatter, reviewer, practice, alternatives, challenge         ✅
+registry/      slots, project slots, providers, section wording                          ✅
 evals/         golden ideas and LLM evaluations
 ```
 
-The profile now carries four things beyond the board: `phases` (map our phase names onto
-this board's statuses, `null` where a status cannot exist), `agents` (one token path per
-agent, because the claim protocol reads the actor from history), `memory_doc` (the epic
-document that held the registry — read by nothing since IDE-147, kept only so old
-profiles still validate) and `repositories` (everything the drift detector must
-search, not just the clone you happen to be in).
+The profile now carries runner settings rather than attribution hacks:
+`executors`, `development`, `approvers`, `protected_branches`,
+Azure DevOps' `state_map` and `documents_item`, plus `repositories` for drift and
+documentation. The per-agent token map is gone — claims are fenced writes now —
+and the old epic feature registry is gone with it: the only registry is the
+product repository's `memory/index.md`, filled after a merge by
+engineering-catalog's `memory-writer`. `memory_doc` remains only so older profiles
+still validate; IDE-147 does not read it.
 
 Skills are developed here and symlinked into `~/.claude/skills/` for local use — a link, never a copy, so an edit here is live everywhere immediately:
 
@@ -230,11 +301,16 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 ## Known gaps
 
 - **A claim on Linear can still race.** Phases are the fixed `idp:` tags of `scripts/tags.py` on both boards, and every tag change is one write fenced on the revision just read (IDE-147). Azure DevOps closes the race with `test /rev`. **Linear has no revision to test**: the writer re-reads `updatedAt` immediately before the mutation and refuses on a mismatch, but two claimers that both pass that re-read in the milliseconds before either mutation lands both write, and the last one wins silently. No conditional update exists in Linear's API. Where parallel claimers matter, run them on Azure DevOps.
-- **The Azure DevOps fence is built against a stub, not measured.** Which status a failed `test /rev` returns, and whether posting a comment bumps `/rev`, are experiment 2 of IDE-147. The adapter reads 409, 412 and a `TF26071` 400 as a lost race (`CONFLICT_STATUSES`), and the writer re-reads before every write so a comment-bumped revision cannot wedge its own owner; `tests/fakeboard.py` models both answers. Whether the HTML-comment form of an `idp:event` marker survives either board's sanitiser is unmeasured too, which is why every event is written a second time as visible code.
-- **Azure Repos may complete a PBI's pull request onto a feature head nobody tested.** The runner completes with `lastMergeSourceCommit` pinned to the tested merge, but the completion call pins only the source, never the target. `scripts/phase3/merge.py` narrows the window — the target head is asked of the remote immediately before the call — and `orchestrator.landed_on_tested` checks afterwards that the squash's parent is the tested feature SHA, recording a `merge-race` event and re-running the witnesses on the new head when it is not (red blocks the Feature). Whether the service itself refuses such a completion has not been measured; it needs a live run (experiment 8 in `docs/experiments/README.md`). Git-level merges, the Linear path, have no window: their push is a compare-and-swap.
+- **Experiment 2 is still live, not measured.** The scripts and tests are ready, but the real Azure DevOps answers are not yet recorded: which statuses a failed `test /rev` returns, whether posting a comment bumps `/rev`, and whether the HTML `idp:event` marker survives sanitisation. If the race itself fails, the board cannot stay the coordination point and the claim moves to git. If a comment bumps `/rev`, heartbeats move away from comments or into the writer's fenced reread.
+- **Experiment 3 is still live, not measured.** Attachment upload, replace and download are scripted, but the real round-trip is not yet in the record. If the bytes change, the ADR has to be wrapped or stored elsewhere with only its hash on the card. If replace leaves two relations, the adapter must remove the older one before phase 3 can trust "exactly one ADR".
+- **Experiment 4 is still live, not measured.** Claude's `StopFailure` and Copilot's `errorOccurred` / `sessionEnd` are wired into the hook path, but nobody has yet proved on a real limit that the events fire and a hook can still push. If they do not, layer 2 stays best-effort and layer 3 — the runner's own handoff path — remains the only guarantee.
+- **Experiment 7 is still live, not measured.** Nothing breaks if Azure Repos does not auto-link or auto-transition work-item mentions, because `reconcile` parses the mentions itself, but the platform may not depend on repository settings it has not measured.
+- **Experiment 8 is still missing as code, and Azure completion stays off by default.** The stale gap here used to say the runner completes Azure Repos PBI PRs. It no longer does. Until the moved-target experiment exists and runs, Azure Repos PR completion is behind `development.azure_complete_unproven`; the safe default is to leave the PR open, comment why, and block the Feature when nothing else can run. If the service later proves it refuses the moved target, its status becomes a first-class "head moved" signal; if it still completes, the after-check and witness rerun remain the only guard.
 - **The nine Linear statuses no longer carry phases.** `Ready for Design` … `PR Review` still exist on the IdeaHub board, but a Feature's position is its `idp:` label; a card sitting in one of those statuses with no phase label resolves as off the route until it is tagged. A profile that maps a Feature phase under `phases` is refused with a FIX line; only `phases.pbi` may rename a backlog item's states.
+- **The Orca environment check is a probe, not a sandbox.** Before the first Orca session of a run the backend checks the *names* of variables visible inside an Orca terminal and refuses Orca for that run if a denied name is present. That proves the launch path we measured, not a machine boundary: a model under the same OS user can still open files the user can read directly, including token files.
 - **Model isolation is process-level, not user-level.** Worker sessions do not inherit named board-token variables, the subprocess backend points `AZURE_CONFIG_DIR` at a fresh empty directory, `board.py` refuses direct board access when `IDP_NO_BOARD=1`, and runner-marked hooks write only pause requests. But a model running as the same OS user can still read files that user can read directly, including `~/.feature-discovery/linear-token` or a profile's `token_path` for Azure DevOps. A full credential boundary needs the model under a separate OS user or in a container with only the intended files mounted.
+- **Copilot hooks are shipped, not plugin-registered.** Claude plugin installs wire the freshness hook automatically. Copilot does not: `hooks/copilot-hooks.json` must still be installed by hand into `~/.copilot/hooks/`, or printed with absolute paths. Until that changes, Copilot's layer-2 cliff handoff is opt-in, while the runner-side guarantee still works.
 - **The clean-session check on the establish documentation has not been run.** [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) requires that a session given only the documentation describes `/idp-establish` correctly without reading the milestone's issues. Until it runs, the documentation is written but unverified.
 - **This file is a hand-maintained summary, and it has drifted before.** Two entries here described a repository that no longer existed, and a session that read them cold went hunting a credential bug that had already been fixed ([IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed)). `board.py memory check` now warns when this file is older than the last commit touching `scripts/`, `skills/`, `schemas/`, `templates/`, `lint/` or `registry/`. It is a warning and not a refusal, because most of those commits change nothing this file claims — which is also why the drift is invisible one commit at a time. When it warns, read the claims against the commits it lists.
 
-Closed since the last revision, kept here only so a reader who remembers them stops looking: **`publish_planning.hand_on` no longer compares a phase position as a string** — it asks `finish_phase`, which is idempotent on every board, instead of calling `.casefold()` on what has been a tag marker since IDE-147; its tests run on `tests/fakeboard.py`, which inherits the real phase surface, because the stub they used still spoke statuses and hid the crash. **`read_token` is board-aware** — `scripts/board.py` carries a `CREDENTIALS` map keyed by board, `azure-devops` resolves to `AZURE_DEVOPS_EXT_PAT`, and IDE-130 gave that board a `token_path` too. **The content validator runs before publication** — `skills/feature-discovery/publish_linear.py` calls `validate_text(...)` on the package before it ever reaches the board, which was IDE-111. Per-agent keys (IDE-100) are retired: a claim is a fenced write, not an actor read back from history, so neither the `agents` map nor `System.Tags` attribution in revision history matters any more (IDE-147); removing the key from the profile schema is IDE-147's profile work. IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `design · ready` — since IDE-147 the `idp:design` tag on every board, put there by the transition table's task-formation row — rather than `Todo` with a `stage:*` label.
+Closed since the last revision, kept here only so a reader who remembers them stops looking: **`publish_planning.hand_on` no longer compares a phase position as a string** — it asks `finish_phase`, which is idempotent on every board, instead of calling `.casefold()` on what has been a tag marker since IDE-147; its tests run on `tests/fakeboard.py`, which inherits the real phase surface, because the stub they used still spoke statuses and hid the crash. **`read_token` is board-aware** — `scripts/board.py` carries a `CREDENTIALS` map keyed by board, `azure-devops` resolves to `AZURE_DEVOPS_EXT_PAT`, and IDE-130 gave that board a `token_path` too. **The content validator runs before publication** — `skills/feature-discovery/publish_linear.py` calls `validate_text(...)` on the package before it ever reaches the board, which was IDE-111. **The per-agent token map is retired** — a claim is a fenced write, not an actor read back from history, so neither `agents` nor `System.Tags` attribution in revision history matter any more. **The epic feature registry is retired** — the only registry is `memory/index.md` in the product repository, filled after merge by engineering-catalog's `memory-writer`. IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `design · ready` — since IDE-147 the `idp:design` tag on every board, put there by the transition table's task-formation row — rather than `Todo` with a `stage:*` label.
