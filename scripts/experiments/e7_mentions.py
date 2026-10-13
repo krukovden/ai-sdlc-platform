@@ -28,6 +28,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -40,7 +41,15 @@ DEFAULT_INTERVAL = 10
 
 MENTION, FIXES = "mention", "fixes"
 LINKED, ABSENT = "linked", "absent"
-TRANSITIONED, UNCHANGED = "transitioned", "unchanged"
+TRANSITIONED, PRIOR, UNCHANGED = "transitioned", "prior", "unchanged"
+AUTOMATION_MARKERS = (
+    "microsoft.visualstudio.services.tfs",
+    "microsoft visualstudio services tfs",
+    "azure devops",
+    "commit-link",
+)
+ADO_HOST = (urllib.parse.urlsplit(
+    common.adapter.organization_url({"workspace": "example"})).hostname or "").casefold()
 
 SETTINGS_HINT = (
     "Check, in this order: (1) Project Settings → Boards → the process has a work item type "
@@ -63,6 +72,66 @@ def git(repo, *args, env=None):
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args[:2])} failed: {proc.stderr.strip()[:300]}")
     return proc.stdout.strip()
+
+
+def sanitize_url(url):
+    parts = urllib.parse.urlsplit(str(url or ""))
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def azure_remote(url):
+    parts = urllib.parse.urlsplit(str(url or ""))
+    host = (parts.hostname or "").casefold()
+    path = [piece for piece in parts.path.split("/") if piece]
+    if parts.scheme != "https":
+        raise GitError(f"push URL '{sanitize_url(url)}' is not HTTPS")
+    if host == ADO_HOST:
+        if len(path) < 4 or path[2] != "_git":
+            raise GitError(f"push URL '{sanitize_url(url)}' is not an Azure DevOps repository URL")
+        org, project = path[0], path[1]
+    elif host.endswith(".visualstudio.com"):
+        if len(path) < 3 or path[1] != "_git":
+            raise GitError(f"push URL '{sanitize_url(url)}' is not an Azure DevOps repository URL")
+        org, project = host[:-len(".visualstudio.com")], path[0]
+    else:
+        raise GitError(f"push URL '{sanitize_url(url)}' is not an Azure DevOps host")
+    return {"url": urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")),
+            "sanitized": sanitize_url(url), "host": host, "org": org.casefold(),
+            "project": project.casefold()}
+
+
+def normalize_org(org):
+    parsed = urllib.parse.urlsplit(common.adapter.organization_url({"workspace": org}))
+    host = (parsed.hostname or "").casefold()
+    if host == ADO_HOST:
+        return parsed.path.strip("/").split("/", 1)[0].casefold()
+    if host.endswith(".visualstudio.com"):
+        return host[:-len(".visualstudio.com")]
+    return str(org or "").strip().strip("/").casefold()
+
+
+def resolve_push_urls(repo, remote):
+    urls = [line.strip() for line in git(repo, "remote", "get-url", "--push", "--all", remote)
+            .splitlines() if line.strip()]
+    if not urls:
+        raise GitError(f"remote '{remote}' has no push URL")
+    return urls
+
+
+def validated_push_urls(repo, remote, org, project):
+    expected_org = normalize_org(org)
+    expected_project = str(project or "").strip().casefold()
+    validated = []
+    for url in resolve_push_urls(repo, remote):
+        parsed = azure_remote(url)
+        if parsed["org"] != expected_org or parsed["project"] != expected_project:
+            raise GitError(f"remote '{remote}' resolves to {parsed['sanitized']}, not to the "
+                           f"Azure DevOps project named by --org/--project")
+        validated.append(parsed["url"])
+    return validated
 
 
 def prepare(repo, work_item, label=None):
@@ -90,13 +159,15 @@ def prepare(repo, work_item, label=None):
     return {"branch": branch, "base": base, "shas": shas}
 
 
-def push(repo, remote, ref, token):
+def push(repo, remote, ref, token, urls):
     """Push one ref. The credential reaches git through the environment, never argv."""
     env = dict(os.environ)
     if token:
         pair = base64.b64encode(f":{token}".encode()).decode()
-        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraheader",
-                    "GIT_CONFIG_VALUE_0": f"Authorization: Basic {pair}"})
+        env["GIT_CONFIG_COUNT"] = str(len(urls))
+        for index, url in enumerate(urls):
+            env[f"GIT_CONFIG_KEY_{index}"] = f"http.{url}.extraheader"
+            env[f"GIT_CONFIG_VALUE_{index}"] = f"Authorization: Basic {pair}"
     git(repo, "push", remote, ref, env=env)
 
 
@@ -106,16 +177,75 @@ def commit_linked(links, sha):
     return any(wanted in (a.get("url") or "").lower() for a in links.get("artifacts") or [])
 
 
-def watch(scratch, sha, initial_state, timeout, interval, sleep=time.sleep, clock=time.monotonic):
+def update_revision(update):
+    value = update.get("rev", update.get("id"))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def state_change(update):
+    field = (update.get("fields") or {}).get("System.State") or {}
+    if not isinstance(field, dict):
+        return None
+    old = field.get("oldValue")
+    new = field.get("newValue")
+    if old == new or new is None:
+        return None
+    return {"old": old, "new": new}
+
+
+def update_author(update):
+    who = update.get("revisedBy") or update.get("authorizedAs") or {}
+    if isinstance(who, dict):
+        return " ".join(str(who.get(key) or "") for key in ("displayName", "uniqueName", "id"))
+    return str(who or "")
+
+
+def automation_authored(update):
+    author = update_author(update).casefold()
+    return any(marker in author for marker in AUTOMATION_MARKERS)
+
+
+def update_artifacts(update):
+    relations = update.get("relations") or {}
+    if isinstance(relations, dict):
+        relations = list(relations.get("added") or []) + list(relations.get("updated") or [])
+    return [r for r in relations if (r.get("rel") or "") == "ArtifactLink"]
+
+
+def matching_transition(snapshot, sha, before_rev):
+    wanted = str(sha or "").casefold()
+    for update in sorted(snapshot.get("updates") or [], key=lambda item: update_revision(item) or -1):
+        rev = update_revision(update)
+        if rev is None or before_rev is None or rev <= before_rev:
+            continue
+        changed = state_change(update)
+        if not changed or not automation_authored(update):
+            continue
+        urls = [str(relation.get("url") or "").casefold() for relation in update_artifacts(update)]
+        if any(wanted in url for url in urls):
+            return {"rev": rev, "author": update_author(update), **changed}
+    return None
+
+
+def watch(scratch, sha, before, timeout, interval, sleep=time.sleep, clock=time.monotonic):
     """Poll the card until `sha` is linked and the state moved, or the time is up."""
+    before = dict(before or {})
     deadline = clock() + timeout
-    seen = {"linked": False, "state": initial_state, "polls": 0}
+    seen = {"linked": False, "state": before.get("state"), "rev": before.get("rev"),
+            "before_state": before.get("state"), "before_rev": before.get("rev"),
+            "polls": 0, "transition": None}
     while True:
         links = scratch.links()
         seen["polls"] += 1
         seen["linked"] = seen["linked"] or commit_linked(links, sha)
         seen["state"] = links.get("state")
-        if seen["linked"] and seen["state"] != initial_state:
+        seen["rev"] = links.get("rev")
+        seen["transition"] = seen["transition"] or matching_transition(
+            links, sha, before.get("rev"))
+        if seen["linked"] and (seen["transition"] or seen["state"] != before.get("state")):
             break
         if clock() >= deadline:
             break
@@ -123,16 +253,22 @@ def watch(scratch, sha, initial_state, timeout, interval, sleep=time.sleep, cloc
     return seen
 
 
-def analyse(initial_state, mention_seen, fixes_seen):
+def analyse(initial, mention_seen, fixes_seen):
     """The facts the design needs, from what the two polls saw."""
-    transitioned = fixes_seen["state"] != initial_state or mention_seen["state"] != initial_state
+    initial_state = initial.get("state")
+    transitioned = TRANSITIONED if fixes_seen.get("transition") else (
+        PRIOR if fixes_seen.get("before_state") != initial_state else UNCHANGED)
     return {
         "mention_links_commit": LINKED if mention_seen["linked"] else ABSENT,
         "fixes_links_commit": LINKED if fixes_seen["linked"] else ABSENT,
-        "fixes_transitions": TRANSITIONED if transitioned else UNCHANGED,
+        "fixes_transitions": transitioned,
         "initial_state": initial_state,
         "final_state": fixes_seen["state"],
         "mention_alone_moved_state": mention_seen["state"] != initial_state,
+        "fixes_transition": fixes_seen.get("transition"),
+        "fixes_before_state": fixes_seen.get("before_state"),
+        "fixes_unattributed_change": fixes_seen["state"] != fixes_seen.get("before_state")
+        and not fixes_seen.get("transition"),
     }
 
 
@@ -148,6 +284,16 @@ def render(facts, branch, shas, scratch_id):
     if facts["mention_alone_moved_state"]:
         lines.append("- NOTE: the plain `#id` mention already moved the state; "
                      "`Fixes` is not needed for a transition on this repository.")
+    if facts["fixes_transitions"] == PRIOR:
+        lines.append("- NOTE: the state had already changed before the `Fixes` push, so this run "
+                     "records that transition as prior rather than attributing it to `Fixes`.")
+    if facts["fixes_unattributed_change"]:
+        lines.append("- NOTE: the state changed after the `Fixes` push, but no later "
+                     "automation-authored revision linked to the `Fixes` commit was observed, so "
+                     "the run does not attribute that change to `Fixes`.")
+    if facts["fixes_transition"]:
+        lines.append(f"- transition evidence: revision {facts['fixes_transition']['rev']} by "
+                     f"{facts['fixes_transition']['author']}")
     absent = ABSENT in (facts["mention_links_commit"], facts["fixes_links_commit"]) \
         or facts["fixes_transitions"] == UNCHANGED
     if absent:
@@ -186,28 +332,35 @@ def main(argv=None):
         common.fail(EXIT.INVALID, "--repo-path is required: this experiment commits to a "
                                   "repository you name and never picks one.",
                     fix="clone a scratch Azure Repos repository and pass its path as --repo-path")
+    repo = Path(args.repo_path)
+    try:
+        push_urls = validated_push_urls(repo, args.remote, args.org, args.project)
+    except GitError as exc:
+        common.fail(EXIT.INVALID, str(exc),
+                    fix="point --repo-path at a clean scratch clone whose push URL resolves "
+                        "to the Azure DevOps organisation and project named by --org/--project")
 
     board = common.connect(args)
     scratch = common.AdoScratch(board, "e7", close_state=args.close_state)
     item = scratch.create()
     print(f"scratch work item {item} created")
-    repo = Path(args.repo_path)
     probe = None
     try:
-        initial = scratch.links()["state"]
+        initial = scratch.links()
         probe = prepare(repo, item)
         token = board.token
         for kind in (MENTION, FIXES):
             ref = f"{probe['shas'][kind]}:refs/heads/{probe['branch']}"
+            before = scratch.links() if kind == FIXES else initial
             if args.push:
-                push(repo, args.remote, ref, token)
+                push(repo, args.remote, ref, token, push_urls)
             else:
                 confirm(f"Push the {kind} commit:\n  git -C {repo} push {args.remote} {ref}", False)
             if kind == MENTION:
                 mention_seen = watch(scratch, probe["shas"][MENTION], initial,
                                      args.poll_seconds, args.interval)
             else:
-                fixes_seen = watch(scratch, probe["shas"][FIXES], initial,
+                fixes_seen = watch(scratch, probe["shas"][FIXES], before,
                                    args.poll_seconds, args.interval)
         facts = analyse(initial, mention_seen, fixes_seen)
     except GitError as exc:
