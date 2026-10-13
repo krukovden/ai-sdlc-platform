@@ -67,10 +67,10 @@ NEXT_ACTION = {
     ("design", "active"):      ("agent",  None),
     ("design", "next"):        ("human",  "approve the ADR by setting idp:development "
                                           "on {id}, or send it back with idp:design"),
-    ("planning", "ready"):     ("agent",  "/idp-planning {id}"),
+    ("planning", "ready"):     ("agent",  "/idp-develop {id}"),
     ("planning", "active"):    ("agent",  None),
     ("planning", "next"):      ("agent",  None),
-    ("development", "ready"):  ("agent",  "/idp-planning {id}"),
+    ("development", "ready"):  ("agent",  "/idp-develop {id}"),
     ("development", "active"): ("agent",  None),
     ("development", "next"):   ("human",  "test the feature through its QA Testing PBI: "
                                           "close it and merge the PR into main, or file "
@@ -79,7 +79,7 @@ NEXT_ACTION = {
                                           "close it and merge the PR into main, or file "
                                           "Bugs and set idp:development on {id}"),
     ("qa", "next"):            ("human",  "merge the pull request into main"),
-    ("pbi", "ready"):          ("agent",  "/idp-development {id}"),
+    ("pbi", "ready"):          ("agent",  "/idp-develop {feature}"),
     ("pbi", "active"):         ("agent",  None),
     ("pbi", "next"):           ("agent",  "the runner merges the PBI pull request"),
 }
@@ -334,8 +334,15 @@ def resolve(board, profile, identifier, phases=None):
         return answer
 
     waiting_on, template = NEXT_ACTION.get((phase, position), (None, None))
+    if phase == "pbi" and position == "ready" and not issue.get("parent"):
+        answer["waiting_on"] = "human"
+        answer["next"] = (f"link {identifier} under its owning Feature, then run "
+                          "/idp-develop <feature>")
+        answer["reason"] = "a PBI is driven through its owning Feature's development run"
+        return answer
     answer["waiting_on"] = waiting_on
-    answer["next"] = template.format(id=identifier) if template else None
+    answer["next"] = (template.format(id=identifier, feature=issue.get("parent") or identifier)
+                      if template else None)
     if answer["next"] is None:
         answer["reason"] = (f"run '{answer['owner']}' holds this card; nothing to start"
                             if answer["owner"] else

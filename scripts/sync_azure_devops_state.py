@@ -641,6 +641,10 @@ def acceptance_criteria(text):
     return found
 
 
+def field_acceptance_criteria(markup):
+    return acceptance_criteria("## Acceptance criteria\n\n" + html_to_text(markup or ""))
+
+
 def without_acceptance_criteria(text):
     """The body with its acceptance-criteria section cut out.
 
@@ -960,6 +964,8 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             "url": self.web_url(work_item_id, project),
             "branch": self.branch_name(work_item_id, title),
             "description": html_to_text(fields.get("System.Description") or ""),
+            "acceptance_criteria": field_acceptance_criteria(
+                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria")),
             "status": status,
             "status_type": self.state_type(status),
             "parent": _parent_of(item),
@@ -1022,6 +1028,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             "status_type": self.state_type(status),
             "parent": str(parent) if parent else None,
             "labels": _tags_of(fields),
+            "branch": self.branch_name(work_item_id, title),
             "kind": self.kind_of_type(fields.get("System.WorkItemType")),
         }
 

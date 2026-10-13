@@ -10,7 +10,7 @@ another. Every phase has the same shape:
           (at most 3 attempts, then idp:blocked) -> hand off
 
 Usage:
-    run.py <feature-id> [--run-id ID] [--no-ask]
+    run.py <feature-id> [--run-id ID] [--no-ask] [--phase design|development]
                          run the Feature from its current phase to the next human
                          gate, asking at the gate in this terminal
     run.py report --code N --reason TEXT [--worktree DIR]
@@ -409,6 +409,45 @@ class Runner:
                      "waiting.")
             return EXIT.DONE if moved else EXIT.REFUSED
         return EXIT.DONE
+
+    def run_phase(self, feature, phase):
+        answer = state.resolve(self.board, self.profile, feature)
+        if answer["position"] == state.CONFLICT:
+            both = ", ".join(answer["conflict"])
+            raise RunnerError(EXIT.REFUSED,
+                              f"{feature} carries two phase tags ({both}), so it is not "
+                              f"cleanly in phase '{phase}'",
+                              f"remove all but one of {both} from the card, then retry "
+                              f"`run.py {feature} --phase {phase}`")
+        if answer["blocked"]:
+            raise RunnerError(EXIT.REFUSED,
+                              f"{feature} is blocked and not runnable as phase '{phase}': "
+                              f"{answer['reason']}",
+                              answer["next"] or f"unblock the card, then retry `run.py "
+                              f"{feature} --phase {phase}`")
+        if answer["stopped"]:
+            raise RunnerError(EXIT.REFUSED,
+                              f"{feature} carries {tags.STOP}, so no run may take it for "
+                              f"phase '{phase}'",
+                              f"remove {tags.STOP}, then retry `run.py {feature} --phase "
+                              f"{phase}`")
+        if phase == "design" and not state.starts_with_design(answer["route"]):
+            raise RunnerError(
+                EXIT.REFUSED,
+                f"{feature} is on the '{answer['route']}' route, which has no design review",
+                f"set {tags.DEVELOPMENT} on {feature} in place of {tags.DESIGN}")
+        expected = {"design": {"design"}, "development": {"planning", "development"}}[phase]
+        if answer["phase"] not in expected or answer["position"] not in ("ready", "active"):
+            current = answer["phase"] or "no phase"
+            position = answer["position"] or "no position"
+            fix = answer["next"] or f"move the card to {getattr(tags, phase.upper())}"
+            raise RunnerError(
+                EXIT.REFUSED,
+                f"{feature} is at {current} · {position}, not in phase '{phase}' ready "
+                "to run",
+                fix)
+        return self.ended(phase, {"design": self.phase_design,
+                                  "development": self.phase_development}[phase], feature)
 
     def ended(self, phase, run, feature):
         """Run a phase; at its end, however it ended, engineering-catalog reconciles."""
@@ -905,7 +944,10 @@ def cmd_run(args):
         runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=ask)
         runner.stopping = agent_mode.stop_signal(board, presence)
         try:
-            code = runner.run_feature(args.feature)
+            if args.phase and hasattr(runner, "run_phase"):
+                code = runner.run_phase(args.feature, args.phase)
+            else:
+                code = runner.run_feature(args.feature)
         except RunnerError as exc:
             fail(exc.code, exc.message, fix=exc.fix)
         sys.exit(code)
@@ -1082,6 +1124,8 @@ def build_parser():
                                     "fresh lease for this invocation")
     p.add_argument("--no-ask", action="store_true",
                    help="stop at a gate instead of waiting in the terminal")
+    p.add_argument("--phase", choices=("design", "development"),
+                   help="run only this phase; refuse unless the card is already there")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("report", help="a session's last act: write .idp/result.json")

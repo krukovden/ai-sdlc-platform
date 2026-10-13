@@ -1,6 +1,7 @@
 ---
 name: feature-discovery
-description: Use when a Product Owner arrives with a raw idea and it has to become an approved Feature — grills the idea one question at a time, finds answers in the repository before spending anyone's attention, gets an independent second model to hunt for gaps, and produces a package with testable acceptance criteria
+description: "Only when invoked through /idp-discovery: a Product Owner's raw idea becomes an approved Feature through the fixed interview, evidence, review and validation loop."
+disable-model-invocation: true
 ---
 
 # Feature Discovery

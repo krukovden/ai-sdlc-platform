@@ -71,7 +71,7 @@ class PositionTests(ScriptTestCase):
         # 3.1 of the same phase, so it is what starts.
         result = answer(labels=["idp:development"])
         self.assertEqual((result["phase"], result["position"]), ("planning", "ready"))
-        self.assertEqual(result["next"], "/idp-planning IDE-42")
+        self.assertEqual(result["next"], "/idp-develop IDE-42")
 
     def test_names_the_command_that_starts_a_phase(self):
         self.assertEqual(answer(labels=["idp:design"])["next"], "/idp-design IDE-42")
@@ -148,6 +148,14 @@ class RouteTests(ScriptTestCase):
         result = answer(status="Todo", status_type="unstarted", parent="IDE-79", labels=[])
         self.assertEqual(result["kind"], "pbi")
         self.assertEqual(result["phase"], "pbi")
+
+    def test_a_ready_pbi_points_to_its_owning_features_development_command(self):
+        result = state.resolve(
+            StubBoard(identifier="IDE-89", status="Todo", status_type="unstarted",
+                      parent="IDE-88", labels=[]),
+            {}, "IDE-89")
+        self.assertEqual(result["phase"], "pbi")
+        self.assertEqual(result["next"], "/idp-develop IDE-88")
 
 
 class PhaseMapTests(ScriptTestCase):

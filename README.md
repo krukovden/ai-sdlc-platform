@@ -24,6 +24,24 @@ listed in [docs/install.md](docs/install.md).
 
 [Installation guide](docs/install.md) covers payloads, receipts, release checks, plugin updates, removal, and the separate `python3 scripts/install.py` development-checkout launcher.
 
+## Commands
+
+The user-facing entry points are explicit. Claude Code exposes them as slash
+commands; Copilot and Codex receive wrapper skills that map to the same six
+flows through each host's own skill picker or `$skill` syntax.
+
+| Entry point | What it runs |
+| --- | --- |
+| `/idp <IDE-nn>` | Continue the Feature from its current phase to the next human gate. |
+| `/idp-design <IDE-nn>` | Run phase 2 only and stop at `idp:design-review`. |
+| `/idp-develop <IDE-nn>` | Run phase 3 only and stop at `idp:qa`. |
+| `/idp-qa <IDE-nn>` | Read-only QA summary: QA Testing PBI state, PR/branch and acceptance checklist. |
+| `/idp-setup` | Derive `.idp/profile.json` from the repository and write it for editing. |
+| `/idp-status [IDE-nn]` | Show where the Feature is and why it waits. |
+
+The installed launcher behind those commands is `idp`: `idp pipeline`, `idp design`,
+`idp develop`, `idp qa`, `idp setup`, `idp status`.
+
 ## The chain
 
 **Feature -> ADR -> PBI.** The Product Owner creates the Feature during task
@@ -63,16 +81,19 @@ card to the next phase or the human gate.
 
 ```bash
 python3 scripts/run.py IDE-88
+python3 scripts/run.py IDE-88 --phase design
+python3 scripts/run.py IDE-88 --phase development
 python3 scripts/run.py --agent
 python3 scripts/run.py stop
 python3 scripts/run.py takeover IDE-88
 python3 scripts/run.py reap
 ```
 
-Use `run.py <feature>` for one card, `--agent` for unattended work, `stop` to end
-cleanly after the task in flight, `takeover` to claim a dead run's card without
-waiting out the lease, and `reap` to release stale leases. The executor roles,
-phase flow, profile keys and exit codes are documented in [docs/runner.md](docs/runner.md).
+Use `run.py <feature>` for one card, `--phase design|development` for one phase
+only, `--agent` for unattended work, `stop` to end cleanly after the task in
+flight, `takeover` to claim a dead run's card without waiting out the lease, and
+`reap` to release stale leases. The executor roles, phase flow, profile keys and
+exit codes are documented in [docs/runner.md](docs/runner.md).
 
 ## What is not built yet
 

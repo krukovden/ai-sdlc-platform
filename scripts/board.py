@@ -56,6 +56,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,9 +159,20 @@ def find_profile(start=None):
 def load_profile():
     path = find_profile()
     if not path:
-        fail(EXIT.CONFIG, f"no {PROFILE_DIR}/{PROFILE_NAME} found here or above; "
-                          f"run: {invoked_as()} init",
-             fix="run `board.py init` in the repository root, or cd into a repository that has .idp/profile.json")
+        defaults = load_sibling("profile_defaults", "idp_profile_defaults")
+        root = defaults.repository_root(os.getcwd())
+        try:
+            profile = defaults.derive(root, command=f"{invoked_as()} setup")
+        except defaults.DerivationError as exc:
+            fail(EXIT.CONFIG, exc.message, fix=exc.fix)
+        try:
+            profile = check_profile(profile)
+        except ProfileError as exc:
+            fail(EXIT.CONFIG, exc.message, fix=exc.fix)
+        profile["_root"] = str(root)
+        profile["_path"] = str(root / PROFILE_DIR / PROFILE_NAME)
+        profile["_source"] = "<derived from repository defaults>"
+        return profile
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -173,6 +185,7 @@ def load_profile():
         fail(EXIT.CONFIG, f"{path}: {exc.message}", fix=exc.fix)
 
     profile["_path"] = str(path)
+    profile["_root"] = str(path.parent.parent)
     return profile
 
 
@@ -435,6 +448,142 @@ def read_body(args):
     return getattr(args, "body", None)
 
 
+def _git(repo, *args, allow_failure=False):
+    answer = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL)
+    if answer.returncode == EXIT.OK:
+        return (answer.stdout or "").strip()
+    if allow_failure:
+        return ""
+    fail(EXIT.INVALID, f"git {' '.join(args)} failed in {repo}: "
+                       f"{(answer.stderr or answer.stdout).strip() or 'no output'}",
+         fix="run the command yourself, fix the repository, then retry")
+
+
+def current_feature_id(board, profile, identifier=None, cwd=None):
+    if identifier:
+        return identifier
+    repo = Path((profile.get("_root") or cwd or os.getcwd())).resolve()
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD", allow_failure=True)
+    if not branch or branch == "HEAD":
+        fail(EXIT.INVALID, "no issue id was given, and the current checkout is not on a named branch",
+             fix="pass the Feature id explicitly, for example `idp status IDE-88`")
+    nodes = board.list_project(project_id_from(profile, None))
+    matches = []
+    for node in nodes:
+        node_branch = (node.get("branch") or "").strip()
+        if not node_branch:
+            node_branch = (board.get_issue(node["identifier"]).get("branch") or "").strip()
+        if node_branch == branch:
+            candidate = _feature_identifier(board, node)
+            if candidate and candidate not in matches:
+                matches.append(candidate)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        fail(EXIT.INVALID, f"branch '{branch}' matches more than one Feature ({', '.join(matches)})",
+             fix="pass the Feature id explicitly")
+    fail(EXIT.INVALID, f"branch '{branch}' does not match any Feature in this project",
+         fix="pass the Feature id explicitly, or switch to a Feature branch")
+
+
+def _feature_identifier(board, node):
+    kind = str(node.get("kind") or "").strip().casefold()
+    parent = node.get("parent")
+    if not kind or (kind == "pbi" and not parent):
+        issue = board.get_issue(node["identifier"])
+        kind = kind or str(issue.get("kind") or "").strip().casefold()
+        parent = parent or issue.get("parent")
+    if kind == "pbi" and parent:
+        return str(parent)
+    if kind == "feature" or (not kind and not parent):
+        return node["identifier"]
+    return None
+
+
+def _feature_criteria_headings():
+    found = set()
+    for language in sections.languages():
+        heading = sections.criteria_heading("feature", language)
+        if heading:
+            found.add(heading.lstrip("#").strip().casefold())
+    return found
+
+
+def _bullets(text):
+    found = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("* ", "- ")):
+            found.append(stripped[2:].strip())
+    return found
+
+
+def acceptance_criteria(text):
+    lines = (text or "").splitlines()
+    in_section = False
+    found = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if in_section:
+                break
+            heading = stripped.lstrip("#").strip().casefold()
+            in_section = heading in _feature_criteria_headings()
+            continue
+        if not in_section:
+            continue
+        if stripped.startswith(("* ", "- ")):
+            found.append(stripped[2:].strip())
+    return found
+
+
+def issue_branch(issue):
+    return issue.get("branch") or issue.get("branchName") or "—"
+
+
+def qa_summary(board, identifier):
+    lease_module = load_sibling("lease", "idp_lease")
+    phase3 = sys.modules.get("idp_board_phase3")
+    if phase3 is None:
+        spec = importlib.util.spec_from_file_location(
+            "idp_board_phase3", SCRIPT_DIR / "phase3" / "__init__.py",
+            submodule_search_locations=[str(SCRIPT_DIR / "phase3")])
+        phase3 = importlib.util.module_from_spec(spec)
+        sys.modules["idp_board_phase3"] = phase3
+        spec.loader.exec_module(phase3)
+    shape = phase3.shape
+    issue = board.get_issue(identifier)
+    qa = next((item for item in shape.work_items(board, identifier) if shape.is_qa(item)), None)
+    pr = None
+    events = lease_module.events(board.list_comments(identifier), "feature-pr")
+    if events:
+        pr = events[-1]
+    return {
+        "issue": issue,
+        "qa": qa,
+        "pr": pr,
+        "criteria": issue.get("acceptance_criteria") or acceptance_criteria(issue.get("description") or ""),
+    }
+
+
+def _launcher(root):
+    root = Path(root).resolve()
+    local = root / ".local" / "bin" / "idp"
+    return local if local.exists() else Path("~/.local/bin/idp").expanduser()
+
+
+def write_profile_file(profile, target):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
+                      encoding="utf-8")
+
+
+def invoke_runner(arguments):
+    answer = subprocess.run([sys.executable, str(SCRIPT_DIR / "run.py"), *arguments])
+    sys.exit(answer.returncode)
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -539,6 +688,33 @@ def cmd_init(args):
     print(f"  writing: {sections.writing_brief(profile)}")
 
 
+def cmd_setup(args):
+    defaults = load_sibling("profile_defaults", "idp_profile_defaults")
+    root = defaults.repository_root(os.getcwd())
+    target = root / PROFILE_DIR / PROFILE_NAME
+    if target.exists() and not args.force:
+        fail(EXIT.CONFIG, f"{target} already exists; pass --force to overwrite",
+             fix="pass --force to overwrite it, or edit it by hand")
+
+    team_key = args.team_key
+    if not team_key and sys.stdin.isatty():
+        remote = defaults.parse_board_from_remote(defaults.remote_url(root))
+        if remote is None:
+            team_key = input("Linear team key: ").strip()
+    try:
+        profile = defaults.derive(root, team_key=team_key,
+                                  command=f"{invoked_as()} setup")
+        profile = check_profile(profile)
+    except defaults.DerivationError as exc:
+        fail(EXIT.CONFIG, exc.message, fix=exc.fix)
+    except ProfileError as exc:
+        fail(EXIT.CONFIG, exc.message, fix=exc.fix)
+
+    write_profile_file(profile, target)
+    print(f"Wrote {target}")
+    print(json.dumps(profile, indent=2, ensure_ascii=False))
+
+
 def cmd_writing(args):
     """What every model writing prose for this project is told.
 
@@ -550,9 +726,9 @@ def cmd_writing(args):
 
 def cmd_profile(args):
     profile = load_profile()
-    print(json.dumps({k: v for k, v in profile.items() if k != "_path"},
+    print(json.dumps({k: v for k, v in profile.items() if not k.startswith("_")},
                      indent=2, ensure_ascii=False))
-    print(f"# resolved from {profile['_path']}", file=sys.stderr)
+    print(f"# resolved from {profile.get('_source') or profile['_path']}", file=sys.stderr)
 
 
 def cmd_states(args):
@@ -657,8 +833,9 @@ def cmd_doc(args):
 
 def cmd_status(args):
     profile, _, board = open_board()
+    identifier = current_feature_id(board, profile, args.id)
     try:
-        answer = state.resolve(board, profile, args.id)
+        answer = state.resolve(board, profile, identifier)
     except state.PhaseMapError as exc:
         # A phase map that cannot be read is a configuration fault, not a crash.
         fail(EXIT.CONFIG, str(exc),
@@ -668,6 +845,47 @@ def cmd_status(args):
     # needs to tell "waiting on a human" from "run this now" without parsing.
     if args.quiet:
         sys.exit(EXIT.OK if answer["next"] else EXIT.NO)
+
+
+def cmd_qa(args):
+    profile, _, board = open_board()
+    identifier = current_feature_id(board, profile, args.id)
+    summary = qa_summary(board, identifier)
+    issue = summary["issue"]
+    print(f"{issue['identifier']}  {issue['title']}")
+    print(f"status:     {issue['status']}")
+    print(f"branch:     {issue_branch(issue)}")
+    if summary["pr"]:
+        print(f"pull req:   {summary['pr'].get('url') or summary['pr'].get('id')}")
+    else:
+        print("pull req:   none recorded on the Feature yet")
+    if summary["qa"] is None:
+        print("qa testing: not found")
+    else:
+        qa = summary["qa"]["issue"]
+        assignee = qa.get("assignee") or "unassigned"
+        print(f"qa testing: {summary['qa']['id']} · {qa.get('status') or '—'} · {assignee}")
+    print()
+    print("Acceptance criteria")
+    if not summary["criteria"]:
+        print("- [ ] none found in the Feature's `## What proves it` section")
+        return
+    for criterion in summary["criteria"]:
+        print(f"- [ ] {criterion}")
+
+
+def cmd_pipeline(args):
+    invoke_runner(["run", args.id, *([] if not args.no_ask else ["--no-ask"])])
+
+
+def cmd_design_only(args):
+    invoke_runner(["run", args.id, "--phase", "design",
+                   *([] if not args.no_ask else ["--no-ask"])])
+
+
+def cmd_develop_only(args):
+    invoke_runner(["run", args.id, "--phase", "development",
+                   *([] if not args.no_ask else ["--no-ask"])])
 
 
 def cmd_version(args):
@@ -809,6 +1027,11 @@ def main():
                         "'Product Backlog Item'. Repeatable")
     p.set_defaults(func=cmd_init)
 
+    p = sub.add_parser("setup", help="derive and write .idp/profile.json for editing")
+    p.add_argument("--team-key", help="Linear team key when git alone cannot derive the board")
+    p.add_argument("--force", action="store_true", help="overwrite an existing profile")
+    p.set_defaults(func=cmd_setup)
+
     p = sub.add_parser("writing", help="how this project's artifacts are written")
     p.set_defaults(func=cmd_writing)
 
@@ -865,11 +1088,33 @@ def main():
     p.add_argument("--project", help="override the project from the profile")
     p.set_defaults(func=cmd_doc)
 
-    p = sub.add_parser("status", help="where the card is and what to run next")
+    p = sub.add_parser("pipeline", help="run a Feature to the next human gate")
     p.add_argument("id")
+    p.add_argument("--no-ask", action="store_true",
+                   help="stop at a gate instead of waiting in the terminal")
+    p.set_defaults(func=cmd_pipeline)
+
+    p = sub.add_parser("design", help="run only phase 2 and stop at design review")
+    p.add_argument("id")
+    p.add_argument("--no-ask", action="store_true",
+                   help="stop at the gate instead of waiting in the terminal")
+    p.set_defaults(func=cmd_design_only)
+
+    p = sub.add_parser("develop", help="run only phase 3 and stop at QA")
+    p.add_argument("id")
+    p.add_argument("--no-ask", action="store_true",
+                   help="stop at the gate instead of waiting in the terminal")
+    p.set_defaults(func=cmd_develop_only)
+
+    p = sub.add_parser("status", help="where the card is and what to run next")
+    p.add_argument("id", nargs="?")
     p.add_argument("--quiet", action="store_true",
                    help="exit 1 when there is nothing to run, for scripting")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("qa", help="show the QA hand-off state and acceptance checklist")
+    p.add_argument("id", nargs="?")
+    p.set_defaults(func=cmd_qa)
 
     p = sub.add_parser("version", help="what is installed, and to which standard")
     p.set_defaults(func=cmd_version)

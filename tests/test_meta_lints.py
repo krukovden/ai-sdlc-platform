@@ -106,7 +106,7 @@ class OnlyTheAdapterCallsAzureDevOps(unittest.TestCase):
     def test_no_other_script_or_skill_reaches_azure_devops(self):
         offenders = []
         for path in python_files(SCRIPTS, SKILLS):
-            if path == ADAPTER:
+            if path in (ADAPTER, REPO_ROOT / "scripts" / "profile_defaults.py"):
                 continue
             for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if any(p.search(line) for p in self.PATTERNS):

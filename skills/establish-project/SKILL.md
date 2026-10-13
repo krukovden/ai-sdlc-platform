@@ -1,6 +1,7 @@
 ---
 name: establish-project
-description: Use when a Product Owner arrives with a whole project already thought through and wants it verified, sliced into features and put on the board — takes an architecture they wrote, proves it can carry the product by tracing real scenarios through it, and blocks every feature the architecture did not say enough about
+description: "Only when invoked through /idp-establish: a Product Owner's project architecture is verified, traversed, sliced into features and published to the board through the fixed establish flow."
+disable-model-invocation: true
 ---
 
 # Establish Project

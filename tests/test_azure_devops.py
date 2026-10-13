@@ -566,7 +566,7 @@ class ReadTests(ScriptTestCase):
             briefs = azure.Board(None, PROFILE).list_project("Contoso Platform")
 
         self.assertEqual(set(briefs[0]),
-                         {"identifier", "title", "url", "status", "status_type",
+                         {"identifier", "title", "url", "branch", "status", "status_type",
                           "parent", "labels", "kind"})
 
     def test_state_types_fall_back_to_a_table_and_the_profile_overrides_it(self):
@@ -808,6 +808,25 @@ class CreateTests(ScriptTestCase):
         criteria = fields["Microsoft.VSTS.Common.AcceptanceCriteria"]
         self.assertTrue(criteria.startswith("<ul><li>"))
         self.assertIn("<b>AC-1</b>", criteria)
+
+    def test_the_issue_reader_exposes_acceptance_criteria_from_the_dedicated_field(self):
+        fake = FakeAz(work_item(description="<div>plain body</div>"))
+        fake.items["42"]["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
+            "<ul><li><b>AC-1</b> — Works offline</li></ul>")
+        with stub(fake):
+            issue = azure.Board(None, PROFILE).get_issue("42")
+        self.assertEqual(issue["acceptance_criteria"], ["**AC-1** — Works offline"])
+
+    def test_brief_rows_carry_the_derived_branch_name(self):
+        row = {"id": 42, "fields": {
+            "System.Id": 42,
+            "System.Title": "Offline search",
+            "System.State": "New",
+            "System.TeamProject": "Contoso Platform",
+            "System.WorkItemType": "Feature",
+        }}
+        brief = azure.Board(None, PROFILE)._brief(row, project="Contoso Platform")
+        self.assertTrue(brief["branch"].startswith("feature/42-"))
 
     def test_a_status_is_a_second_call_because_create_takes_no_state(self):
         fake, _ = self.create(status="New")
@@ -1574,7 +1593,7 @@ class StateResolverIntegrationTests(ScriptTestCase):
             answer = state.resolve(azure.Board(None, PROFILE), PROFILE, "42")
 
         self.assertEqual((answer["phase"], answer["position"]), ("pbi", "ready"))
-        self.assertEqual(answer["next"], "/idp-development 42")
+        self.assertEqual(answer["next"], "/idp-develop 10")
 
     def test_the_board_says_what_the_card_is_rather_than_its_parent(self):
         """Every Azure DevOps Feature has a parent — the Epic (IDE-134).

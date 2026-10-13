@@ -112,7 +112,7 @@ test('the shipped package carries the hooks directory into the payload', async t
   assert.ok(fs.existsSync(path.join(ctx.root, 'hooks/hooks.json')), 'npm pack includes hooks/hooks.json');
   await run(['install', '--target', 'claude'], ctx);
   const payload = receiptOf(ctx).payload;
-  for (const file of ['hooks/hooks.json', 'hooks/platform-freshness.json', 'hooks/cliff-handoff.json', 'hooks/context-watch.json', 'hooks/copilot-hooks.json', 'scripts/hooks/cliff_handoff.py', 'scripts/hooks/context_watch.py', 'scripts/hooks/statusline.py']) assert.ok(fs.existsSync(path.join(payload, file)), file);
+  for (const file of ['hooks/hooks.json', 'hooks/platform-freshness.json', 'hooks/cliff-handoff.json', 'hooks/context-watch.json', 'hooks/copilot-hooks.json', 'scripts/hooks/cliff_handoff.py', 'scripts/hooks/context_watch.py', 'scripts/hooks/statusline.py', 'commands/idp.md', 'commands/idp-status.md']) assert.ok(fs.existsSync(path.join(payload, file)), file);
 });
 
 test('Claude gets a real SessionStart hook and Copilot gets no second one', async t => {

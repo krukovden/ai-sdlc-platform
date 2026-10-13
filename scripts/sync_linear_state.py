@@ -768,6 +768,7 @@ def _brief(node):
         "identifier": node["identifier"],
         "title": node["title"],
         "url": node["url"],
+        "branch": node.get("branchName") or "",
         "status": node["state"]["name"],
         "status_type": node["state"]["type"],
         # The query already asks for it; dropping it here made every issue look
