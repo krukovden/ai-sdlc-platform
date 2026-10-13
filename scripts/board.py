@@ -403,10 +403,18 @@ memory = load_sibling("memory", "idp_memory")
 sections = load_sibling("sections", "idp_sections")
 
 
+def connect_board(adapter, profile):
+    if os.environ.get("IDP_NO_BOARD", "").strip():
+        fail(EXIT.INVALID, "IDP_NO_BOARD is set, so this session may not open the board directly",
+             fix="read the prefetched files in .idp/context/, or clear IDP_NO_BOARD only in "
+                 "the runner process that owns the board credential")
+    return adapter.connect(read_token(profile), profile)
+
+
 def open_board():
     profile = load_profile()
     adapter = load_adapter(profile)
-    return profile, adapter, adapter.connect(read_token(profile), profile)
+    return profile, adapter, connect_board(adapter, profile)
 
 
 def project_id_from(profile, override=None):
@@ -502,7 +510,7 @@ def cmd_init(args):
     # Verify before writing. A profile that was never checked is a file that
     # lies, and it will lie at the least convenient moment.
     adapter = load_adapter(profile)
-    handle = adapter.connect(read_token(profile), profile)
+    handle = connect_board(adapter, profile)
     facts = handle.describe()
     if profile.get("wiki"):
         handle.verify_wiki(profile["wiki"])

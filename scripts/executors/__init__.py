@@ -58,6 +58,17 @@ def _exit_codes():
 
 EXIT = _exit_codes()
 
+
+def _tags():
+    existing = sys.modules.get("idp_tags")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("idp_tags", SCRIPTS / "tags.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["idp_tags"] = module
+    spec.loader.exec_module(module)
+    return module
+
 BACKEND_CHOICES = ("auto", "orca", "subprocess")
 ORCA_TIMEOUT = 10
 
@@ -111,6 +122,28 @@ def clear_result(worktree):
     path = result_path(worktree)
     if path.exists():
         path.unlink()
+
+
+def runner_session_path(worktree):
+    return Path(worktree) / ".idp" / "runner-session.json"
+
+
+def write_runner_session(worktree, card, environ=None, pid=None):
+    """What the host can see about this runner session in a worktree.
+
+    The layer-2 handoff hook cannot read a model process's environment from the
+    host. This file is the runner's marker that the checkout belongs to it, so
+    the hook never opens the board there and leaves only a pause request.
+    """
+    source = dict(os.environ if environ is None else environ)
+    run_id = source.get("IDP_RUN_ID") or _tags().current_run_id()
+    data = {"run_id": str(run_id), "card": str(card), "pid": int(os.getpid() if pid is None else pid)}
+    path = runner_session_path(worktree)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +217,7 @@ class Executor:
         raise NotImplementedError
 
     def finish(self, role, card, choice, result, crashed=False, limit=None,
-               returncode=None, last_message=None):
+               returncode=None, last_message=None, launch_failed=False):
         """Record the session and turn its report into the runner's code."""
         code = EXIT.HANDOFF if result is None else result["code"]
         self.last = Session(role=role, card=card, backend=self.backend,
@@ -193,7 +226,7 @@ class Executor:
                             code=code, reason=(result or {}).get("reason") or
                             ("the session ended without a result file" if crashed else ""),
                             crashed=crashed, limit=limit, returncode=returncode,
-                            last_message=last_message)
+                            last_message=last_message, launch_failed=launch_failed)
         return code
 
 

@@ -209,6 +209,24 @@ class LayerTwoTests(GitTestCase):
             board, board.list_project(), agent_mode.branch_reader(other),
             out=io.StringIO()), [])
 
+    def test_a_runner_marker_takes_the_no_board_path_even_without_idp_card(self):
+        board, card = self.held_pbi("run-7")
+        marker = self.repo / ".idp" / "runner-session.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"run_id": "run-7", "card": card, "pid": os.getpid()}),
+                          encoding="utf-8")
+
+        def forbidden_board():
+            raise AssertionError("the hook must not open the board in a runner worktree")
+
+        code, result = cliff.run("claude", None, self.stop_failure("s-2"), self.env,
+                                 open_board=forbidden_board)
+        self.assertEqual(code, EXIT.OK)
+        self.assertEqual(result["paused"], "requested")
+        request = handoff_script.read_pause_request(self.remote_file(self.pbi_branch, "handoff.md"))
+        self.assertEqual((request["card"], request["branch"], request["run"]),
+                         (card, self.pbi_branch, None))
+
     def test_a_request_is_ignored_once_work_moved_on_or_for_another_run(self):
         board, card = self.held_pbi("run-7")
         cliff.run("claude", None, self.stop_failure(), dict(self.env, IDP_RUN_ID="run-other"))

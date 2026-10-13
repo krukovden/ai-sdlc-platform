@@ -740,7 +740,7 @@ the inbox is a crash that stops and releases nothing, because contact loss is no
 process death. A worker's `ask` gets the standing answer "no person is available;
 decide conservatively and state the assumption".
 
-### Board credentials and `IDP_*`
+### Security boundary
 
 `worker-start` takes no custom command, so Orca starts the agent in a terminal with
 the environment Orca gives its terminals, not the allowlist the `subprocess`
@@ -752,10 +752,23 @@ rejects any name (`AZURE_DEVOPS_EXT_PAT`, `LINEAR_API_KEY`, `*_PAT`, `ADO_*`, �
 backend is refused for the run, with a FIX line naming the variable, and every
 session goes through `subprocess`. If the probe cannot run, it is refused as well.
 
-The `IDP_*` values cannot be set at process start either. They are the first lines
-of the prompt, with the instruction to run them before anything else; `run.py
-report` falls back to the worktree it runs in, so the result file does not depend
-on them.
+The `subprocess` backend enforces two more guards of its own before it starts a
+model: it points `AZURE_CONFIG_DIR` at a fresh empty temporary directory, so `az`
+cannot reach the runner's normal login cache, and it sets `IDP_NO_BOARD=1`, which
+`scripts/board.py` honours by refusing to open any board. The runner also writes
+`.idp/runner-session.json` in the worktree before every session, so a host-run
+handoff hook can tell that this checkout belongs to the runner and must leave only
+a pause request, never a direct board write.
+
+This is a **narrow process boundary, not a full machine boundary**. A model that
+runs as the same OS user can still read files that user can read directly — for
+example `~/.feature-discovery/linear-token` or a profile's `token_path` for Azure
+DevOps — and it can bypass the `az` cache override by opening those files itself.
+What is guaranteed today is that the runner does not hand the model a board token
+in its inherited environment, `az` does not see the runner's default login cache
+through its normal path, and `board.py` refuses direct board access when
+`IDP_NO_BOARD` is set. A full board-credential boundary needs the model under a
+separate OS user or inside a container with only the intended files mounted.
 
 A Run belongs to the terminal that created it and a runner started inside a
 dispatched worker is refused (`nested_worker_depth_exceeded`): start `run.py`
