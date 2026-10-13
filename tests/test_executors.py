@@ -188,6 +188,27 @@ class EnvironmentTests(ScriptTestCase):
     def test_path_is_not_mistaken_for_a_pat(self):
         self.assertFalse(executors.environment.denied("PATH"))
 
+    def test_a_named_provider_gets_its_own_keys_and_an_unnamed_one_every_agents(self):
+        named = executors.environment.provider_env(self.SOURCE, "claude-subagent")
+        self.assertIn("ANTHROPIC_API_KEY", named)
+        self.assertNotIn("OPENAI_API_KEY", named)
+        unnamed = executors.environment.provider_env(self.SOURCE, "some-model")
+        self.assertIn("ANTHROPIC_API_KEY", unnamed)
+        self.assertIn("OPENAI_API_KEY", unnamed)
+        for env in (named, unnamed):
+            for name in self.BOARD:
+                self.assertNotIn(name, env)
+
+    def test_the_reviewer_uses_this_allowlist_and_has_none_of_its_own(self):
+        from support import REPO_ROOT, load_script
+        reviewer = load_script("reviewer", REPO_ROOT / "skills" / "feature-discovery")
+        rules = reviewer._environment_rules()
+        self.assertEqual(Path(rules.__file__).resolve(),
+                         Path(executors.environment.__file__).resolve())
+        self.assertFalse(hasattr(reviewer, "BOARD_CREDENTIAL"))
+        self.assertEqual(reviewer.provider_environment(self.SOURCE, "codex"),
+                         executors.environment.provider_env(self.SOURCE, "codex"))
+
 
 FAKE_AGENT = textwrap.dedent('''\
     #!{python}

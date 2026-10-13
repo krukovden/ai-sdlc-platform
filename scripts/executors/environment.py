@@ -11,6 +11,9 @@ the board itself. So a session's environment is built up from nothing:
   an OpenAI key and Codex never sees an Anthropic one;
 * what the runner sets on purpose (`IDP_*` below).
 
+It is the platform's only such list: the reviewer's provider commands
+(`skills/feature-discovery/reviewer.py`) use it too, through `provider_env`.
+
 Then the deny list is applied over the result, and it wins over everything:
 the board tokens by name, anything shaped like a personal access token, and
 anything that says where a token file is. A variable that is both allowed and
@@ -83,6 +86,28 @@ def session_env(source, agent=None, extra=None):
     for name, value in (extra or {}).items():
         if not denied(name):
             env[name] = str(value)
+    return env
+
+
+def agent_of(name):
+    """The agent a provider name stands for: `claude-subagent` is claude."""
+    head = re.split(r"[^a-z]", str(name or "").casefold(), maxsplit=1)[0]
+    return head if head in AGENT_PREFIXES else None
+
+
+def provider_env(source, name=None):
+    """For a provider command from registry/providers.json (the reviewer's door).
+
+    A provider that names a known agent gets that agent's keys only. One that
+    does not gets every agent's sign-in keys — a provider is a model CLI, and
+    which one is the registry's business — and still no board credential.
+    """
+    agent = agent_of(name)
+    if agent is not None:
+        return session_env(source, agent)
+    env = session_env(source, None)
+    for candidate in AGENT_PREFIXES:
+        env.update(session_env(source, candidate))
     return env
 
 
