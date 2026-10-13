@@ -1,0 +1,23 @@
+{
+  "id": "d6c3e8f8-7011-4b05-84be-fceb0154de2c",
+  "ok": true,
+  "result": {
+    "runId": "run_e79e254ec601",
+    "deliveryId": null,
+    "messages": [],
+    "count": 0,
+    "replayed": false,
+    "acknowledged": null,
+    "timedOut": true,
+    "cancelled": false,
+    "connectionLost": false,
+    "mutation": {
+      "requestId": "08a53c50-8e27-4643-8e86-c22d9f88164e",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "2424e90d-081c-462a-a050-5ab8209074bf"
+  },
+  "_note": "synthesised from a real check answer: the recorded one carried a coordinator message, so the batch is emptied and timedOut set"
+}

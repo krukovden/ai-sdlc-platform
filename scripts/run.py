@@ -294,7 +294,11 @@ class Runner:
         self.repo = Path(repo or os.getcwd())
         self.ask = ask
         self.design = design or load_design()
-        self.worktree_for = worktree_for or git_worktree(self.repo, self.design.HOME)
+        plain = git_worktree(self.repo, self.design.HOME)
+        # The executor may make the worktrees itself (the orca backend asks Orca to,
+        # so that the session it supervises runs in the checkout the runner reads).
+        factory = getattr(executor, "worktree_factory", None)
+        self.worktree_for = worktree_for or (factory(self.repo, plain) if factory else plain)
         self.base_sha = base_sha or (lambda: head_sha(self.repo))
         self.heartbeat_minutes = heartbeat_minutes
         self.out = out or sys.stderr
