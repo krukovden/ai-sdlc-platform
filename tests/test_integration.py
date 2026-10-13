@@ -488,13 +488,122 @@ class DocumenterTests(IntegrationTestCase):
                          BLUEPRINT)
 
     def test_nothing_to_write_is_recorded_and_commits_nothing(self):
+        # A genuinely covered area: its blueprint is already on main.
         world = self.world()
+        seed_blueprint_on_main(world)
         world.documenter = None
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
         documented = world.events(FEATURE, integration.DOCUMENTED)
         self.assertEqual(len(documented), 1)
         self.assertIsNone(documented[0].get("commit"))
         self.assertEqual(self.feature_tags(world), [tags.QA])
+
+    def test_nothing_to_write_for_new_code_with_no_blueprint_at_all_is_refused(self):
+        # T8 finding 3: a no-op documenter used to pass a feature that brought
+        # product code to a product with no area blueprint, and reached QA.
+        world = self.world()
+        world.documenter = None
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("no area blueprint exists", attempts[0]["text"])
+        self.assertIn("src/a.py", attempts[0]["text"])
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+        self.assertNotEqual(self.feature_tags(world), [tags.QA])
+
+
+def seed_blueprint_on_main(world):
+    """An area already documented before the feature: its blueprint on main."""
+    target = world.repo / "docs" / "blueprint" / "modules.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(BLUEPRINT, encoding="utf-8")
+    git(world.repo, "add", "-A")
+    git(world.repo, "commit", "-q", "-m", "docs: the modules area")
+    git(world.repo, "push", "-q", "origin", "HEAD:main")
+
+
+def push_concurrently(world, root, path="src/a.py", text="VALUE = 999\n"):
+    """Somebody else pushes product code to the feature branch. The tip it made."""
+    other = Path(root) / f"concurrent-{len(list(Path(root).glob('concurrent-*')))}"
+    git(root, "clone", "-q", "-b", FEATURE_BRANCH, str(world.remote), str(other))
+    (other / path).write_text(text, encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "commit", "-q", "-m", "a concurrent, untested edit")
+    git(other, "push", "-q", "origin", FEATURE_BRANCH)
+    return git(other, "rev-parse", "HEAD")
+
+
+class TestedHeadTests(IntegrationTestCase):
+    """T8 findings 1 and 2: only the owner hands off, and only the head 3.3 validated."""
+
+    def green_heads(self, world):
+        return {r["head"] for r in world.events(FEATURE, integration.ROUND)
+                if r["verdict"] == integration.GREEN}
+
+    def test_a_replaced_owner_pushes_nothing_and_writes_nothing_for_qa(self):
+        world = self.world()
+        seen = {}
+
+        def documenter(world, worktree):
+            # The Feature is reaped and taken over while the documenter runs.
+            world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT, "idp:owner:replacement"]
+            seen["log"] = len(world.board.log)
+            seen["tip"] = git(world.remote, "rev-parse", FEATURE_BRANCH)
+            return write_blueprint(world, worktree)
+
+        world.documenter = documenter
+        out = io.StringIO()
+        self.assertEqual(world.runner(out=out).run_feature(FEATURE), EXIT.REFUSED)
+        self.assertIn("lost its lease", out.getvalue())
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"))
+        self.assertEqual(git(world.remote, "rev-parse", FEATURE_BRANCH), seen["tip"])
+        self.assertEqual(world.board.log[seen["log"]:], [], "no board write after the loss")
+        self.assertFalse(world.events(FEATURE, integration.FEATURE_PR))
+        self.assertFalse(world.events(FEATURE, integration.HANDED))
+        self.assertEqual(self.qa(world)["status"], "New")
+        self.assertEqual(self.feature_tags(world),
+                         [tags.DEVELOPMENT, "idp:owner:replacement"])
+
+    def test_a_head_moved_during_a_no_op_documenter_is_integrated_before_qa(self):
+        world = self.world()
+        seed_blueprint_on_main(world)
+        moved = []
+
+        def documenter(world, worktree):
+            if not moved:
+                moved.append(push_concurrently(world, self.root))
+            return EXIT.DONE
+
+        world.documenter = documenter
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        handed = world.events(FEATURE, integration.HANDED)
+        self.assertEqual(len(handed), 1, "the stale candidate was never handed off")
+        self.assertEqual(handed[0]["head"], moved[0])
+        self.assertIn(moved[0], self.green_heads(world),
+                      "the head QA got is one integration ran on")
+        self.assertEqual(self.feature_tags(world), [tags.QA])
+
+    def test_a_head_moved_after_the_documentation_push_is_integrated_before_qa(self):
+        world = self.world()
+        moved = []
+        real = world.board.add_comment
+
+        def add_comment(identifier, body):
+            answer = real(identifier, body)
+            event = lease.read_event(body) or {}
+            if event.get("kind") == integration.DOCUMENTED and not moved:
+                moved.append(push_concurrently(world, self.root))
+            return answer
+
+        world.board.add_comment = add_comment
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        handed = world.events(FEATURE, integration.HANDED)
+        self.assertEqual(len(handed), 1)
+        self.assertEqual(handed[0]["head"], moved[0])
+        self.assertIn(moved[0], self.green_heads(world))
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"),
+                         BLUEPRINT)
 
 
 # ---------------------------------------------------------------------------

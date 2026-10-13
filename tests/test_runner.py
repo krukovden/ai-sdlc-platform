@@ -98,12 +98,13 @@ class RunnerTestCase(ScriptTestCase):
     def session(self, **kwargs):
         return DesignSession(design, Path(self.tmp.name) / "scratch", **kwargs)
 
-    def runner(self, board, *steps, ask=None, run_id="run-1"):
-        self.executor = ScriptedExecutor(*(steps or [self.session()]))
+    def runner(self, board, *steps, ask=None, run_id="run-1", executor=None):
+        self.executor = executor or ScriptedExecutor(*(steps or [self.session()]))
+        self.slept = []
         return run.Runner(board, PROFILE, self.executor, run_id, repo=REPO_ROOT,
                           ask=ask, worktree_for=self.worktree_for,
                           base_sha=lambda: "abc123", design=design,
-                          heartbeat_minutes=0, out=io.StringIO())
+                          heartbeat_minutes=0, out=io.StringIO(), sleep=self.slept.append)
 
     def reset_cache(self):
         import shutil
@@ -521,15 +522,89 @@ class CommandLineTests(RunnerTestCase):
         self.assertTrue(json.loads(output))
 
 
+class LaunchFails(ScriptedExecutor):
+    """A scripted executor whose agent cannot be started for the first `fails[role]` calls.
+
+    The session it reports is what `scripts/executors/local.py` reports for a
+    Popen OSError: crashed, no result file, and `launch_failed=True`.
+    """
+
+    def __init__(self, *steps, fails=None, **kwargs):
+        super().__init__(*steps, **kwargs)
+        self.fails = dict(fails or {})
+        self.launch_failures = 0
+
+    def run_role(self, role, card, worktree, prompt, context=None, author=None, choice=None):
+        if self.fails.get(role, 0) > 0:
+            self.fails[role] -= 1
+            self.launch_failures += 1
+            who = run.executors.roles.as_choice(choice) if choice else self.choice
+            code = self.finish(role, card, who, None, crashed=True, returncode=None)
+            self.last = run.executors.Session(
+                self.last, launch_failed=True,
+                reason=f"could not start {who}: [Errno 24] Too many open files")
+            return code
+        return super().run_role(role, card, worktree, prompt, context=context,
+                                author=author, choice=choice)
+
+
+class DesignFencingTests(RunnerTestCase):
+    """F5 and F11 in phase 2: a lost lease writes nothing; a launch failure costs nothing."""
+
+    def test_a_zombie_design_run_attaches_and_comments_nothing(self):
+        board = new_board()
+        session = self.session()
+        seen = {}
+
+        def lose_the_card_meanwhile(role, card, worktree, prompt, context):
+            code = session(role, card, worktree, prompt, context)
+            board.cards[FEATURE]["tags"] = [tags.DESIGN, "idp:owner:run-2"]
+            seen["log"] = len(board.log)
+            return code
+
+        runner = self.runner(board, lose_the_card_meanwhile)
+        self.assertEqual(runner.run_feature(FEATURE), EXIT.REFUSED)
+        self.assertEqual(board.log[seen["log"]:], [], "no write after the loss")
+        self.assertEqual(adr_documents(board), [])
+        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:owner:run-2"])
+        self.assertIn("lost its lease", runner.out.getvalue())
+
+    def test_a_design_session_that_cannot_launch_is_retried_never_counted(self):
+        board = new_board()
+        executor = LaunchFails(self.session(), fails={"design": 2})
+        self.assertEqual(self.runner(board, executor=executor).run_feature(FEATURE),
+                         EXIT.DONE)
+        self.assertEqual(lease.events(board.list_comments(FEATURE), run.ATTEMPT), [])
+        self.assertEqual(self.slept, list(run.INFRA_BACKOFF[:2]))
+        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN_REVIEW])
+
+    def test_a_design_session_that_never_launches_pauses_the_card(self):
+        board = new_board()
+        executor = LaunchFails(self.session(), fails={"design": 99})
+        self.assertEqual(self.runner(board, executor=executor).run_feature(FEATURE),
+                         EXIT.HANDOFF)
+        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertNotIn(tags.BLOCKED, board.cards[FEATURE]["tags"])
+        self.assertEqual(lease.events(board.list_comments(FEATURE), run.ATTEMPT), [])
+        self.assertEqual(executor.launch_failures, len(run.INFRA_BACKOFF) + 1)
+
+
 class HeartbeatTests(RunnerTestCase):
 
     def test_beats_are_numbered_from_the_board_so_a_retry_is_the_same_comment(self):
-        board = new_board()
+        board = new_board(tags.DESIGN, "idp:owner:run-1")
         beat = run.Heartbeat(board, FEATURE, "run-1", minutes=0)
         beat.beat()
         beat.beat()
         found = lease.events(board.list_comments(FEATURE), lease.HEARTBEAT)
         self.assertEqual([b["beat"] for b in found], [1, 2])
+
+    def test_a_run_that_lost_the_card_stops_beating_on_it(self):
+        board = new_board(tags.DESIGN, "idp:owner:run-2")
+        beat = run.Heartbeat(board, FEATURE, "run-1", minutes=0)
+        self.assertIsNone(beat.beat())
+        self.assertEqual(lease.events(board.list_comments(FEATURE), lease.HEARTBEAT), [])
+        self.assertTrue(beat._stop.is_set())
 
 
 if __name__ == "__main__":

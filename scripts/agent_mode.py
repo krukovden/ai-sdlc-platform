@@ -242,9 +242,12 @@ class AgentExecutor:
             self.collect(card, worktree)
 
     def post(self, card, entries):
+        # Fenced like every runner write: a session that outlived its run's lease
+        # posts nothing, and its file stays where the next owner's replay finds it.
         feature = feature_of(self.board, card)
+        board = lease.Fenced(lease.unfenced(self.board), feature, self.run_id)
         for entry in entries:
-            post_decision(self.board, feature, entry, self.run_id)
+            post_decision(board, feature, entry, self.run_id)
 
     def collect(self, card, worktree):
         """Post what the session recorded so far. Returns how many were posted."""
@@ -841,8 +844,12 @@ def describe_holder(board, info):
     ])
 
 
-def takeover(board, card, run, ask, agent_mode, out=None):
-    """`run.py takeover <card>`. Returns the outcome; raises AgentError on a refusal."""
+def takeover(board, card, run, ask, agent_mode, out=None, profile=None):
+    """`run.py takeover <card>`. Returns the outcome; raises AgentError on a refusal.
+
+    `profile` is the profile's hash. Every claim carries it, the claim of a
+    paused card and a takeover alike, so a run is reproducible from the board.
+    """
     out = out or sys.stdout
     if agent_mode:
         raise AgentError(EXIT.REFUSED,
@@ -850,6 +857,11 @@ def takeover(board, card, run, ask, agent_mode, out=None):
                          "run is dead may skip its lease",
                          "run it yourself in a terminal, or let `run.py reap` release the "
                          "card when its lease expires")
+    if not profile:
+        raise AgentError(EXIT.REFUSED,
+                         "a takeover is a claim, and a claim carries the profile hash; "
+                         "none was given",
+                         "pass the profile hash (`board.py`'s profile_hash) to takeover")
     issue = board.get_issue(card)
     if issue.get("parent") and not tags.phase_tags(issue.get("labels") or []):
         raise AgentError(EXIT.REFUSED,
@@ -860,8 +872,12 @@ def takeover(board, card, run, ask, agent_mode, out=None):
     owner, paused = tags.owner_of(labels), tags.paused_of(labels)
     if owner is None and paused:
         # A paused card is no takeover at all: any run may claim it at once.
-        result = lease.claim(board, card, run)
-        print(f"{card} was paused by `{paused}`; claimed at once.", file=out)
+        result = lease.claim(board, card, run, profile=profile)
+        if result["outcome"] in ("written", "unchanged"):
+            print(f"{card} was paused by `{paused}`; claimed at once.", file=out)
+        else:
+            print(EXIT.with_fix(f"{card}: {result.get('message')}", result.get("fix")),
+                  file=out)
         return result
     if owner is None:
         raise AgentError(EXIT.REFUSED, f"{card} is not held by anyone; there is nothing to "
@@ -876,7 +892,7 @@ def takeover(board, card, run, ask, agent_mode, out=None):
         answer = ask("Take it over? Type 'yes' to confirm: ")
         return str(answer or "").strip().casefold() == "yes"
 
-    result = lease.takeover(board, card, run, confirm)
+    result = lease.takeover(board, card, run, confirm, profile=profile)
     if result["outcome"] == "declined":
         print(f"{card}: not taken over; nothing was changed.", file=out)
     elif result["outcome"] in ("written", "unchanged"):

@@ -21,6 +21,14 @@ When no catalog is installed — or the board is Linear, which the catalog does
 not serve — the runner falls back to the adapter's own state map and says so
 once. Both implementations are the same interface, `StateMover`, injected into
 the orchestrator, so a test uses either without a network.
+
+**Every move is fenced on who holds the item.** The caller names its run and,
+for a PBI it claimed, the exact worker tag. The adapter's move is the tag
+writer's fenced write (`tags.move_owned`: the owner re-read, then `test /rev`
+on Azure DevOps). The catalog's `move` takes no expected revision, so before
+calling it the item is re-read and refused when another run holds it, and
+after it the item is read again: a foreign owner then stops the run before
+its next write. A lost fence is `lease.OwnershipLost`, never a silent move.
 """
 
 import json
@@ -55,8 +63,12 @@ class StateMover:
     def bucket(self, issue):
         raise NotImplementedError
 
-    def move(self, board, identifier, bucket, evidence):
+    def move(self, board, identifier, bucket, evidence, run, owner=None):
         raise NotImplementedError
+
+
+def _lost(identifier, run, holder):
+    return lease.OwnershipLost(identifier, run, holder)
 
 
 class AdapterStates(StateMover):
@@ -95,7 +107,7 @@ class AdapterStates(StateMover):
             return "doing"
         return "todo"
 
-    def move(self, board, identifier, bucket, evidence):
+    def move(self, board, identifier, bucket, evidence, run, owner=None):
         issue = board.get_issue(identifier)
         current = self.bucket(issue)
         target = self.names(issue).get(bucket)
@@ -106,7 +118,10 @@ class AdapterStates(StateMover):
                     "reason": f"this board has no '{bucket}' state for {identifier}"}
         moved = current != bucket
         if moved:
-            board.update_issue(identifier, status=target)
+            written = lease.tags.move_owned(board, identifier, target, run, owner=owner)
+            if written["outcome"] in ("conflict", "refused"):
+                raise _lost(identifier, owner or run,
+                            lease.tags.owner_of(written.get("tags")) or "another run")
         # Posted even when the state was already there: a move that crashed
         # between its two writes still gets the comment that names its evidence.
         lease.post_event(board, identifier, "move", f"move:{identifier}:{bucket}",
@@ -131,10 +146,13 @@ class CatalogStates(AdapterStates):
         self.call = run
         self.cwd = cwd
 
-    def move(self, board, identifier, bucket, evidence):
+    def move(self, board, identifier, bucket, evidence, run, owner=None):
         current = self.bucket(board.get_issue(identifier))
         if BUCKETS.index(current) >= BUCKETS.index(bucket):
             return {"moved": False, "bucket": current}
+        # The catalog writes through its own process, past the fenced board, and
+        # takes no expected revision: the owner is checked here, before and after.
+        self.expect(board, identifier, run, owner)
         answer = self.call(["node", self.script, "move", str(identifier), bucket,
                             "--comment", evidence, "--allow-idp", "--json"],
                            capture_output=True, text=True, timeout=CATALOG_TIMEOUT,
@@ -146,7 +164,17 @@ class CatalogStates(AdapterStates):
             data = json.loads(answer.stdout or "{}")
         except ValueError:
             data = {}
+        self.expect(board, identifier, run, owner)
         return {"moved": True, "bucket": bucket, "catalog": data}
+
+    @staticmethod
+    def expect(board, identifier, run, owner):
+        """`OwnershipLost` unless this run still holds the Feature and may write the item."""
+        lease.fence(board)
+        labels = board.read_card(identifier).get("tags")
+        holder = lease.tags.foreign_holder(labels, lease.tags.check_run_id(run), owner)
+        if holder is not None:
+            raise _lost(identifier, owner or run, holder)
 
 
 def find_catalog(environ=None):

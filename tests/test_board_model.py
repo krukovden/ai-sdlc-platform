@@ -25,6 +25,7 @@ from support import ScriptTestCase, load_script
 lease = load_script("lease")
 
 A, B = "run-a", "run-b"
+HASH = "sha256:profile"
 
 
 def feature(board, identifier="1", *labels, status="New"):
@@ -154,7 +155,7 @@ class ClaimRaceTests(ScriptTestCase):
         # re-reads first, so it is fenced on the revision after the heartbeat.
         board = FakeBoard(comment_bumps_rev=True)
         feature(board, "1", tags.DESIGN)
-        lease.claim(board, "1", A, tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
         lease.heartbeat(board, "1", A, 1)
         self.assertEqual(tags.hand_off(board, "1", A, tags.DESIGN_REVIEW)["outcome"],
                          "written")
@@ -166,10 +167,10 @@ class FencingTests(ScriptTestCase):
     def reaped_and_retaken(self):
         board = FakeBoard()
         feature(board, "1", tags.DESIGN)
-        lease.claim(board, "1", A, tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
         board.advance(61)
         lease.reap(board, "1")
-        lease.claim(board, "1", B, tags.DESIGN)
+        lease.claim(board, "1", B, tags.DESIGN, profile=HASH)
         return board
 
     def test_the_zombie_cannot_hand_off(self):
@@ -294,7 +295,7 @@ class ReapTests(ScriptTestCase):
     def claimed(self, **kwargs):
         board = FakeBoard(**kwargs)
         feature(board, "1", tags.DESIGN)
-        lease.claim(board, "1", A, tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
         return board
 
     def test_a_lease_inside_sixty_minutes_of_the_last_heartbeat_is_alive(self):
@@ -335,7 +336,7 @@ class ReapTests(ScriptTestCase):
     def test_reaping_a_feature_frees_its_runs_pbis_and_no_one_elses(self):
         board = FakeBoard()
         feature(board, "1", tags.DEVELOPMENT)
-        lease.claim(board, "1", A, tags.DEVELOPMENT)
+        lease.claim(board, "1", A, tags.DEVELOPMENT, profile=HASH)
         board.add_card("2", (), kind="pbi", parent="1")
         board.add_card("3", (), kind="pbi", parent="1")
         board.add_card("4", ("idp:owner:run-z/w1",), kind="pbi", parent="1")
@@ -351,7 +352,7 @@ class ReapTests(ScriptTestCase):
     def test_a_workers_lease_is_its_runs_heartbeat_on_the_feature(self):
         board = FakeBoard()
         feature(board, "1", tags.DEVELOPMENT)
-        lease.claim(board, "1", A, tags.DEVELOPMENT)
+        lease.claim(board, "1", A, tags.DEVELOPMENT, profile=HASH)
         board.add_card("2", (), kind="pbi", parent="1")
         tags.claim_pbi(board, "2", A, 1, feature="1")
         board.advance(50)
@@ -363,7 +364,7 @@ class ReapTests(ScriptTestCase):
         board = self.claimed()
         board.advance(61)
         lease.reap(board, "1")
-        lease.claim(board, "1", A, tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
         self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
         self.assertEqual(lease.generation(board, "1"), 1)
 
@@ -374,7 +375,8 @@ class TakeoverTests(ScriptTestCase):
         board = FakeBoard()
         feature(board, "1", tags.DESIGN, tags.owner_tag(A))
         shown = []
-        result = lease.takeover(board, "1", B, lambda info: shown.append(info) or False)
+        result = lease.takeover(board, "1", B, lambda info: shown.append(info) or False,
+                                profile=HASH)
         self.assertEqual(result["outcome"], "declined")
         self.assertEqual(shown[0]["owner"], A)
         self.assertEqual(board.side_effects, 0)
@@ -382,7 +384,7 @@ class TakeoverTests(ScriptTestCase):
     def test_confirming_takes_the_card_and_says_so(self):
         board = FakeBoard()
         feature(board, "1", tags.DESIGN, tags.owner_tag(A))
-        result = lease.takeover(board, "1", B, lambda info: True)
+        result = lease.takeover(board, "1", B, lambda info: True, profile=HASH)
         self.assertEqual(result["outcome"], "written")
         self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(B)])
         self.assertEqual(lease.count_events(board, "1", lease.TAKEOVER), 1)
@@ -396,9 +398,49 @@ class TakeoverTests(ScriptTestCase):
             tags.release(board, "1", A)             # this does
             return True
 
-        result = lease.takeover(board, "1", B, owner_wakes_up)
+        result = lease.takeover(board, "1", B, owner_wakes_up, profile=HASH)
         self.assertEqual(result["outcome"], "conflict")
         self.assertNotIn(tags.owner_tag(B), board.cards["1"]["tags"])
+
+
+class ProfileHashTests(ScriptTestCase):
+    """F12: every claim carries the profile hash, so a run is reproducible from the board."""
+
+    def test_a_claim_without_the_profile_hash_is_refused_with_nothing_written(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        result = lease.claim(board, "1", A, tags.DESIGN)
+        self.assertEqual(result["outcome"], "refused")
+        self.assertIn("profile hash", result["message"])
+        self.assertTrue(result["fix"])
+        self.assertEqual(board.side_effects, 0)
+
+    def test_a_claim_comment_without_it_is_refused_by_the_event_writer(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        for kind in (lease.CLAIM, lease.TAKEOVER):
+            with self.subTest(kind=kind):
+                with self.assertRaises(ValueError) as caught:
+                    lease.post_event(board, "1", kind, f"{kind}:x", run=A)
+                self.assertIn("FIX:", str(caught.exception))
+        self.assertEqual(board.side_effects, 0)
+
+    def test_the_claim_and_the_takeover_record_it(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        self.assertEqual(lease.events(board.list_comments("1"), lease.CLAIM)[0]["profile"],
+                         HASH)
+        lease.takeover(board, "1", B, lambda info: True, profile=HASH)
+        self.assertEqual(
+            lease.events(board.list_comments("1"), lease.TAKEOVER)[0]["profile"], HASH)
+
+    def test_a_takeover_without_it_is_refused_before_anything_is_shown(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN, tags.owner_tag(A))
+        with self.assertRaises(ValueError):
+            lease.takeover(board, "1", B, lambda info: self.fail("asked"))
+        self.assertEqual(board.side_effects, 0)
 
 
 class EventTests(ScriptTestCase):
@@ -448,7 +490,7 @@ def design_phase(board):
     the claim's outcome is what tells a resumed run whether the card is still
     its business.
     """
-    claimed = lease.claim(board, "1", A, tags.DESIGN)
+    claimed = lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
     if claimed["outcome"] not in ("written", "unchanged"):
         return
     lease.heartbeat(board, "1", A, 1)
@@ -464,7 +506,7 @@ def development_phase(board):
     PBI. Done and released are one write, and the board is what says a PBI is
     finished.
     """
-    claimed = lease.claim(board, "1", A, tags.DEVELOPMENT)
+    claimed = lease.claim(board, "1", A, tags.DEVELOPMENT, profile=HASH)
     if claimed["outcome"] not in ("written", "unchanged"):
         return
     for worker, pbi in enumerate(("2", "3"), start=1):

@@ -150,6 +150,8 @@ def post_event(board, identifier, kind, key, text="", **payload):
     """
     if not key:
         raise ValueError("an event needs a dedupe key")
+    if kind in (CLAIM, TAKEOVER):
+        _require_profile(payload.get("profile"), f"a {kind} comment")
     for existing in events(board.list_comments(identifier)):
         if existing.get("key") == key:
             return {"posted": False, "key": key}
@@ -166,23 +168,135 @@ def heartbeat(board, identifier, run, beat):
 
 
 # ---------------------------------------------------------------------------
+# Fencing: every write of a run re-reads who owns the card first
+# ---------------------------------------------------------------------------
+
+class OwnershipLost(Exception):
+    """This run no longer holds the card. It stops before its next write or push.
+
+    The zombie-owner rule (IDE-147, *Lease*): a laptop that slept past its
+    lease wakes up believing it still owns the card. Before every write the
+    runner re-reads the card; when the owner tag is not its own any more, it
+    aborts — no comment, no attachment, no state move, no merge, no push.
+    """
+
+    def __init__(self, card, run, holder):
+        self.card, self.run, self.holder = card, run, holder
+        self.message = (f"{card} is held by '{holder or 'nobody'}', not by '{run}': this "
+                        "run lost its lease and stopped before its next write")
+        self.fix = ("nothing here: the current owner carries on. If this run should own "
+                    f"the card, `run.py takeover {card}`")
+        super().__init__(self.message)
+
+
+def holds(labels, run):
+    """Whether `run` still holds a card with these tags.
+
+    Its own owner tag, or one of its workers'; or, with no owner at all, its
+    own paused tag — a run that paused a card writes the pause's comment
+    after the tag, and nobody has taken the card from it yet.
+    """
+    owner = tags.owner_of(labels)
+    if owner is not None:
+        return tags.run_of(owner) == run
+    return tags.paused_of(labels) == run
+
+
+def check_owner(board, card, run):
+    """Re-read the card; `OwnershipLost` unless `run` still holds it. The card read."""
+    read = board.read_card(card)
+    labels = read.get("tags")
+    if not holds(labels, run):
+        raise OwnershipLost(card, run, tags.owner_of(labels) or tags.paused_of(labels))
+    return read
+
+
+# Every adapter call that changes the board. Tag writes are among them: the
+# tag writer decides on its own read, and the owner check here runs first.
+WRITES = frozenset({
+    "add_comment", "attach_document", "update_issue", "assign_issue", "create_issue",
+    "write_card", "create_pull_request", "complete_pull_request", "comment_pull_request",
+    "write_wiki_page",
+})
+
+
+class Fenced:
+    """A board on which every write first re-reads that `run` still holds `card`.
+
+    The runner wraps its board in one once it has claimed the card, so the
+    rule "before every write, re-read the owner" does not depend on each call
+    site remembering it. Reads go straight through. A write against a card the
+    run lost raises `OwnershipLost` and never reaches the board.
+
+    The state writes underneath are fenced on the revision as well (the tag
+    writer's `test /rev`); a comment or an attachment has no revision to
+    test on either board, so for those the owner re-read immediately before
+    the call is the fence.
+    """
+
+    def __init__(self, board, card, run):
+        self.unfenced = board
+        self.card, self.run = str(card), tags.check_run_id(run)
+
+    def check(self):
+        return check_owner(self.unfenced, self.card, self.run)
+
+    def __getattr__(self, name):
+        attribute = getattr(self.unfenced, name)
+        if name not in WRITES or not callable(attribute):
+            return attribute
+
+        def fenced(*args, **kwargs):
+            self.check()
+            return attribute(*args, **kwargs)
+        return fenced
+
+
+def fence(board):
+    """Check the fence of a `Fenced` board now; nothing for a plain one."""
+    check = getattr(board, "check", None) if isinstance(board, Fenced) else None
+    if check is not None:
+        check()
+
+
+def unfenced(board):
+    return board.unfenced if isinstance(board, Fenced) else board
+
+
+# ---------------------------------------------------------------------------
 # Claim, block: a tag write and its event, together
 # ---------------------------------------------------------------------------
 
-def claim(board, identifier, run, phase=None, **facts):
+def _require_profile(profile, what):
+    if not profile:
+        raise ValueError(f"{what} needs the profile hash: it is in every claim, so a run "
+                         "can be reproduced from the board (IDE-147, Profile "
+                         "discipline). FIX: pass profile=board.profile_hash(profile)")
+
+
+def claim(board, identifier, run, phase=None, profile=None, **facts):
     """Claim through the single writer, then record the claim as the lease's start.
 
-    `facts` go into the claim comment — the base SHA, the profile hash — which
-    is what makes a run reproducible from the board. The comment is keyed on
-    the lease's generation, so a claim resumed after a crash does not post
-    twice, while a claim after a reap or a takeover is a new lease and does.
+    `facts` go into the claim comment — the base SHA — and so does `profile`,
+    the profile's hash, which is what makes a run reproducible from the board.
+    Without one nothing is written at all: a claim with no profile hash is
+    refused before its tag write. The comment is keyed on the lease's
+    generation, so a claim resumed after a crash does not post twice, while a
+    claim after a reap or a takeover is a new lease and does.
     """
+    if not profile:
+        card = {"identifier": str(identifier), "tags": [], "status": None}
+        return tags._result(
+            "refused", card,
+            message=f"a claim on {identifier} must carry the profile hash, and none was "
+                    "given; nothing was claimed",
+            fix="pass profile=board.profile_hash(profile) to lease.claim")
     result = tags.claim(board, identifier, run, phase=phase)
     if result["outcome"] in ("written", "unchanged"):
         n = generation(board, identifier)
         post_event(board, identifier, CLAIM, f"{CLAIM}:{run}:{phase or '-'}:g{n}",
                    text=f"Claimed by run `{run}`.", run=run, phase=phase,
-                   generation=n, **facts)
+                   generation=n, profile=profile, **facts)
     return result
 
 
@@ -286,14 +400,16 @@ def reap(board, identifier, now=None, lease_minutes=LEASE_MINUTES):
 # Takeover
 # ---------------------------------------------------------------------------
 
-def takeover(board, identifier, run, confirm):
+def takeover(board, identifier, run, confirm, profile=None):
     """Show the owner and its last heartbeat, ask, then claim fenced on what was shown.
 
     `confirm(info)` is the caller's question to a human and returns a bool. An
     agent never calls this on its own: the whole point is that somebody who
-    knows the run is dead says so.
+    knows the run is dead says so. A takeover is a claim, so it carries the
+    profile hash like one.
     """
     run = tags.check_run_id(run)
+    _require_profile(profile, "a takeover")
     card = board.read_card(identifier)
     holder = tags.owner_of(card.get("tags")) or tags.paused_of(card.get("tags"))
     seen = last_sign_of_life(board, card, holder) if holder else None
@@ -306,6 +422,7 @@ def takeover(board, identifier, run, confirm):
     if result["outcome"] in ("written", "unchanged"):
         post_event(board, identifier, TAKEOVER, f"{TAKEOVER}:{run}:{card.get('rev')}",
                    text=f"Taken over by run `{run}` from `{holder or 'nobody'}`, "
-                        "confirmed by a human.", run=run, previous=holder)
+                        "confirmed by a human.", run=run, previous=holder,
+                   profile=profile)
     result["info"] = info
     return result

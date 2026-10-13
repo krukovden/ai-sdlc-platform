@@ -31,6 +31,11 @@ lease = _sibling("lease", "idp_lease")
 memory = _sibling("memory", "idp_memory")
 
 
+# Infrastructure is retried with these waits, in seconds, and never counted as
+# an attempt (IDE-147, 3.2: `infra`).
+INFRA_BACKOFF = (5, 30, 120)
+
+
 def planning_module():
     """skills/planning/planning.py: its renderers, its graph and its validator."""
     return _sibling("planning", "idp_planning_runner",

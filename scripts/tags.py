@@ -557,6 +557,45 @@ def take_over(board, identifier, run, seen_rev):
     return _write(board, identifier, decide)
 
 
+def foreign_holder(labels, run, owner=None):
+    """Who holds a card against `run`, or None when `run` may write to it.
+
+    Another run's owner or paused tag is foreign. With `owner` named — the
+    worker tag a PBI was claimed under — anything but exactly that tag is.
+    """
+    holder = owner_of(labels)
+    if owner is not None and holder != owner:
+        return holder or "nobody"
+    if holder is not None and run_of(holder) != run:
+        return holder
+    paused = paused_of(labels)
+    if holder is None and paused is not None and paused != run:
+        return PAUSED_PREFIX + paused
+    return None
+
+
+def move_owned(board, identifier, status, run, owner=None):
+    """A runner's state move, fenced twice: on who holds the card, and on its revision.
+
+    The state goes in the same fenced write the tag writer uses — on Azure
+    DevOps one JSON patch that starts with `test /rev` — and nothing about the
+    tags changes. A card another run holds (or, with `owner`, not held by
+    exactly that worker tag) is a conflict and is not written.
+    """
+    run = check_run_id(run)
+
+    def decide(card):
+        tags = card.get("tags") or []
+        holder = foreign_holder(tags, run, owner)
+        if holder is not None:
+            raise _Conflict(f"{identifier} is held by '{holder}', not by "
+                            f"'{owner or run}'. This run lost it and must not write.",
+                            "abort without pushing; the current owner carries on")
+        return tags, status
+
+    return _write(board, identifier, decide)
+
+
 def move_status(board, identifier, expected, to):
     """Move a status-carried position — a PBI's — with the same fence."""
     def decide(card):

@@ -57,6 +57,14 @@
         "minLength": 1
       }
     },
+    "protected_branches": {
+      "description": "Branches the runner never pushes to or merges into, on top of main and the repository's default branch, which are always protected (IDE-147: merging into main is never done by the runner). A Feature whose board branch names one is refused before any push.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "repositories": {
       "type": "array",
       "items": {
@@ -314,6 +322,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "azure_complete_unproven": {
+          "description": "Let the runner complete a PBI's Azure Repos pull request although nothing pins the target branch in that call. Off by default: until experiment 8 shows the service refuses a completion onto a moved target, the runner leaves the pull request open with a comment and a FIX line. When on, the runner's post-merge parent check is what contains the race.",
+          "type": "boolean"
+        },
         "witness_budget_seconds": {
           "description": "The phase budget for one PBI's witnesses. A plan whose witnesses' worst case does not fit is refused up front. Default 1800.",
           "type": "integer",

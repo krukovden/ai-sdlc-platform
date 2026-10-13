@@ -1724,6 +1724,35 @@ class FencedTagWriteTests(ScriptTestCase):
         self.assertIn({"op": "replace", "path": "/fields/System.State", "value": "Active"},
                       patch)
 
+    def test_the_runners_state_move_is_one_patch_fenced_on_rev_and_owner(self):
+        # IDE-147 F5: AdapterStates used `az boards work-item update --state`, with
+        # no revision test and no owner check. It is the tag writer's patch now.
+        phase3 = load_script("run").phase3
+        fake = FakeAz(work_item(state="New", work_item_type="User Story", parent="7",
+                                tags="idp:owner:run-a/w1"))
+        handle, _ = make_board(PROFILE)
+        mover = phase3.states.AdapterStates(handle, PROFILE)
+        with stub(fake):
+            mover.move(handle, "42", "doing", "claimed", "run-a", owner="run-a/w1")
+        patches = self.patches(fake)
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0][0], {"op": "test", "path": "/rev", "value": 1})
+        self.assertIn({"op": "replace", "path": "/fields/System.State", "value": "Active"},
+                      patches[0])
+        self.assertFalse([c for c in fake.calls if "--state" in c])
+
+    def test_a_state_move_on_an_item_another_run_holds_writes_nothing(self):
+        phase3 = load_script("run").phase3
+        lease = phase3.common.lease
+        fake = FakeAz(work_item(state="New", work_item_type="User Story", parent="7",
+                                tags="idp:owner:run-b/w1"))
+        handle, _ = make_board(PROFILE)
+        mover = phase3.states.AdapterStates(handle, PROFILE)
+        with stub(fake), self.assertRaises(lease.OwnershipLost):
+            mover.move(handle, "42", "doing", "claimed", "run-a")
+        self.assertEqual(self.patches(fake), [])
+        self.assertFalse([c for c in fake.calls if "--state" in c])
+
     def test_comments_come_back_with_the_servers_timestamps(self):
         handle, fake = self.board_with(tags="idp:design")
         with stub(fake):

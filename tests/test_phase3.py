@@ -22,6 +22,7 @@ from unittest import mock
 
 from support import ScriptTestCase
 from fakeboard import Crash, crash_and_resume
+from test_runner import LaunchFails
 from phase3_world import (EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, World, crashes,
                           default_plan, design, finding, git, lease, ok, pbi, phase3,
                           planning, reports, run, shape, tags, witness_for)
@@ -546,7 +547,8 @@ class CounterTests(Phase3TestCase):
         world.board.disarm()
 
         # A human takes over for run-3: the third attempt blocks.
-        lease.takeover(world.board, FEATURE, "run-3", confirm=lambda info: True)
+        lease.takeover(world.board, FEATURE, "run-3", confirm=lambda info: True,
+                       profile="sha256:test")
         self.assertEqual(world.runner(run_id="run-3").run_feature(FEATURE), EXIT.BLOCKED)
         self.assertEqual(self.attempts(world, "a"), ["defect"] * 3)
         self.assertIn(tags.BLOCKED, self.labels(world, "a"))
@@ -1139,7 +1141,7 @@ class StatesTests(unittest.TestCase):
         board.add_card("5", kind="pbi")
         mover = phase3.states.CatalogStates(board, "/catalog/ado-board.js", PROFILE,
                                             run=lambda argv, **kw: calls.append(argv) or Answer)
-        mover.move(board, "5", "doing", "claimed")
+        mover.move(board, "5", "doing", "claimed", "run-1")
         self.assertEqual(calls[0][:5], ["node", "/catalog/ado-board.js", "move", "5", "doing"])
         self.assertIn("--allow-idp", calls[0])
         self.assertIn("--json", calls[0])
@@ -1151,6 +1153,336 @@ class StatesTests(unittest.TestCase):
                                      environ={"IDP_ADO_BOARD": "/nowhere"})
         self.assertEqual(mover.name, "adapter")
         self.assertIn("not installed", out.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# Hardening: protected targets, fencing, Azure completion, launch failures
+# ---------------------------------------------------------------------------
+
+def branch_on_board(world, branch):
+    """The Feature's branch as the board answers it — the only thing changed."""
+    real = world.board.get_issue
+
+    def get_issue(identifier):
+        issue = real(identifier)
+        if str(identifier) == FEATURE:
+            issue["branch"] = branch
+        return issue
+
+    world.board.get_issue = get_issue
+
+
+class ProtectedTargetTests(Phase3TestCase):
+    """F1: a branch from the board can never make the runner write or merge into main."""
+
+    def remote_tip(self, world, branch):
+        return git(world.remote, "rev-parse", "-q", "--verify", f"refs/heads/{branch}",
+                   check=False) or None
+
+    def test_a_board_branch_of_main_is_refused_before_any_push_or_merge(self):
+        # Codex's reproduction exactly: one PBI, the small-feature route, and only
+        # board.get_issue(FEATURE)['branch'] changed to main. It used to exit 0
+        # with src/a.py merged into main.
+        world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
+        branch_on_board(world, "main")
+        main_before = self.remote_tip(world, "main")
+        out = io.StringIO()
+        self.assertEqual(world.runner(out=out).run_feature(FEATURE), EXIT.REFUSED)
+        self.assertEqual(self.remote_tip(world, "main"), main_before)
+        self.assertIsNone(world.remote_file("main", "src/a.py"))
+        self.assertIn("protected branch", out.getvalue())
+        self.assertIn("FIX:", out.getvalue())
+        self.assertEqual(world.board.side_effects, 0, "refused before the claim")
+        self.assertEqual(world.executor_.calls, [])
+
+    def test_every_spelling_of_a_protected_target_is_refused(self):
+        world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
+        # The remote's default branch is `trunk`, and the profile protects one more.
+        git(world.remote, "branch", "trunk", "main")
+        git(world.remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+        git(world.repo, "fetch", "-q", "origin")
+        git(world.repo, "remote", "set-head", "origin", "trunk")
+        world.profile = dict(world.profile, protected_branches=["release/2026"])
+        for branch in ("main", "refs/heads/main", " main ", "Main", "refs/heads/ main",
+                       "trunk", "refs/heads/trunk", "release/2026",
+                       "refs/heads/release/2026", "refs/tags/v1", "HEAD", "bad..name"):
+            with self.subTest(branch=branch):
+                branch_on_board(world, branch)
+                self.assertEqual(world.runner().run_feature(FEATURE), EXIT.REFUSED)
+        self.assertEqual(world.board.side_effects, 0)
+        self.assertIsNone(world.remote_file("main", "src/a.py"))
+
+    def test_refs_heads_on_a_feature_branch_is_normalized_not_refused(self):
+        world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
+        branch_on_board(world, f"refs/heads/{FEATURE_BRANCH}")
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/a.py"), "VALUE = 1\n")
+        self.assertIsNone(world.remote_file("main", "src/a.py"))
+
+    def test_the_git_merger_refuses_main_on_its_own(self):
+        world = self.world()
+        repo = phase3.gitops.Git(world.repo)
+        main = git(world.remote, "rev-parse", "main")
+        for target in ("main", "refs/heads/main", "Main"):
+            with self.subTest(target=target):
+                with self.assertRaises(phase3.merge.MergeRefused):
+                    phase3.merge.GitMerger(repo).complete(
+                        None, "pbi/1-a/g1", target, main, main, "X", "#1")
+        self.assertEqual(git(world.remote, "rev-parse", "main"), main)
+
+    def test_a_push_to_a_protected_branch_is_refused_by_the_runners_guard(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        dev = phase3.Development(world.runner(), worktrees=world.home / "worktrees")
+        with self.assertRaises(phase3.merge.MergeRefused):
+            dev.before_push("main")
+
+
+class FencingTests(Phase3TestCase):
+    """F5: every runner write re-reads the owner; a lost lease stops before writing."""
+
+    def test_a_state_move_on_a_card_another_run_holds_is_refused(self):
+        # Codex's reproduction: PBI 7 Active with idp:owner:new-owner; the runner's
+        # AdapterStates move used to resolve it and keep the other owner's tag.
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("7", tags_=["idp:owner:new-owner"], status="Active", kind="pbi")
+        mover = phase3.states.AdapterStates(board, PROFILE)
+        with self.assertRaises(lease.OwnershipLost):
+            mover.move(board, "7", "done", "merged", "run-1")
+        self.assertEqual(board.cards["7"]["status"], "Active")
+        self.assertEqual(board.cards["7"]["tags"], ["idp:owner:new-owner"])
+        self.assertEqual(board.side_effects, 0)
+
+    def test_a_pbi_move_names_the_exact_worker_tag_it_was_claimed_under(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("7", tags_=["idp:owner:run-1/w2"], kind="pbi")
+        mover = phase3.states.AdapterStates(board, PROFILE)
+        with self.assertRaises(lease.OwnershipLost):
+            mover.move(board, "7", "doing", "claimed", "run-1", owner="run-1/w1")
+        mover.move(board, "7", "doing", "claimed", "run-1", owner="run-1/w2")
+        self.assertEqual(board.cards["7"]["status"], "Active")
+
+    def test_the_catalog_is_never_called_for_an_item_another_run_holds(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("5", tags_=["idp:owner:run-2/w1"], kind="pbi")
+        calls = []
+        mover = phase3.states.CatalogStates(board, "/catalog/ado-board.js", PROFILE,
+                                            run=lambda argv, **kw: calls.append(argv))
+        with self.assertRaises(lease.OwnershipLost):
+            mover.move(board, "5", "doing", "claimed", "run-1")
+        self.assertEqual(calls, [])
+
+    def test_the_catalog_path_checks_the_feature_and_the_owner_after_the_move(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, tags_=[tags.DEVELOPMENT, "idp:owner:run-1"])
+        board.add_card("5", tags_=["idp:owner:run-1/w1"], kind="pbi")
+
+        class Answer:
+            returncode, stdout, stderr = 0, "{}", ""
+
+        def catalog(argv, **kw):
+            board.cards["5"]["tags"] = ["idp:owner:run-2/w1"]      # taken meanwhile
+            return Answer
+
+        fenced = lease.Fenced(board, FEATURE, "run-1")
+        mover = phase3.states.CatalogStates(board, "/catalog/ado-board.js", PROFILE,
+                                            run=catalog)
+        with self.assertRaises(lease.OwnershipLost):
+            mover.move(fenced, "5", "doing", "claimed", "run-1", owner="run-1/w1")
+        board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT, "idp:owner:run-2"]
+        with self.assertRaises(lease.OwnershipLost):
+            mover.move(fenced, "5", "doing", "claimed", "run-1")
+
+    def test_a_fenced_board_refuses_every_write_once_the_feature_is_lost(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, tags_=[tags.DEVELOPMENT, "idp:owner:run-1"])
+        fenced = lease.Fenced(board, FEATURE, "run-1")
+        fenced.add_comment(FEATURE, "still ours")
+        board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT, "idp:owner:run-2"]
+        for write in (lambda: fenced.add_comment(FEATURE, "x"),
+                      lambda: fenced.attach_document("t", "c", identifier=FEATURE),
+                      lambda: fenced.update_issue(FEATURE, status="Done"),
+                      lambda: fenced.write_card(FEATURE, 99, []),
+                      lambda: lease.post_event(fenced, FEATURE, "x", "k")):
+            with self.assertRaises(lease.OwnershipLost):
+                write()
+        self.assertEqual(len(board.comments[FEATURE]), 1)
+        self.assertEqual(fenced.read_card(FEATURE)["tags"][1], "idp:owner:run-2")
+
+    def test_a_zombie_owner_stops_before_finalize_review_or_merge(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        seen = {}
+
+        def build_then_lose_the_feature(world, worktree, key, branch, card):
+            ok()(world, worktree, key, branch, card)
+            # While the worker ran, the Feature was reaped and another run took it.
+            world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT, "idp:owner:run-2"]
+            seen["log"] = len(world.board.log)
+            seen["feature"] = git(world.remote, "rev-parse", FEATURE_BRANCH)
+            return EXIT.DONE
+
+        world.behaviors["a"] = [build_then_lose_the_feature]
+        out = io.StringIO()
+        self.assertEqual(world.runner(out=out).run_feature(FEATURE), EXIT.REFUSED)
+        self.assertIn("lost its lease", out.getvalue())
+        self.assertEqual(world.board.log[seen["log"]:], [], "no write after the loss")
+        self.assertEqual(git(world.remote, "rev-parse", FEATURE_BRANCH), seen["feature"])
+        card = world.items()["a"]["id"]
+        self.assertEqual(world.events(card, orchestrator.FINALIZED), [])
+        self.assertEqual(world.events(card, orchestrator.MERGED), [])
+        self.assertEqual(world.board.cards[FEATURE]["tags"],
+                         [tags.DEVELOPMENT, "idp:owner:run-2"])
+
+    def test_completion_never_releases_another_owners_tag(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+
+        def build_then_another_worker_tags_it(world, worktree, key, branch, card):
+            ok()(world, worktree, key, branch, card)
+            world.board.cards[card]["tags"] = ["idp:owner:run-2/w1"]
+            return EXIT.DONE
+
+        world.behaviors["a"] = [build_then_another_worker_tags_it]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.REFUSED)
+        card = world.items()["a"]["id"]
+        self.assertEqual(world.board.cards[card]["tags"], ["idp:owner:run-2/w1"])
+        self.assertNotEqual(self.status(world, "a"), "Resolved")
+        self.assertEqual(world.events(card, orchestrator.SUMMARY), [])
+
+
+class PRBoard:
+    """The fake board with the Azure Repos PR calls, recording each one."""
+
+    def __init__(self, board):
+        self.board, self.calls = board, []
+
+    def __getattr__(self, name):
+        return getattr(self.board, name)
+
+    def create_pull_request(self, repository, source, target, title, description, items):
+        self.calls.append(("create", source, target))
+        return {"id": 77, "url": "https://fake/pr/77"}
+
+    def complete_pull_request(self, *args):
+        self.calls.append(("complete",) + args)
+
+    def comment_pull_request(self, repository, pr, text):
+        self.calls.append(("comment", pr, text))
+
+    def get_pull_request(self, repository, pr):
+        return {"status": "active"}
+
+
+class AzureCompletionTests(Phase3TestCase):
+    """F6: Azure Repos completion stays refused until experiment 8 proves a target fence."""
+
+    def test_the_pr_is_left_open_with_a_comment_and_a_fix_line(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        prs = PRBoard(world.board)
+        merger = phase3.merge.AzureReposMerger(prs, phase3.gitops.Git(world.repo), "repo")
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertNotIn("complete", [c[0] for c in prs.calls])
+        comments = [c for c in prs.calls if c[0] == "comment"]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("experiment 8", comments[0][2])
+        self.assertIn("FIX:", comments[0][2])
+        self.assertIn("azure_complete_unproven", comments[0][2])
+        card = world.items()["a"]["id"]
+        self.assertNotEqual(self.status(world, "a"), "Resolved")
+        self.assertEqual(world.events(card, orchestrator.MERGED), [])
+        self.assertTrue(world.events(card, orchestrator.UNMERGED))
+        reason = world.events(FEATURE, lease.BLOCK)[-1]["reason"]
+        self.assertIn("azure_complete_unproven", reason)
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "src/a.py"), "nothing merged")
+
+        # A human unblocks without opting in: still refused, and said only once.
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.runner(merger=merger).run_feature(FEATURE)
+        self.assertEqual(len([c for c in prs.calls if c[0] == "comment"]), 1)
+        self.assertNotIn("complete", [c[0] for c in prs.calls])
+
+    def test_git_level_merges_land_only_onto_the_tested_head(self):
+        # The Linear path: the squash is pushed with --force-with-lease on F, so a
+        # target that moved since F was tested makes the merge lose, not land.
+        world = self.world()
+        repo = phase3.gitops.Git(world.repo)
+        main = git(world.remote, "rev-parse", "main")
+        git(world.remote, "branch", "feature/race", main)
+        other = self.root / "racer"
+        git(self.root, "clone", "-q", "-b", "feature/race", str(world.remote), str(other))
+        (other / "src" / "racer.py").write_text("VALUE = 1\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "a sibling lands first")
+        git(other, "push", "-q", "origin", "feature/race")
+        moved = git(other, "rev-parse", "HEAD")
+        repo.fetch()
+        merged = main                       # what was tested: F = main, M = main
+        self.assertIsNone(phase3.merge.GitMerger(repo).complete(
+            None, "pbi/1-a/g1", "feature/race", main, merged, "X", "#1"))
+        self.assertEqual(git(world.remote, "rev-parse", "feature/race"), moved)
+
+
+class LaunchFailureTests(Phase3TestCase):
+    """F11: an agent that never started is infrastructure — retried, never an attempt."""
+
+    def test_a_worker_that_cannot_be_launched_is_retried_and_never_counted(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        executor = LaunchFails(world.step, fails={"worker": 2})
+        self.assertEqual(world.runner(executor=executor).run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(executor.launch_failures, 2)
+        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertEqual(world.slept, list(phase3.common.INFRA_BACKOFF[:2]))
+        self.assertEqual(self.status(world, "a"), "Resolved")
+
+    def test_a_worker_that_never_launches_pauses_the_feature_unblocked(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        executor = LaunchFails(world.step, fails={"worker": 99})
+        self.assertEqual(world.runner(executor=executor).run_feature(FEATURE), EXIT.HANDOFF)
+        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertNotIn(tags.BLOCKED, self.labels(world, "a"))
+        self.assertNotIn(tags.BLOCKED, world.board.cards[FEATURE]["tags"])
+        self.assertEqual(tags.paused_of(world.board.cards[FEATURE]["tags"]), "run-1")
+        card = world.items()["a"]["id"]
+        self.assertTrue(world.events(card, orchestrator.INFRA))
+        self.assertEqual(world.slept, list(phase3.common.INFRA_BACKOFF))
+
+    def test_a_planning_session_that_cannot_be_launched_costs_no_attempt(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        executor = LaunchFails(world.step, fails={"design": 3})
+        self.assertEqual(world.runner(executor=executor).run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.events(FEATURE, orchestrator.ATTEMPT), [])
+        self.assertEqual(world.slept, list(phase3.common.INFRA_BACKOFF))
+
+    def test_a_plain_crash_without_the_field_is_still_an_attempt(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.behaviors["a"] = [crashes(), ok()]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "a"), ["crash"])
+
+
+class StubGit:
+    """What the mergers ask of git when no merge is going to happen."""
+
+    def __init__(self, head="F", default="main"):
+        self.head, self.default = head, default
+
+    def fetch(self):
+        pass
+
+    def remote_sha(self, branch):
+        return self.head
+
+    def tracking(self, branch):
+        return "S"
+
+    def default_branch(self):
+        return self.default
+
+    def ok(self, *args):
+        return True
 
 
 class AzureReposMergerTests(unittest.TestCase):
@@ -1166,17 +1498,7 @@ class AzureReposMergerTests(unittest.TestCase):
             def complete_pull_request(self, *args):
                 calls.append(("complete",) + args)
 
-        class Git:
-            def fetch(self):
-                pass
-
-            def remote_sha(self, branch):
-                return "F"
-
-            def tracking(self, branch):
-                return "S"
-
-        merger = phase3.merge.AzureReposMerger(Board(), Git(), "repo")
+        merger = phase3.merge.AzureReposMerger(Board(), StubGit(), "repo", unproven=True)
         pr = merger.open("pbi/5-x/g1", FEATURE_BRANCH, "X", "d", "5")
         self.assertEqual(calls[0], ("create", "repo", "pbi/5-x/g1", FEATURE_BRANCH, "X", "d",
                                     ["5"]))
@@ -1184,15 +1506,52 @@ class AzureReposMergerTests(unittest.TestCase):
         self.assertEqual(calls[1][:4], ("complete", "repo", 9, "M"))
 
     def test_a_moved_head_completes_nothing(self):
-        class Git:
-            def fetch(self):
+        merger = phase3.merge.AzureReposMerger(object(), StubGit(head="G"), "repo",
+                                               unproven=True)
+        self.assertIsNone(merger.complete({"id": 1}, "b", "t", "F", "M", "X", "#5"))
+
+    def test_completion_is_refused_by_default_until_experiment_8_proves_a_fence(self):
+        calls = []
+
+        class Board:
+            def complete_pull_request(self, *args):
+                calls.append(args)
+
+        merger = phase3.merge.AzureReposMerger(Board(), StubGit(), "repo")
+        with self.assertRaises(phase3.merge.MergeRefused) as caught:
+            merger.complete({"id": 9}, "pbi/5-x/g1", FEATURE_BRANCH, "F", "M", "X", "#5")
+        self.assertEqual(caught.exception.kind, phase3.merge.UNPROVEN_KIND)
+        self.assertIn("experiment 8", caught.exception.message)
+        self.assertIn("azure_complete_unproven", caught.exception.fix)
+        self.assertEqual(calls, [])
+
+    def test_the_profile_opt_in_is_what_select_reads(self):
+        class Board:
+            def create_pull_request(self, *args):
                 pass
 
-            def remote_sha(self, branch):
-                return "G"
+        profile = {"board": "azure-devops"}
+        self.assertFalse(phase3.merge.select(Board(), profile, StubGit(), "r").unproven)
+        profile["development"] = {"azure_complete_unproven": True}
+        self.assertTrue(phase3.merge.select(Board(), profile, StubGit(), "r").unproven)
 
-        merger = phase3.merge.AzureReposMerger(object(), Git(), "repo")
-        self.assertIsNone(merger.complete({"id": 1}, "b", "t", "F", "M", "X", "#5"))
+    def test_a_protected_target_is_refused_before_any_board_call(self):
+        calls = []
+
+        class Board:
+            def complete_pull_request(self, *args):
+                calls.append(args)
+
+        for target in ("main", "refs/heads/main", " main ", "Main", "trunk",
+                       "release/2026", "refs/heads/release/2026"):
+            with self.subTest(target=target):
+                merger = phase3.merge.AzureReposMerger(
+                    Board(), StubGit(default="trunk"), "repo", protected=["release/2026"],
+                    unproven=True)
+                with self.assertRaises(phase3.merge.MergeRefused) as caught:
+                    merger.complete({"id": 9}, "pbi/5-x/g1", target, "F", "M", "X", "#5")
+                self.assertEqual(caught.exception.kind, phase3.merge.PROTECTED_KIND)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

@@ -250,7 +250,8 @@ class LayerTwoTests(GitTestCase):
         board.add_card("IDE-88", tags_=["idp:development", f"idp:owner:{run}"])
         board.add_card(identifier, tags_=[f"idp:owner:{run}/w1"], kind="pbi", parent="IDE-88")
         lease.post_event(board, identifier, lease.CLAIM, f"claim:{identifier}",
-                         owner=f"{run}/w1", generation=1, branch=self.pbi_branch)
+                         owner=f"{run}/w1", generation=1, branch=self.pbi_branch,
+                         profile="sha256:test")
         return board, identifier
 
     def test_unposted_decisions_travel_in_the_committed_handoff(self):

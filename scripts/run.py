@@ -65,6 +65,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -96,6 +97,7 @@ memory = board_cli.memory
 
 MAX_ATTEMPTS = 3
 MAX_STEPS = 8                    # phase moves in one local run; a bound, not a target
+INFRA_BACKOFF = phase3.common.INFRA_BACKOFF
 SCOPES = ("small", "medium", "large")
 
 # Event kinds this script posts. Every one goes through `lease.post_event`, so
@@ -201,6 +203,10 @@ class Heartbeat:
         self._thread = None
 
     def beat(self):
+        # A heartbeat is a write too: a run that lost the card stops beating on it.
+        if not lease.holds(self.board.read_card(self.card).get("tags"), self.run):
+            self._stop.set()
+            return None
         found = lease.events(self.board.list_comments(self.card), lease.HEARTBEAT,
                              run=self.run)
         return lease.heartbeat(self.board, self.card, self.run, len(found) + 1)
@@ -310,7 +316,7 @@ class Runner:
     def __init__(self, board, profile, executor, run_id, repo=None, ask=None,
                  worktree_for=None, base_sha=None, design=None,
                  heartbeat_minutes=lease.HEARTBEAT_MINUTES, out=None, development=None,
-                 reconcile=None):
+                 reconcile=None, sleep=time.sleep):
         self.board = board
         self.profile = {k: v for k, v in (profile or {}).items()}
         self.executor = executor
@@ -333,6 +339,7 @@ class Runner:
         self.stopping = lambda card: None
         self.reconcile = reconcile or phase3.states.reconciler(self.profile, out=self.out,
                                                                cwd=str(self.repo))
+        self.sleep = sleep
 
     def say(self, text):
         print(text, file=self.out)
@@ -428,8 +435,16 @@ class Runner:
         # The base is the one the claim comment recorded, never one resolved
         # again now: a resumed run starts from the same commit as the first.
         base = self.claim_fact(feature, "base")
-        with Heartbeat(self.board, feature, self.run_id, self.heartbeat_minutes):
-            return self._design(feature, base)
+        # From here every write re-reads that this run still holds the card.
+        plain, self.board = self.board, lease.Fenced(self.board, feature, self.run_id)
+        try:
+            with Heartbeat(plain, feature, self.run_id, self.heartbeat_minutes):
+                return self._design(feature, base)
+        except lease.OwnershipLost as exc:
+            self.say(f"{feature}: {exc.message}\nFIX: {exc.fix}")
+            return EXIT.REFUSED
+        finally:
+            self.board = plain
 
     def claim_fact(self, card, name):
         found = lease.events(self.comments(card), lease.CLAIM, run=self.run_id)
@@ -438,6 +453,7 @@ class Runner:
     def _design(self, feature, base):
         title = memory.feature_file(feature, "adr")
         feedback = None
+        launches = 0
         while True:
             comments = self.comments(feature)
             reviews = lease.events(comments, REVIEW)
@@ -456,6 +472,17 @@ class Runner:
                     return self.pause(feature, stop)
                 code = self.design_session(feature, base, feedback)
                 last = self.executor.last or {}
+                if last.get("launch_failed", False):
+                    # The agent never started: infrastructure, never an attempt.
+                    # Retried with backoff, then paused for any run to take.
+                    launches += 1
+                    if launches <= len(INFRA_BACKOFF):
+                        self.sleep(INFRA_BACKOFF[launches - 1])
+                        continue
+                    return self.pause(feature, f"the {last.get('agent')} design session "
+                                               f"could not be launched after {launches} "
+                                               "tries (infrastructure, not counted): "
+                                               f"{last.get('reason') or 'no reason given'}")
                 if code == EXIT.DONE:
                     feedback = None
                     if self.design_candidate(feature, reviewed) is None:
@@ -658,14 +685,16 @@ class Runner:
             # The lease was lost: abort without writing anything more.
             self.say(f"{feature}: {handed['message']}\nFIX: {handed['fix']}")
             return EXIT.REFUSED
-        self.review_comment(feature, title, text)
+        # The hand-off was this run's last owned write; the comment that binds an
+        # approval to these bytes follows it, on a card nobody holds now.
+        self.review_comment(feature, title, text, board=lease.unfenced(self.board))
         self.say(f"{feature}: the ADR is attached ({sha256(text)}) and waits for a human.")
         return EXIT.DONE
 
-    def review_comment(self, feature, title, text):
+    def review_comment(self, feature, title, text, board=None):
         digest = sha256(text)
         lease.post_event(
-            self.board, feature, REVIEW, f"{REVIEW}:{digest}",
+            board or self.board, feature, REVIEW, f"{REVIEW}:{digest}",
             text=(f"The ADR '{title}' is attached and waits for a human. Its hash is "
                   f"`{digest}`: an approval covers exactly these bytes. Approve by setting "
                   f"`{tags.DEVELOPMENT}`; send it back by commenting why and setting "
@@ -855,7 +884,8 @@ def cmd_takeover(args):
     interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
     try:
         result = agent_mode.takeover(board, args.card, run_id, input,
-                                     agent_mode=not interactive)
+                                     agent_mode=not interactive,
+                                     profile=board_cli.profile_hash(profile))
     except agent_mode.AgentError as exc:
         fail(exc.code, exc.message, fix=exc.fix)
     if result["outcome"] not in ("written", "unchanged"):
