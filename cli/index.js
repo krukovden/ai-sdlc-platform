@@ -58,7 +58,9 @@ function recoveryDecision(current, expected, options) {
   throw new Error('Local edits preserved; use --keep-local or --overwrite');
 }
 function normalizeJournal(journal, state) {
-  const legacy = journal.expected || {};
+  const receiptFile = path.join(state, 'receipt.json');
+  const baseline = exists(receiptFile) ? read(receiptFile).files || {} : {};
+  const legacy = Object.keys(baseline).length ? baseline : journal.expected || {};
   const samePayload = journal.payload === journal.discardRoot;
   const staging = path.join(state, 'staging');
   const place = Array.isArray(journal.place) ? journal.place : [];
@@ -68,8 +70,7 @@ function normalizeJournal(journal, state) {
   normalized.placedHash = normalized.placedHash || Object.fromEntries(place.map(file => {
     const source = path.join(staging, file);
     if (exists(source)) return [file, fileHash(source)];
-    const target = path.join(normalized.payload, file);
-    return [file, fileHash(target)];
+    return [file, null];
   }));
   return normalized;
 }

@@ -9,6 +9,7 @@ const {sync} = require('../cli/version');
 const {check} = require('../skills/platform-freshness/check');
 const {fixture, json} = require('./fixture');
 const {CURRENT, NEXT, AFTER} = require('./fixture');
+const ROOT = path.resolve(__dirname, '..');
 
 const receiptOf = ctx => json(path.join(ctx.home, '.idp/platform/receipt.json'));
 const dropCatalogSkill = (ctx, name) => {
@@ -20,6 +21,12 @@ const statusOf = async ctx => { ctx.output.length = 0; await run(['status'], ctx
 const commandOf = entry => typeof entry === 'string' ? entry : entry && entry.command;
 const stateDirOf = ctx => path.join(ctx.home, '.idp/platform');
 const hookStateOf = ctx => path.join(ctx.home, '.idp/hooks');
+const cliAtRevision = (ctx, revision) => {
+  const file = path.join(ctx.temp, `${revision.replace(/[^\w.-]+/g, '_')}-cli-index.js`);
+  fs.writeFileSync(file, execFileSync('git', ['show', `${revision}:cli/index.js`], {cwd: ROOT, encoding: 'utf8'}));
+  delete require.cache[file];
+  return require(file);
+};
 
 // Everything a finished installation promises: receipt hashes match the payload, every link
 // resolves to its recorded target, nothing of an earlier payload or a transaction is left behind.
@@ -278,6 +285,26 @@ test('keep-local recovery carries a post-interruption source edit forward instea
   assert.ok(/source edit after interruption\n$/.test(oldText) || /source edit after interruption\n$/.test(newText), {oldText, newText});
 });
 
+test('legacy linked-edit replay preserves the active edit from an origin-main journal', async t => {
+  const ctx = fixture(t);
+  const legacy = cliAtRevision(ctx, 'origin/main');
+  await legacy.run(['install'], ctx);
+  sync(NEXT, ctx.root);
+  const receiptFile = path.join(stateDirOf(ctx), 'receipt.json');
+  const original = fs.renameSync;
+  let fired = false;
+  fs.renameSync = function (from, to) {
+    if (to === receiptFile) { fired = true; throw new Error('legacy receipt commit'); }
+    return original.call(this, from, to);
+  };
+  try { await assert.rejects(legacy.run(['update', '--yes'], ctx), /legacy receipt commit/); } finally { fs.renameSync = original; }
+  assert.ok(fired);
+  const linked = path.join(ctx.home, '.claude/skills/design/SKILL.md');
+  fs.appendFileSync(linked, '\nlegacy active edit\n');
+  await run(['update', '--keep-local'], ctx);
+  assert.match(fs.readFileSync(linked, 'utf8'), /legacy active edit\n$/);
+});
+
 test('interactive yes approvals finish the initial settlement they approved', async t => {
   const script = `
 const path = require('node:path');
@@ -335,6 +362,44 @@ test('clean replay treats an already deleted old file as completed work', async 
   fs.rmSync(discard, {force: true});
   await run(['update', '--yes'], ctx);
   await assertConsistent(ctx, NEXT);
+});
+
+test('origin-main journals replay cleanly with the same arguments', async t => {
+  await t.test('same-version clean replay resumes with --yes', async () => {
+    const ctx = fixture(t);
+    const legacy = cliAtRevision(ctx, 'origin/main');
+    await legacy.run(['install'], ctx);
+    const staged = path.join(stateDirOf(ctx), 'staging', 'skills/design/SKILL.md');
+    const installed = path.join(receiptOf(ctx).payload, 'skills/design/SKILL.md');
+    const original = fs.renameSync;
+    let fired = false;
+    fs.renameSync = function (from, to) {
+      if (from === staged && to === installed) { fired = true; throw new Error('legacy same-version place'); }
+      return original.call(this, from, to);
+    };
+    try { await assert.rejects(legacy.run(['update', '--yes'], ctx), /legacy same-version place/); } finally { fs.renameSync = original; }
+    assert.ok(fired);
+    await run(['update', '--yes'], ctx);
+    await assertConsistent(ctx, CURRENT);
+  });
+  await t.test('cross-version clean replay resumes with --yes', async () => {
+    const ctx = fixture(t);
+    const legacy = cliAtRevision(ctx, 'origin/main');
+    await legacy.run(['install'], ctx);
+    sync(NEXT, ctx.root);
+    const staged = path.join(stateDirOf(ctx), 'staging', 'skills/design/SKILL.md');
+    const installed = path.join(stateDirOf(ctx), NEXT, 'skills/design/SKILL.md');
+    const original = fs.renameSync;
+    let fired = false;
+    fs.renameSync = function (from, to) {
+      if (from === staged && to === installed) { fired = true; throw new Error('legacy cross-version place'); }
+      return original.call(this, from, to);
+    };
+    try { await assert.rejects(legacy.run(['update', '--yes'], ctx), /legacy cross-version place/); } finally { fs.renameSync = original; }
+    assert.ok(fired);
+    await run(['update', '--yes'], ctx);
+    await assertConsistent(ctx, NEXT);
+  });
 });
 
 test('uninstall ignores an unmanaged newer payload directory', async t => {

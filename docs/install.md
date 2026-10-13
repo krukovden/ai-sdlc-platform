@@ -30,6 +30,8 @@ Updates show `+` added, `~` changed, `-` removed and `=` unchanged files. A loca
 
 The CLI also maintains stable hook launchers at `.idp/platform/bin/statusline.py` and `.idp/platform/bin/cliff_handoff.py`. The Claude status-line wrapper and printed Copilot hook config use those stable paths so package updates do not leave manual registrations pointing at a deleted versioned payload. During update and uninstall, the CLI rewrites or removes verified registrations it owns in the default Claude and Copilot locations.
 
+Current limit: if a Copilot hook JSON file contains only the platform's two owned handlers plus unrelated top-level metadata, uninstall removes the whole file and the metadata with it. Metadata is preserved when any non-platform hook entry remains; until this is narrowed further, keep user-only metadata in a separate file or alongside a non-platform hook entry.
+
 Uninstall uses the same local-edit protection. `uninstall --keep-local` leaves edited payload files behind; otherwise a clean installation is removed completely. Unrelated files, replaced skill links, product profiles and tokens are never deleted. Python bytecode caches derived from managed scripts are removed too; other unknown files created inside a payload are retained rather than recursively deleting potentially valuable data.
 
 `check` compares the installed receipt with remote release tags `vX.Y.Z`, using a bounded noninteractive git query. It prints whether a newer release is available; it never installs it. An unreachable remote makes explicit `check` fail. Publish version tags to make release discovery work. Re-run the npx Git URL to fetch the new package for an update; running an old cached CLI only updates to the version bundled with that CLI.
