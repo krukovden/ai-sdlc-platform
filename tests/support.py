@@ -59,6 +59,20 @@ board = load_script("board")
 linear = load_script("sync_linear_state")
 
 
+def assert_tmpdir_empty(path, label="TMPDIR"):
+    """Fail loudly when a temp root keeps disposable content after a test run."""
+    root = Path(path)
+    if not root.exists():
+        return
+    entries = sorted(p.relative_to(root).as_posix() for p in root.iterdir())
+    if entries:
+        preview = ", ".join(entries[:10])
+        raise AssertionError(
+            f"{label} {root} is not empty after the run: {len(entries)} entries remain "
+            f"({preview})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Test case base: exit codes are part of the contract, so assert on them.
 # ---------------------------------------------------------------------------
