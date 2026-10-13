@@ -405,6 +405,54 @@ class ReapTests(ScriptTestCase):
                          "unchanged")
         self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
 
+    def _renew_before_release(self, board, beat=9):
+        real = lease.tags.release_stale
+
+        def renew(board_, identifier, owner, *args, **kwargs):
+            lease.heartbeat(board_, identifier, A, beat)
+            return real(board_, identifier, owner, *args, **kwargs)
+
+        lease.tags.release_stale = renew
+        self.addCleanup(setattr, lease.tags, "release_stale", real)
+
+    def test_a_heartbeat_that_moves_rev_before_removal_is_not_evicted(self):
+        board = self.claimed(comment_bumps_rev=True)
+        board.advance(61)
+        self._renew_before_release(board)
+        report = lease.reap(board, "1")
+        self.assertEqual(report[0]["outcome"], "alive")
+        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertEqual(lease.count_events(board, "1", lease.REAP), 0)
+
+    def test_a_heartbeat_that_does_not_move_rev_before_removal_is_not_evicted(self):
+        board = self.claimed()
+        board.advance(61)
+        self._renew_before_release(board)
+        report = lease.reap(board, "1")
+        self.assertEqual(report[0]["outcome"], "alive")
+        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertEqual(lease.count_events(board, "1", lease.REAP), 0)
+
+    def test_a_renewal_before_a_child_release_keeps_the_pbi(self):
+        board = self.claimed()
+        board.add_card("2", (), kind="pbi", parent="1")
+        tags.claim_pbi(board, "2", A, 1, feature="1")
+        board.advance(61)
+        real = lease.tags.release_stale
+
+        def renew_child(board_, identifier, owner, *args, **kwargs):
+            if identifier == "2":
+                lease.heartbeat(board_, "1", A, 4)
+            return real(board_, identifier, owner, *args, **kwargs)
+
+        lease.tags.release_stale = renew_child
+        self.addCleanup(setattr, lease.tags, "release_stale", real)
+        report = lease.reap(board, "1")
+        child = next(entry for entry in report if entry["identifier"] == "2")
+        self.assertEqual(child["outcome"], "alive")
+        self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
+        self.assertEqual(lease.count_events(board, "2", lease.REAP), 0)
+
 
 class TakeoverTests(ScriptTestCase):
 

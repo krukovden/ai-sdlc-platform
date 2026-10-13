@@ -374,50 +374,77 @@ def last_sign_of_life(board, card, owner):
     return max(moments)
 
 
+def _stale(now, seen, lease_minutes):
+    return seen is None or now - seen > timedelta(minutes=lease_minutes)
+
+
+def _release_expired(board, identifier, now, lease_minutes, reevaluate=True):
+    """Remove a stale owner, fenced on the revision and the sign of life just read.
+
+    A renewal between the read and the removal is a conflict. Re-evaluate once:
+    if the lease is alive now, leave it and do not post a reap.
+    """
+    card = board.read_card(identifier)
+    owner = tags.owner_of(card.get("tags"))
+    if owner is None:
+        return {"identifier": card["identifier"], "owner": None, "outcome": "free"}
+    seen = last_sign_of_life(board, card, owner)
+    if not _stale(now, seen, lease_minutes):
+        return {"identifier": card["identifier"], "owner": owner, "outcome": "alive",
+                "last_seen": seen.isoformat()}
+
+    def renewed(fresh):
+        later = last_sign_of_life(board, fresh, owner)
+        return later is not None and (seen is None or later > seen)
+
+    result = tags.release_stale(board, identifier, owner, seen_rev=card.get("rev"),
+                                renewed=renewed)
+    if result["outcome"] == "conflict":
+        if reevaluate:
+            return _release_expired(board, identifier, now, lease_minutes, reevaluate=False)
+        return {"identifier": card["identifier"], "owner": owner, "outcome": "conflict",
+                "last_seen": seen.isoformat() if seen else None}
+    return {"identifier": card["identifier"], "owner": owner,
+            "outcome": "reaped" if result["outcome"] in ("written", "unchanged")
+            else result["outcome"],
+            "last_seen": seen.isoformat() if seen else None,
+            "_removed": result["outcome"] in ("written", "unchanged")}
+
+
 def reap(board, identifier, now=None, lease_minutes=LEASE_MINUTES):
     """Release a stale owner tag on one card; on a Feature, its run's PBI tags too.
 
     `now` is the server's clock; asked of the board when not given. Returns one
-    entry per card looked at, each with what happened to it.
+    entry per card looked at, each with what happened to it. Removal is fenced
+    on the revision and the sign of life that showed the lease was stale; a
+    renewal in between is re-read once and left alone.
     """
     now = parse_time(now) if now is not None else parse_time(board.server_now())
     if now is None:
         raise ValueError("reap needs the server's clock and got none")
-    card = board.read_card(identifier)
-    owner = tags.owner_of(card.get("tags"))
-    if owner is None:
-        return [{"identifier": card["identifier"], "owner": None, "outcome": "free"}]
+    entry = _release_expired(board, identifier, now, lease_minutes)
+    removed = entry.pop("_removed", False)
+    report = [entry]
+    if not removed:
+        return report
+    seen = entry.get("last_seen")
+    post_event(board, identifier, REAP,
+               f"{REAP}:{entry['owner']}:{seen or 'never'}",
+               text=(f"Released `{entry['owner']}`: no sign of life for more than "
+                     f"{lease_minutes} minutes by the server's clock. The card waits "
+                     "in its phase for the next run."),
+               owner=entry["owner"], last_seen=seen)
 
-    seen = last_sign_of_life(board, card, owner)
-    if seen is not None and now - seen <= timedelta(minutes=lease_minutes):
-        return [{"identifier": card["identifier"], "owner": owner, "outcome": "alive",
-                 "last_seen": seen.isoformat()}]
-
-    report = []
-    result = tags.release_stale(board, card["identifier"], owner)
-    report.append({"identifier": card["identifier"], "owner": owner,
-                   "outcome": "reaped" if result["outcome"] in ("written", "unchanged")
-                   else result["outcome"],
-                   "last_seen": seen.isoformat() if seen else None})
-    if result["outcome"] in ("written", "unchanged"):
-        post_event(board, card["identifier"], REAP,
-                   f"{REAP}:{owner}:{seen.isoformat() if seen else 'never'}",
-                   text=(f"Released `{owner}`: no sign of life for more than "
-                         f"{lease_minutes} minutes by the server's clock. The card waits "
-                         "in its phase for the next run."),
-                   owner=owner, last_seen=seen.isoformat() if seen else None)
-
-        # A Feature's run also held its PBIs. They go with it.
-        run = tags.run_of(owner)
-        if owner == run:
-            for child in board.list_children(card["identifier"]):
-                for held in tags.owners(child.get("labels") or []):
-                    if tags.run_of(held) == run:
-                        freed = tags.release_stale(board, child["identifier"], held)
-                        report.append({"identifier": child["identifier"], "owner": held,
-                                       "outcome": "reaped"
-                                       if freed["outcome"] in ("written", "unchanged")
-                                       else freed["outcome"]})
+    # A Feature's run also held its PBIs. Each is fenced on its own observation,
+    # so a heartbeat that lands before the child's removal keeps the child.
+    run = tags.run_of(entry["owner"])
+    if entry["owner"] == run:
+        for child in board.list_children(identifier):
+            for held in tags.owners(child.get("labels") or []):
+                if tags.run_of(held) == run:
+                    freed = _release_expired(board, child["identifier"], now, lease_minutes)
+                    freed.pop("_removed", None)
+                    report.append(freed)
     return report
 
 

@@ -534,17 +534,27 @@ def set_blocked(board, identifier, run=None):
     return _write(board, identifier, decide)
 
 
-def release_stale(board, identifier, owner):
+def release_stale(board, identifier, owner, seen_rev=None, renewed=None):
     """Remove one specific owner tag — the reaper's write.
 
-    Fenced on that exact owner: if the card changed hands since the reaper
-    looked, it is not the reaper's to touch.
+    Fenced on that exact owner, and on the observation the reaper acted on.
+    `seen_rev` is the revision at which the lease was judged stale: a write
+    since then, including a comment that bumps revision, is a conflict.
+    `renewed(card)` is the reaper's check that a heartbeat landed without
+    moving the revision; if it returns true, the owner stays.
     """
     def decide(card):
-        tags = card.get("tags") or []
-        if owner not in owners(tags):
-            return tags, None
-        return without_idp(tags, owner_tag(owner)), None
+        if seen_rev is not None and str(card.get("rev")) != str(seen_rev):
+            raise _Conflict(f"{identifier} changed since its lease was judged stale.",
+                            "reap again; a renewal may have landed")
+        if renewed is not None and renewed(card):
+            raise _Conflict(f"{identifier} showed a newer sign of life since its lease "
+                            "was judged stale.",
+                            "leave it; the owner is alive")
+        labels = card.get("tags") or []
+        if owner not in owners(labels):
+            return labels, None
+        return without_idp(labels, owner_tag(owner)), None
 
     return _write(board, identifier, decide)
 
