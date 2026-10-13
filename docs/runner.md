@@ -140,9 +140,10 @@ at every held card of the project. `adr-check` is phase 3's precondition.
 
 ## Backends
 
-`backend: auto` uses Orca when the Orca backend is registered and
-`orca status --json` answers; until that backend is built (build step 6), auto
-is `subprocess`. Naming `orca` explicitly is refused with a FIX.
+`backend: auto` uses Orca when `orca status --json` answers, and `subprocess`
+otherwise. Naming `orca` where Orca does not answer is refused with a FIX. One run
+may use both: the `orca` backend sends any session it cannot launch through
+`subprocess` and says why in `executor.last.fallback`.
 
 `subprocess` launches:
 
@@ -167,3 +168,86 @@ Claude, `OPENAI_*` for Codex, `GH_TOKEN` for Copilot, …) and the runner's
 `IDP_*`. `AZURE_DEVOPS_EXT_PAT`, `LINEAR_API_KEY`, `SYSTEM_ACCESSTOKEN`,
 anything shaped like `*_PAT`, and anything naming a token file are removed even
 when something else would allow them.
+
+## The `orca` backend
+
+Orca executes; the board decides. The backend starts each session as a supervised
+Orca worker (`orca orchestration worker-start`), mirrors PBI dependencies as Task
+`--deps`, watches the worker through the Run's inbox and `worker-show`, and
+releases it once it has settled. It never reads Orca state to decide who owns a
+card: claims, tags, leases and handoffs stay on the board, and the runner still
+posts its own heartbeat comment (the backend calls a `heartbeat(card=, role=,
+agent=, dispatch=)` hook every ~30 seconds for that). The two human gates stay
+tags; `mirror_gate` shows one in the Orca window as a convenience only.
+
+Experiments 5 and 6 (`docs/experiments/e5-orca-coordinator.md`,
+`e6-orca-agents.md`) are the evidence behind everything below.
+
+### Where each agent launches
+
+Measured on Orca 1.4.222 with `worker-start --agent <id> --worktree path:<dir>`
+(n = 1 per agent):
+
+| Agent | Launches through | Why / what happens |
+| -- | -- | -- |
+| claude | Orca | Launches, honours `--model`, reports `worker_done`. |
+| codex | Orca | Launches and honours `--model`. When the account is out of credits it parks on a rate-limit screen: the backend reads that as a limit, pauses the card. |
+| copilot | Orca, once trusted | Launches, then parks on its folder-trust prompt: `BLOCKED`, with a FIX. Orca sets no model for it, so an entry that names one (`copilot:gpt`) goes through `subprocess`. |
+| gemini | `subprocess` here | Orca's launcher was disabled on the measured install (`agent_unconfigured`). Same model rule as copilot. |
+| cursor | `subprocess` here | Not installed here, so only the failure was measured (`agent_not_in_foreground`). Orca lists it as launchable and sets `--model`; unmeasured with the binary present. |
+| opencode | `subprocess` here | Not installed here, so only the failure was measured (`agent_readiness` timeout). Orca lists it as launchable; model selection works only in an existing worktree. |
+
+An agent that fails to start in Orca is remembered for the rest of the run, so it
+is not asked twice. The agent set the profile accepts is unchanged; `grok`,
+`antigravity`, `muse` and `zcode` are not profile agents.
+
+### Placement and bases
+
+The session works in the worktree the runner hands it: `--worktree path:<dir>`,
+with no `--setup` (Orca refuses it for an existing worktree). **Orca only knows
+worktrees it made or was shown**, not ones from plain `git worktree add`, and
+`~/.idp/worktrees/…` are the latter, so today such a session goes through
+`subprocess` (`last.fallback`: "Orca does not know the worktree"). Two ways to
+change that, both outside this backend: create the runner's worktrees with
+`orca worktree create --base-branch <sha>` when running inside Orca, or build the
+executor with `placement="new-child"`, which makes an Orca worktree from the
+given one's HEAD (`--base-branch <sha>`, never a branch name: `new-child`
+otherwise branches from `origin/main`) while the session still reports into the
+runner's worktree through the `IDP_*` values in its prompt.
+
+### How a session ends
+
+The result file stays the answer; the worker's `worker_done --outcome` is read
+alongside it:
+
+| Result file | `worker_done` | Code |
+| -- | -- | -- |
+| present | `succeeded` | the file's code |
+| present | `failed` | the file's code; `done` becomes `2` (it contradicts the worker) |
+| absent | `succeeded` | `4`, crashed (success without a report is a crash) |
+| absent | `failed` | `2`, with the worker's reason |
+| absent | none; agent proven exited | `4`, crashed |
+| absent | none; terminal shows a usage-limit screen | `4`, crashed, `limit` set, so the card is paused |
+| absent | none; parked on a human prompt (`agent-trust-workspace`, `agent-update-prompt`, `agent-cwd-prompt`, `agent-hooks-review-prompt`, `agent-interactive-prompt`, `agent-approval-prompt`) | `2`, reason with a FIX line |
+| absent | escalation | `2`, with the worker's words |
+
+A worker is stopped (`worker-stop`) only on positive evidence: its own
+escalation, a prompt or limit screen, or the caller's timeout. It is released
+(`worker-release`) once it has settled or its failed start left a terminal. Losing
+the inbox is a crash that stops and releases nothing, because contact loss is not
+process death. A worker's `ask` gets the standing answer "no person is available;
+decide conservatively and state the assumption".
+
+### What Orca cannot do for us
+
+Orca starts the agent with the environment Orca gives its terminals, not the
+allowlist the `subprocess` backend builds. The `IDP_*` values are put in the
+prompt instead, and **a board credential exported by the user's own shell
+profile is visible to an Orca-launched session**. Keep `AZURE_DEVOPS_EXT_PAT` and
+`LINEAR_API_KEY` out of the profile files your terminals source, or run the
+sessions that must not hold them with `backend: subprocess`.
+
+A Run belongs to the terminal that created it and a runner started inside a
+dispatched worker is refused (`nested_worker_depth_exceeded`): start `run.py`
+from a plain Orca terminal. Each `run.py` process makes its own Run; a second
+process cannot wait on the first one's.
