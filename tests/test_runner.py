@@ -192,6 +192,26 @@ class EndToEndTests(RunnerTestCase):
         self.assertTrue(run.check_adr(board, FEATURE)[0])
 
 
+class PhaseSelectionTests(RunnerTestCase):
+
+    def test_phase_design_refuses_when_the_card_is_not_in_design(self):
+        board = new_board(tags.DEVELOPMENT)
+        with self.assertRaises(run.RunnerError) as caught:
+            self.runner(board).run_phase(FEATURE, "design")
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertIn("not in phase 'design'", caught.exception.message)
+        self.assertIn("idp-develop", caught.exception.fix)
+
+    def test_phase_development_refuses_when_the_card_is_waiting_for_review(self):
+        board = new_board()
+        self.runner(board).run_feature(FEATURE)
+        with self.assertRaises(run.RunnerError) as caught:
+            self.runner(board).run_phase(FEATURE, "development")
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertIn("not in phase 'development'", caught.exception.message)
+        self.assertIn("approve the ADR", caught.exception.fix)
+
+
 class RedesignTests(RunnerTestCase):
 
     def send_back(self, board, why="split D-1 into two decisions"):
