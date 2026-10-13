@@ -1151,6 +1151,18 @@ class ReviewFixTests(IntegrationTestCase):
         self.assertEqual(bug.runner().run_feature(FEATURE), EXIT.DONE)
         self.assertGreater(len(bug.sessions.get("verdict", [])), 3)
 
+class IntegrationRunAsTests(ScriptTestCase):
+    """The full build and suite run as the witnesses do — the configured session user."""
+
+    def test_integration_commands_inherit_the_witness_run_as(self):
+        import types
+        finalizer = types.SimpleNamespace(env={"PATH": "/usr/bin"}, clock=lambda: 0.0,
+                                          run_as="agent")
+        dev = types.SimpleNamespace(runner=None, git=None, profile={}, finalizer=finalizer)
+        self.assertEqual(integration.Integration(dev).commands.run_as, "agent")
+        finalizer.run_as = None
+        self.assertIsNone(integration.Integration(dev).commands.run_as)
+
 
 if __name__ == "__main__":
     unittest.main()

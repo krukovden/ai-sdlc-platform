@@ -295,7 +295,8 @@ class Integration:
         self.profile = dev.profile
         # The full build and suite run as finalize runs a witness: the same
         # allowlisted environment, no board token, no model key.
-        self.commands = Finalizer(env=getattr(dev.finalizer, "env", None),
+        self.commands = Finalizer({"run_as": getattr(dev.finalizer, "run_as", None)},
+                                  env=getattr(dev.finalizer, "env", None),
                                   clock=getattr(dev.finalizer, "clock", time.monotonic))
 
     @property

@@ -24,7 +24,7 @@ RUN git clone --depth 1 https://github.com/krukovden/engineering-catalog /opt/en
     && mkdir -p "$AZURE_EXTENSION_DIR" \
     && az extension add --name azure-devops --yes \
     && chmod -R a+rX "$AZURE_EXTENSION_DIR" \
-    && printf 'idp ALL=(root) NOPASSWD: /usr/sbin/runuser -u agent -- *\n' >/etc/sudoers.d/idp-runuser-agent \
+    && printf 'Defaults:idp umask=0002,umask_override\nidp ALL=(root) NOPASSWD:SETENV: /usr/sbin/runuser -u agent --preserve-environment -- *\n' >/etc/sudoers.d/idp-runuser-agent \
     && chmod 0440 /etc/sudoers.d/idp-runuser-agent
 
 WORKDIR /work/platform

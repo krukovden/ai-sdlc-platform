@@ -246,12 +246,29 @@ class EnvironmentTests(ScriptTestCase):
     def test_command_argv_switches_user_only_when_configured(self):
         wrapped = executors.environment.command_argv(
             ["copilot", "-p", "hi"], run_as="agent", current="idp")
-        self.assertEqual(wrapped[:7],
-                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent",
+        self.assertEqual(wrapped[:8],
+                         ["sudo", "-n", "-E", "/usr/sbin/runuser", "-u", "agent",
                           "--preserve-environment", "--"])
         plain = executors.environment.command_argv(
             ["copilot", "-p", "hi"], run_as=None, current="idp")
         self.assertEqual(plain, ["copilot", "-p", "hi"])
+
+    def test_a_probe_runs_as_the_session_user_when_configured(self):
+        seen = []
+
+        def run(argv, **kwargs):
+            seen.append(argv)
+            return mock.Mock(returncode=0)
+
+        choice = executors.roles.Choice("copilot", "gemini-3.8-flash")
+        with mock.patch.object(executors.environment, "current_user", return_value="idp"):
+            executors.probe(choice, environ={}, run=run, run_as="agent")
+            executors.default_resolver({"run_as": "agent"}, environ={}, run=run).probe(choice)
+        for argv in seen:
+            self.assertEqual(argv[:8], ["sudo", "-n", "-E", "/usr/sbin/runuser", "-u", "agent",
+                                        "--preserve-environment", "--"])
+            self.assertEqual(argv[8], "copilot")
+        self.assertEqual(len(seen), 2)
 
     def test_command_argv_skips_the_wrapper_when_already_that_user(self):
         argv = executors.environment.command_argv(

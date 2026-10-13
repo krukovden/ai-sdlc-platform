@@ -177,7 +177,10 @@ def command_argv(argv, run_as=None, current=None, runuser="/usr/sbin/runuser", s
     """`argv`, or a user-switch wrapper around it when `run_as` is configured.
 
     The platform only switches uid when the profile asks for it. When the current
-    user already is `run_as`, nothing is wrapped.
+    user already is `run_as`, nothing is wrapped. The caller passes the filtered
+    environment to the process it starts; `sudo -E` keeps exactly that (sudo would
+    otherwise reset it), so the sudoers rule needs SETENV and must name this argv:
+    `idp ALL=(root) NOPASSWD:SETENV: /usr/sbin/runuser -u agent --preserve-environment -- *`.
     """
     user = str(run_as or "").strip()
     command = [str(part) for part in argv]
@@ -187,5 +190,5 @@ def command_argv(argv, run_as=None, current=None, runuser="/usr/sbin/runuser", s
     if holder == user:
         return command
     prefix = [runuser, "-u", user, "--preserve-environment", "--"] if holder == "root" else \
-        [sudo, "-n", runuser, "-u", user, "--preserve-environment", "--"]
+        [sudo, "-n", "-E", runuser, "-u", user, "--preserve-environment", "--"]
     return prefix + command
