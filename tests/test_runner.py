@@ -688,6 +688,41 @@ class LeaseIdentityTests(unittest.TestCase):
         if self._saved is not None:
             os.environ["IDP_RUN_ID"] = self._saved
 
+    @contextlib.contextmanager
+    def hold_lock(self, home, run_id):
+        script = """
+import importlib.util
+import pathlib
+import sys
+
+repo, home, run_id = sys.argv[1:]
+path = pathlib.Path(repo) / "scripts" / "agent_mode.py"
+spec = importlib.util.spec_from_file_location("idp_agent_mode_child", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+lock = module.RunLock(home, run_id).acquire()
+print("locked", flush=True)
+sys.stdin.read(1)
+lock.release()
+"""
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(REPO_ROOT), str(home), run_id],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "locked")
+            yield child
+        finally:
+            if child.stdin is not None:
+                child.stdin.write("x")
+                child.stdin.flush()
+            child.wait(timeout=5)
+            if child.stdin is not None:
+                child.stdin.close()
+            if child.stdout is not None:
+                child.stdout.close()
+            if child.stderr is not None:
+                child.stderr.close()
+
     def test_two_invocations_do_not_share_the_stable_skill_identity(self):
         home = Path(self.id())
         first = run.lease_run_id(None, home)
@@ -720,6 +755,16 @@ class LeaseIdentityTests(unittest.TestCase):
         os.environ["IDP_RUN_ID"] = "run-1"
         self.assertEqual(run.lease_run_id(None, home), "run-1")
 
+    def test_a_second_process_cannot_open_the_board_as_the_same_explicit_run_id(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        with self.hold_lock(home, "run-1"):
+            with self.assertRaises(run.agent_mode.AgentError) as caught:
+                run.agent_mode.RunLock(home, "run-1").acquire()
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertIn("already starting or live", caught.exception.message)
+
     def test_cmd_run_refuses_a_live_run_before_opening_the_board(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -740,6 +785,49 @@ class LeaseIdentityTests(unittest.TestCase):
                 run.cmd_run(args)
         self.assertEqual(caught.exception.code, EXIT.REFUSED)
         self.assertEqual(opened, [])
+
+    def test_cmd_agent_refuses_a_locally_locked_run_before_opening_the_board(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        opened = []
+
+        def open_board():
+            opened.append("opened")
+            raise AssertionError("the board must not be opened while the run is locked")
+
+        design_home = mock.Mock()
+        design_home.HOME = home
+        args = mock.Mock(run_id="run-1", serve=None)
+        with self.hold_lock(home, "run-1"), \
+                mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board", side_effect=open_board):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_agent(args)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertEqual(opened, [])
+
+    def test_cmd_takeover_refuses_a_locally_locked_run_before_opening_the_board(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        opened = []
+
+        def open_board():
+            opened.append("opened")
+            raise AssertionError("the board must not be opened while the run is locked")
+
+        design_home = mock.Mock()
+        design_home.HOME = home
+        args = mock.Mock(run_id="run-1", claim_only=True, card=FEATURE)
+        with self.hold_lock(home, "run-1"), \
+                mock.patch.object(run, "load_design", return_value=design_home), \
+                mock.patch.object(run.board_cli, "open_board", side_effect=open_board):
+            with self.assertRaises(SystemExit) as caught:
+                run.cmd_takeover(args)
+        self.assertEqual(caught.exception.code, EXIT.REFUSED)
+        self.assertEqual(opened, [])
+
 
 
 if __name__ == "__main__":

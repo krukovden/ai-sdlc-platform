@@ -46,6 +46,11 @@ import threading
 import time
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:                                    # pragma: no cover - Windows only
+    fcntl = None
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
@@ -291,10 +296,15 @@ class Presence:
     def __init__(self, home, run_id):
         self.dir = Path(home) / "agent"
         self.run_id = tags.check_run_id(run_id)
+        self._announced_pid = None
 
     @property
     def pid_file(self):
         return self.dir / f"{self.run_id}.pid"
+
+    @property
+    def lock_file(self):
+        return self.dir / f"{self.run_id}.lock"
 
     @property
     def stop_file(self):
@@ -302,12 +312,23 @@ class Presence:
 
     def announce(self, pid=None):
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.pid_file.write_text(str(pid or os.getpid()), encoding="utf-8")
+        self._announced_pid = int(pid or os.getpid())
+        self.pid_file.write_text(str(self._announced_pid), encoding="utf-8")
 
-    def leave(self):
-        for path in (self.pid_file, self.stop_file):
-            if path.exists():
-                path.unlink()
+    def leave(self, force=False):
+        if force:
+            for path in (self.pid_file, self.stop_file):
+                if path.exists():
+                    path.unlink()
+            return
+        try:
+            pid = int(self.pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid == self._announced_pid:
+            for path in (self.pid_file, self.stop_file):
+                if path.exists():
+                    path.unlink()
 
     def alive(self, kill=os.kill):
         try:
@@ -338,6 +359,75 @@ class Presence:
             if presence.alive(kill):
                 runs.append(path.stem)
         return runs
+
+
+
+class RunLock:
+    """A process-lifetime local mutex for one run id."""
+
+    def __init__(self, home, run_id):
+        self.presence = Presence(home, run_id)
+        self.fd = None
+        self.pid = os.getpid()
+
+    def acquire(self):
+        self.presence.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.presence.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            if fcntl is None:                          # pragma: no cover - Windows only
+                raise BlockingIOError
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            os.close(fd)
+            holder = ""
+            try:
+                holder = self.presence.lock_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+            raise AgentError(
+                EXIT.REFUSED,
+                f"run '{self.presence.run_id}' is already starting or live on this machine"
+                + (f" (pid {holder})" if holder else "") + ". A second process must not "
+                "share its lease.",
+                "stop that run, or omit --run-id so this invocation gets its own lease")
+        os.ftruncate(fd, 0)
+        os.write(fd, str(self.pid).encode("utf-8"))
+        self.fd = fd
+        return self
+
+    @staticmethod
+    def held(home, run_id):
+        presence = Presence(home, run_id)
+        if not presence.lock_file.exists():
+            return False
+        fd = os.open(presence.lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            if fcntl is None:                          # pragma: no cover - Windows only
+                return True
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def release(self):
+        if self.fd is None:
+            return
+        try:
+            if fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
+            self.fd = None
+        try:
+            holder = self.presence.lock_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            holder = None
+        if holder == str(self.pid) and self.presence.lock_file.exists():
+            self.presence.lock_file.unlink()
 
 
 def stop_signal(board, presence):
@@ -824,7 +914,7 @@ def stop(board, home, run_ids, list_cards, worktrees, handoff=None, mention=None
     out = out or sys.stdout
     for run in run_ids:
         presence = Presence(home, run)
-        if presence.alive(kill):
+        if presence.alive(kill) or RunLock.held(home, run):
             presence.request_stop()
             print(f"run '{run}' stops after its task in flight: it commits, writes "
                   "handoff.md and pauses what it holds.", file=out)
@@ -833,7 +923,7 @@ def stop(board, home, run_ids, list_cards, worktrees, handoff=None, mention=None
               "holds now.", file=out)
         release_run(board, run, list_cards(), worktrees, "run.py stop", handoff=handoff,
                     mention=mention, out=out)
-        presence.leave()
+        presence.leave(force=True)
     return EXIT.DONE
 
 

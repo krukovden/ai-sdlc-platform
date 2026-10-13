@@ -100,6 +100,9 @@ PBIs carry no phase tag. During 3.2 a worker claims them with
 - A claim is one fenced write: on Azure DevOps `test /rev` plus the phase tag and
   owner tag in one patch; on Linear, a reread of `updatedAt` immediately before
   the write.
+- Reusing an explicit `--run-id` is also fenced locally before the board opens:
+  one process on one machine holds that run id, and a second local start is
+  refused before it can read or claim anything.
 - Every write after the claim re-reads the owner card first. Losing the owner tag
   stops the run before the next comment, attachment, tag write or push.
 - A claim is a **lease**, not a lock. Heartbeats keep it fresh; `run.py reap`

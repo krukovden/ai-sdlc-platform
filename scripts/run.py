@@ -852,14 +852,18 @@ def lease_run_id(explicit, home):
 
 def acquire_lease(explicit):
     """Resolve this invocation's lease before any board read or phase."""
+    home = load_design().HOME
     try:
-        return lease_run_id(explicit, load_design().HOME)
+        run_id = lease_run_id(explicit, home)
+        return run_id, agent_mode.RunLock(home, run_id).acquire()
     except RunnerError as exc:
+        fail(exc.code, exc.message, fix=exc.fix)
+    except agent_mode.AgentError as exc:
         fail(exc.code, exc.message, fix=exc.fix)
 
 
 def cmd_run(args):
-    run_id = acquire_lease(args.run_id)
+    run_id, held = acquire_lease(args.run_id)
     # A foreground run is a live process. Without a pid, `run.py stop` treats
     # it as dead and commits, pushes and pauses while it is still editing.
     presence = agent_mode.Presence(load_design().HOME, run_id)
@@ -881,7 +885,10 @@ def cmd_run(args):
             fail(exc.code, exc.message, fix=exc.fix)
         sys.exit(code)
     finally:
-        presence.leave()
+        try:
+            presence.leave()
+        finally:
+            held.release()
 
 
 def cmd_report(args):
@@ -936,31 +943,34 @@ def project_cards(board, profile):
 
 
 def cmd_agent(args):
-    run_id = acquire_lease(args.run_id)
-    profile, _, board = board_cli.open_board()
-    serve = [p.strip() for p in (args.serve or "").split(",") if p.strip()] or None
-    unknown = sorted(set(serve or ()) - set(agent_mode.PHASES))
-    if unknown:
-        fail(EXIT.REFUSED, f"agent mode serves no phase called {', '.join(unknown)}",
-             fix=f"pass --serve with any of {', '.join(agent_mode.PHASES)}")
+    run_id, held = acquire_lease(args.run_id)
+    try:
+        profile, _, board = board_cli.open_board()
+        serve = [p.strip() for p in (args.serve or "").split(",") if p.strip()] or None
+        unknown = sorted(set(serve or ()) - set(agent_mode.PHASES))
+        if unknown:
+            fail(EXIT.REFUSED, f"agent mode serves no phase called {', '.join(unknown)}",
+                 fix=f"pass --serve with any of {', '.join(agent_mode.PHASES)}")
 
-    def make_executor():
-        try:
-            return executors.select(profile.get("executors"))
-        except executors.ResolutionError as exc:
-            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+        def make_executor():
+            try:
+                return executors.select(profile.get("executors"))
+            except executors.ResolutionError as exc:
+                fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
 
-    def make_runner(executor, out):
-        return Runner(board, profile, executor, run_id, repo=os.getcwd(), out=out)
+        def make_runner(executor, out):
+            return Runner(board, profile, executor, run_id, repo=os.getcwd(), out=out)
 
-    os.environ["IDP_AGENT_MODE"] = "1"
-    loop = agent_mode.AgentLoop(
-        board, profile, run_id, make_executor, make_runner, project_cards(board, profile),
-        agent_mode.Presence(load_design().HOME, run_id), executors, SCRIPT_DIR / "run.py",
-        serve=serve, out=sys.stderr, worktrees=worktrees_home(os.getcwd()).parent,
-        handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention,
-        read_branch=agent_mode.branch_reader(os.getcwd()))
-    sys.exit(loop.run())
+        os.environ["IDP_AGENT_MODE"] = "1"
+        loop = agent_mode.AgentLoop(
+            board, profile, run_id, make_executor, make_runner, project_cards(board, profile),
+            agent_mode.Presence(load_design().HOME, run_id), executors, SCRIPT_DIR / "run.py",
+            serve=serve, out=sys.stderr, worktrees=worktrees_home(os.getcwd()).parent,
+            handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention,
+            read_branch=agent_mode.branch_reader(os.getcwd()))
+        sys.exit(loop.run())
+    finally:
+        held.release()
 
 
 def cmd_stop(args):
@@ -975,38 +985,41 @@ def cmd_stop(args):
 
 
 def cmd_takeover(args):
-    run_id = acquire_lease(args.run_id)
-    profile, _, board = board_cli.open_board()
-    interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
+    run_id, held = acquire_lease(args.run_id)
     try:
-        result = agent_mode.takeover(board, args.card, run_id, input,
-                                     agent_mode=not interactive,
-                                     profile=board_cli.profile_hash(profile))
-    except agent_mode.AgentError as exc:
-        fail(exc.code, exc.message, fix=exc.fix)
-    if result["outcome"] not in ("written", "unchanged"):
-        sys.exit(EXIT.REFUSED)
-    children = [c["identifier"] for c in board.list_children(args.card)]
-    found = agent_mode.handoff_branches(lambda *a: git(os.getcwd(), *a), children)
-    print("It resumes from " + (", ".join(f"handoff.md on {b}" for b in found) if found
-                                else "git and the board: no PBI branch carries a handoff.md"))
-    if args.claim_only:
-        sys.exit(EXIT.DONE)
-    presence = agent_mode.Presence(load_design().HOME, run_id)
-    presence.announce()
-    try:
+        profile, _, board = board_cli.open_board()
+        interactive = sys.stdin.isatty() and not os.environ.get("IDP_AGENT_MODE")
         try:
-            executor = executors.select(profile.get("executors"))
-        except executors.ResolutionError as exc:
-            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
-        runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
-        runner.stopping = agent_mode.stop_signal(board, presence)
-        try:
-            sys.exit(runner.run_feature(args.card))
-        except RunnerError as exc:
+            result = agent_mode.takeover(board, args.card, run_id, input,
+                                         agent_mode=not interactive,
+                                         profile=board_cli.profile_hash(profile))
+        except agent_mode.AgentError as exc:
             fail(exc.code, exc.message, fix=exc.fix)
+        if result["outcome"] not in ("written", "unchanged"):
+            sys.exit(EXIT.REFUSED)
+        children = [c["identifier"] for c in board.list_children(args.card)]
+        found = agent_mode.handoff_branches(lambda *a: git(os.getcwd(), *a), children)
+        print("It resumes from " + (", ".join(f"handoff.md on {b}" for b in found) if found
+                                    else "git and the board: no PBI branch carries a handoff.md"))
+        if args.claim_only:
+            sys.exit(EXIT.DONE)
+        presence = agent_mode.Presence(load_design().HOME, run_id)
+        presence.announce()
+        try:
+            try:
+                executor = executors.select(profile.get("executors"))
+            except executors.ResolutionError as exc:
+                fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+            runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
+            runner.stopping = agent_mode.stop_signal(board, presence)
+            try:
+                sys.exit(runner.run_feature(args.card))
+            except RunnerError as exc:
+                fail(exc.code, exc.message, fix=exc.fix)
+        finally:
+            presence.leave()
     finally:
-        presence.leave()
+        held.release()
 
 
 def cmd_decide(args):
