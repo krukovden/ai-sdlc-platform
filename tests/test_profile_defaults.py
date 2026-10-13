@@ -71,6 +71,20 @@ class ProfileDefaultsTests(ScriptTestCase):
         self.assertEqual(profile["team_key"], "IdeaHub")
         self.assertNotIn("executors", profile)
 
+    def test_decodes_encoded_azure_devops_project_names(self):
+        cases = (
+            "https://dev.azure.com/contoso/My%20Project/_git/ai-sdlc-platform",
+            "git@ssh.dev.azure.com:v3/contoso/My%20Project/ai-sdlc-platform",
+            "https://contoso.visualstudio.com/DefaultCollection/My%20Project/_git/repo",
+        )
+        for remote in cases:
+            with self.subTest(remote=remote), tempfile.TemporaryDirectory() as tmp:
+                root = repo(Path(tmp) / "repo", remote)
+                profile = self.derive(root, installed=())
+                self.assertEqual(profile["board"], "azure-devops")
+                self.assertEqual(profile["project_id"], "My Project")
+                self.assertEqual(profile["team_key"], "My Project")
+
     def test_a_non_ado_remote_refuses_without_a_linear_team_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = repo(Path(tmp) / "repo",
@@ -86,8 +100,12 @@ class ProfileDefaultsTests(ScriptTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "tests").mkdir()
-            (root / "tests" / "test_sample.py").write_text("import unittest\n",
-                                                             encoding="utf-8")
+            (root / "tests" / "test_sample.py").write_text(
+                "import unittest\n\n"
+                "class Sample(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8")
             self.assertEqual(defaults.detect_test_command(root),
                              "python3 -m unittest discover -s tests")
 
@@ -102,6 +120,49 @@ class ProfileDefaultsTests(ScriptTestCase):
             root = Path(tmp)
             (root / "Makefile").write_text("test:\n\t@echo ok\n", encoding="utf-8")
             self.assertEqual(defaults.detect_test_command(root), "make test")
+
+    def test_detects_pytest_functions_without_pytest_ini(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_sample.py").write_text(
+                "def test_it_fails():\n"
+                "    assert False\n",
+                encoding="utf-8")
+            self.assertEqual(defaults.detect_test_command(root), "python3 -m pytest")
+
+    def test_prefers_pytest_when_unittest_and_pytest_styles_are_mixed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_sample.py").write_text(
+                "import unittest\n\n"
+                "class Sample(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        self.assertTrue(True)\n\n"
+                "def test_broken_feature():\n"
+                "    assert False\n",
+                encoding="utf-8")
+            self.assertEqual(defaults.detect_test_command(root), "python3 -m pytest")
+
+    def test_derives_from_the_repository_root_when_run_in_a_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = repo(Path(tmp) / "repo",
+                        "https://dev.azure.com/contoso/IdeaHub/_git/ai-sdlc-platform")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_sample.py").write_text(
+                "import unittest\n\n"
+                "class Sample(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8")
+            nested = root / "src"
+            nested.mkdir()
+
+            profile = self.derive(nested, installed=())
+
+        self.assertEqual(profile["development"]["integration"]["test"],
+                         "python3 -m unittest discover -s tests")
 
 
 class LoadProfileFallbackTests(ScriptTestCase):

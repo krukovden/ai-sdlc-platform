@@ -9,9 +9,11 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from support import ScriptTestCase, board, chdir, write_profile
+memory = board.load_sibling("memory", "idp_memory_test")
 
 
 class FindProfileTests(ScriptTestCase):
@@ -76,6 +78,42 @@ class LoadProfileTests(ScriptTestCase):
             with chdir(root):
                 message = self.assert_exits(6, board.load_profile)
         self.assertIn("/idp-setup", message)
+
+    def test_a_derived_profile_keeps_the_repository_root_for_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "product"
+            subprocess.run(["git", "-C", str(root.parent), "init", "-q", str(root)],
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://dev.azure.com/contoso/IdeaHub/_git/product"],
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email",
+                            "qa@example.invalid"], check=True, capture_output=True, text=True)
+            nested = root / "src"
+            nested.mkdir(parents=True)
+            with chdir(nested):
+                profile = board.load_profile()
+
+        self.assertEqual(Path(profile["_root"]), root)
+        self.assertEqual(memory.repositories(profile), [root])
+
+    def test_setup_writes_the_profile_at_the_repository_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "repo"
+            subprocess.run(["git", "-C", str(root.parent), "init", "-q", str(root)],
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://dev.azure.com/contoso/IdeaHub/_git/product"],
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email",
+                            "qa@example.invalid"], check=True, capture_output=True, text=True)
+            nested = root / "src"
+            nested.mkdir(parents=True)
+            with chdir(nested):
+                board.cmd_setup(SimpleNamespace(team_key=None, force=False))
+
+            self.assertTrue((root / ".idp" / "profile.json").exists())
+            self.assertFalse((root / "src" / ".idp" / "profile.json").exists())
 
     def test_the_advice_names_the_installed_command_when_that_is_how_we_were_called(self):
         with mock.patch.object(board.sys, "argv", ["/home/u/.local/bin/idp", "status"]):

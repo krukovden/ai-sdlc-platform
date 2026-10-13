@@ -160,15 +160,18 @@ def load_profile():
     path = find_profile()
     if not path:
         defaults = load_sibling("profile_defaults", "idp_profile_defaults")
+        root = defaults.repository_root(os.getcwd())
         try:
-            profile = defaults.derive(os.getcwd(), command=f"{invoked_as()} setup")
+            profile = defaults.derive(root, command=f"{invoked_as()} setup")
         except defaults.DerivationError as exc:
             fail(EXIT.CONFIG, exc.message, fix=exc.fix)
         try:
             profile = check_profile(profile)
         except ProfileError as exc:
             fail(EXIT.CONFIG, exc.message, fix=exc.fix)
-        profile["_path"] = "<derived from repository defaults>"
+        profile["_root"] = str(root)
+        profile["_path"] = str(root / PROFILE_DIR / PROFILE_NAME)
+        profile["_source"] = "<derived from repository defaults>"
         return profile
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
@@ -182,6 +185,7 @@ def load_profile():
         fail(EXIT.CONFIG, f"{path}: {exc.message}", fix=exc.fix)
 
     profile["_path"] = str(path)
+    profile["_root"] = str(path.parent.parent)
     return profile
 
 
@@ -459,13 +463,19 @@ def _git(repo, *args, allow_failure=False):
 def current_feature_id(board, profile, identifier=None, cwd=None):
     if identifier:
         return identifier
-    repo = Path(cwd or os.getcwd()).resolve()
+    repo = Path((profile.get("_root") or cwd or os.getcwd())).resolve()
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD", allow_failure=True)
     if not branch or branch == "HEAD":
         fail(EXIT.INVALID, "no issue id was given, and the current checkout is not on a named branch",
              fix="pass the Feature id explicitly, for example `idp status IDE-88`")
     nodes = board.list_project(project_id_from(profile, None))
-    matches = [node["identifier"] for node in nodes if (node.get("branch") or "").strip() == branch]
+    matches = []
+    for node in nodes:
+        node_branch = (node.get("branch") or "").strip()
+        if not node_branch:
+            node_branch = (board.get_issue(node["identifier"]).get("branch") or "").strip()
+        if node_branch == branch:
+            matches.append(node["identifier"])
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -475,17 +485,35 @@ def current_feature_id(board, profile, identifier=None, cwd=None):
          fix="pass the Feature id explicitly, or switch to a Feature branch")
 
 
+def _feature_criteria_headings():
+    found = set()
+    for language in sections.languages():
+        heading = sections.criteria_heading("feature", language)
+        if heading:
+            found.add(heading.lstrip("#").strip().casefold())
+    return found
+
+
+def _bullets(text):
+    found = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("* ", "- ")):
+            found.append(stripped[2:].strip())
+    return found
+
+
 def acceptance_criteria(text):
     lines = (text or "").splitlines()
     in_section = False
     found = []
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("## "):
+        if stripped.startswith("#"):
             if in_section:
                 break
-            heading = stripped[3:].strip().casefold()
-            in_section = heading == "what proves it"
+            heading = stripped.lstrip("#").strip().casefold()
+            in_section = heading in _feature_criteria_headings()
             continue
         if not in_section:
             continue
@@ -519,7 +547,7 @@ def qa_summary(board, identifier):
         "issue": issue,
         "qa": qa,
         "pr": pr,
-        "criteria": acceptance_criteria(issue.get("description") or ""),
+        "criteria": issue.get("acceptance_criteria") or acceptance_criteria(issue.get("description") or ""),
     }
 
 
@@ -645,19 +673,20 @@ def cmd_init(args):
 
 
 def cmd_setup(args):
-    target = Path(os.getcwd()) / PROFILE_DIR / PROFILE_NAME
+    defaults = load_sibling("profile_defaults", "idp_profile_defaults")
+    root = defaults.repository_root(os.getcwd())
+    target = root / PROFILE_DIR / PROFILE_NAME
     if target.exists() and not args.force:
         fail(EXIT.CONFIG, f"{target} already exists; pass --force to overwrite",
              fix="pass --force to overwrite it, or edit it by hand")
 
-    defaults = load_sibling("profile_defaults", "idp_profile_defaults")
     team_key = args.team_key
     if not team_key and sys.stdin.isatty():
-        remote = defaults.parse_board_from_remote(defaults.remote_url(Path(os.getcwd()).resolve()))
+        remote = defaults.parse_board_from_remote(defaults.remote_url(root))
         if remote is None:
             team_key = input("Linear team key: ").strip()
     try:
-        profile = defaults.derive(os.getcwd(), team_key=team_key,
+        profile = defaults.derive(root, team_key=team_key,
                                   command=f"{invoked_as()} setup")
         profile = check_profile(profile)
     except defaults.DerivationError as exc:
@@ -681,9 +710,9 @@ def cmd_writing(args):
 
 def cmd_profile(args):
     profile = load_profile()
-    print(json.dumps({k: v for k, v in profile.items() if k != "_path"},
+    print(json.dumps({k: v for k, v in profile.items() if not k.startswith("_")},
                      indent=2, ensure_ascii=False))
-    print(f"# resolved from {profile['_path']}", file=sys.stderr)
+    print(f"# resolved from {profile.get('_source') or profile['_path']}", file=sys.stderr)
 
 
 def cmd_states(args):

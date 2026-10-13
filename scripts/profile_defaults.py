@@ -10,13 +10,14 @@ identity of the human at the QA gate.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 PROFILE_VERSION = 1
 DEFAULT_INVOKER = "idp setup"
@@ -47,7 +48,7 @@ PYTEST_FILES = ("pytest.ini", ".pytest.ini", "conftest.py")
 PYTEST_CONFIGS = ("pyproject.toml", "tox.ini", "setup.cfg")
 TEST_FILE = re.compile(r"^test[^/]*\.py$")
 ADO_HTTPS = re.compile(r"^/([^/]+)/([^/]+)/_git/([^/]+?)(?:\.git)?/?$")
-ADO_VISUALSTUDIO = re.compile(r"^/([^/]+)/_git/([^/]+?)(?:\.git)?/?$")
+ADO_VISUALSTUDIO = re.compile(r"^/(?:[^/]+/)?([^/]+)/_git/([^/]+?)(?:\.git)?/?$")
 ADO_SSH = re.compile(r"^(?:ssh://)?git@ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/([^/]+?)(?:\.git)?/?$")
 
 
@@ -89,19 +90,22 @@ def parse_board_from_remote(url):
         match = ADO_HTTPS.match(parsed.path or "")
         if match:
             workspace, project, _ = match.groups()
-            return {"board": "azure-devops", "workspace": workspace,
+            project = unquote(project)
+            return {"board": "azure-devops", "workspace": unquote(workspace),
                     "project_id": project, "team_key": project}
     if host.endswith(".visualstudio.com"):
         match = ADO_VISUALSTUDIO.match(parsed.path or "")
         if match:
             project, _ = match.groups()
             workspace = host.split(".", 1)[0]
-            return {"board": "azure-devops", "workspace": workspace,
+            project = unquote(project)
+            return {"board": "azure-devops", "workspace": unquote(workspace),
                     "project_id": project, "team_key": project}
     match = ADO_SSH.match(url.strip())
     if match:
         workspace, project, _ = match.groups()
-        return {"board": "azure-devops", "workspace": workspace,
+        project = unquote(project)
+        return {"board": "azure-devops", "workspace": unquote(workspace),
                 "project_id": project, "team_key": project}
     return None
 
@@ -161,6 +165,33 @@ def _json(path):
         return None
 
 
+def repository_root(root):
+    start = Path(root or os.getcwd()).resolve()
+    text = _run(["git", "rev-parse", "--show-toplevel"], start, allow_failure=True)
+    return Path(text).resolve() if text else start
+
+
+def _pytest_layout(root):
+    root = Path(root)
+    if any((root / name).exists() for name in PYTEST_FILES):
+        return True
+    for name in PYTEST_CONFIGS:
+        path = root / name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "[tool.pytest" in text or "[pytest]" in text:
+            return True
+    return False
+
+
+def _annotate_parents(tree):
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child.parent = node
+    return tree
+
+
 def detect_test_command(root):
     package = _json(Path(root) / "package.json")
     if isinstance(package, dict):
@@ -171,24 +202,40 @@ def detect_test_command(root):
                 return "npm test"
 
     root = Path(root)
-    if any((root / name).exists() for name in PYTEST_FILES):
+    if _pytest_layout(root):
         return "python3 -m pytest"
-    for name in PYTEST_CONFIGS:
-        path = root / name
-        if not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if "[tool.pytest" in text or "[pytest]" in text:
-            return "python3 -m pytest"
-
     tests = root / "tests"
     if tests.is_dir():
-        found = False
+        layout = {"files": False, "pytest": False, "unittest": False}
         for path in tests.rglob("*.py"):
-            if TEST_FILE.match(path.name):
-                found = True
-                break
-        if found:
+            if not TEST_FILE.match(path.name):
+                continue
+            layout["files"] = True
+            try:
+                tree = _annotate_parents(ast.parse(path.read_text(encoding="utf-8")))
+            except (OSError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    if any(alias.name == "pytest" for alias in node.names):
+                        layout["pytest"] = True
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module == "pytest":
+                        layout["pytest"] = True
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.name.startswith("test_") and isinstance(getattr(node, "parent", None),
+                                                                    ast.Module):
+                        layout["pytest"] = True
+                elif isinstance(node, ast.ClassDef):
+                    for base in node.bases:
+                        text = ast.unparse(base) if hasattr(ast, "unparse") else ""
+                        if text.endswith("TestCase") or text == "TestCase":
+                            layout["unittest"] = True
+            if layout["pytest"] and layout["unittest"]:
+                return "python3 -m pytest"
+        if layout["pytest"]:
+            return "python3 -m pytest"
+        if layout["unittest"]:
             return "python3 -m unittest discover -s tests"
 
     makefile = root / "Makefile"
@@ -205,7 +252,7 @@ def approvers(root):
 
 
 def derive(root=None, team_key=None, which=shutil.which, command=DEFAULT_INVOKER):
-    root = Path(root or os.getcwd()).resolve()
+    root = repository_root(root or os.getcwd())
     profile = {"schema_version": PROFILE_VERSION}
 
     remote = parse_board_from_remote(remote_url(root))

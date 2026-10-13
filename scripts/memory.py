@@ -104,6 +104,8 @@ def repositories(profile):
     configured = profile.get("repositories")
     if configured:
         return [Path(p).expanduser() for p in configured]
+    if profile.get("_root"):
+        return [Path(profile["_root"]).expanduser()]
     path = profile.get("_path")
     return [Path(path).resolve().parent.parent] if path else [Path.cwd()]
 
