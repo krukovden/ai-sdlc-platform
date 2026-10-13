@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 from support import ScriptTestCase, load_script
-from fakeboard import crash_and_resume
+from fakeboard import Crash, crash_and_resume
 from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, World,
                           commit_push, design, git, integration_finding, lease, pbi,
                           phase3, run, shape, tags, write_blueprint)
@@ -519,6 +519,64 @@ VERDICT_PLAN = {"pbis": [bug_pbi("a")]}
 
 
 class RouteTests(IntegrationTestCase):
+
+    def test_a_verdict_crash_after_attach_reconciles_its_hash_event(self):
+        world = self.world(route="bug", approve=False, plan=VERDICT_PLAN)
+        title = run.memory.feature_file(FEATURE, "adr")
+        world.board.crash_when(lambda board: any(
+            d["title"] == title for d in board.attachments.get(FEATURE, [])))
+        with self.assertRaises(Crash):
+            world.runner().run_feature(FEATURE)
+        self.assertTrue(world.board.fault_fired)
+        self.assertFalse(world.events(FEATURE, integration.VERDICT))
+        uploads = world.board.uploads
+        attached = world.board.attachments[FEATURE][0]["content"]
+        list_attachments = world.board.list_attachments
+
+        def metadata_only(card):
+            return [{k: v for k, v in d.items() if k != "content"}
+                    for d in list_attachments(card)]
+
+        with mock.patch.object(world.board, "list_attachments", side_effect=metadata_only), \
+                mock.patch.object(world.board, "get_document",
+                                  wraps=world.board.get_document) as read:
+            self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+            read.assert_any_call(f"att-{uploads}")
+        events = world.events(FEATURE, integration.VERDICT)
+        self.assertEqual([e["sha256"] for e in events], [integration.plans.digest(attached)])
+        self.assertEqual(world.sessions["verdict"], [FEATURE])
+        self.assertEqual(len([d for d in world.board.attachments[FEATURE]
+                              if d["title"] == title]), 1)
+        before = world.board.snapshot()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.board.snapshot(), before)
+
+    def test_an_existing_verdict_needs_its_matching_hash_event(self):
+        for matching in (False, True):
+            with self.subTest(matching=matching):
+                world = self.world(route="bug", approve=False, plan=VERDICT_PLAN)
+                title = run.memory.feature_file(FEATURE, "adr")
+                world.board.attach_document(title, world.verdict, identifier=FEATURE)
+                digest = integration.plans.digest(world.verdict)
+                previous = digest if matching else integration.plans.digest("old verdict")
+                lease.post_event(world.board, FEATURE, integration.VERDICT,
+                                 f"{integration.VERDICT}:{previous}", sha256=previous)
+                self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+                self.assertEqual(len(world.events(FEATURE, integration.VERDICT,
+                                                  sha256=digest)), 1)
+                self.assertEqual(len(world.events(FEATURE, integration.VERDICT)),
+                                 1 if matching else 2)
+                self.assertNotIn("verdict", world.sessions)
+
+    def test_an_invalid_attached_verdict_is_blocked_before_planning(self):
+        world = self.world(route="bug", approve=False, plan=VERDICT_PLAN)
+        title = run.memory.feature_file(FEATURE, "adr")
+        world.board.attach_document(title, "---\ntype: verdict\n---\n",
+                                    identifier=FEATURE)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertFalse(world.events(FEATURE, integration.VERDICT))
+        self.assertNotIn("design", world.sessions)
+        self.assertIn("## Cause", world.events(FEATURE, lease.BLOCK)[-1]["reason"])
 
     def test_the_route_table_matches_the_adr(self):
         self.assertEqual({r: v["phases"] for r, v in state.ROUTE_TABLE.items()},

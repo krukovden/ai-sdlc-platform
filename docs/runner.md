@@ -126,7 +126,10 @@ the `design` role writes `.idp/verdict.md` — front matter `type: verdict`, the
 `## Cause`, `## Fix`, `## Risk`, at most 600 words — the runner checks it, attaches
 it in the ADR's place (`<card> · 00 · ADR — …`) and posts a `verdict` comment with
 its hash. Planning reads it as its ADR; a plan with more than one PBI is refused as
-an attempt.
+an attempt. If a run stops after attaching the verdict but before recording its
+hash, the next run reads and validates the attachment and posts the missing
+matching event without another architect session. An invalid attachment blocks
+planning until it is replaced.
 
 ### 3.1 Planning
 

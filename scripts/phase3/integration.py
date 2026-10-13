@@ -459,10 +459,34 @@ class Integration:
     # -- the bug route's verdict ----------------------------------------------
 
     def verdict(self, base):
-        """A short verdict instead of an ADR, with no review gate. EXIT.DONE once attached."""
+        """A short verdict with no review gate, complete once attached and hash-recorded."""
         dev = self.dev
         title = memory.feature_file(self.feature, "adr")
-        if any(d.get("title") == title for d in self.board.list_attachments(self.feature)):
+
+        def validate(text):
+            header = self.runner.state.parse_machine_header(text)
+            if header.get("type") != "verdict":
+                raise IntegrationError("the verdict's front matter is not `type: verdict`")
+            for section in ("## Cause", "## Fix", "## Risk"):
+                if section not in text:
+                    raise IntegrationError(f"the verdict has no `{section}` section")
+            if words_in(text) > VERDICT_MAX_WORDS:
+                raise IntegrationError(f"the verdict is {words_in(text)} words; a verdict "
+                                       f"is short, at most {VERDICT_MAX_WORDS}")
+            return text
+
+        attached = [d for d in self.board.list_attachments(self.feature)
+                    if d.get("title") == title]
+        if attached:
+            if len(attached) != 1:
+                return dev.block_feature("the bug has more than one verdict attachment. "
+                                         "FIX: keep exactly one valid verdict")
+            try:
+                text = validate(dev.adr_text(self.feature, "bug"))
+            except IntegrationError as exc:
+                return dev.block_feature(f"the attached verdict is invalid: {exc}. "
+                                         "FIX: replace it with a valid verdict")
+            self.record_verdict(title, text)
             return EXIT.DONE
         worktree = Path(self.runner.worktree_for(self.feature, "verdict", base))
         context = self.runner.write_context(self.feature, worktree)
@@ -479,29 +503,25 @@ class Integration:
         def read():
             if not target.exists():
                 raise IntegrationError(f"the session wrote no {VERDICT_FILE}")
-            text = target.read_text(encoding="utf-8")
-            header = self.runner.state.parse_machine_header(text)
-            if header.get("type") != "verdict":
-                raise IntegrationError("the verdict's front matter is not `type: verdict`")
-            for section in ("## Cause", "## Fix", "## Risk"):
-                if section not in text:
-                    raise IntegrationError(f"the verdict has no `{section}` section")
-            if words_in(text) > VERDICT_MAX_WORDS:
-                raise IntegrationError(f"the verdict is {words_in(text)} words; a verdict "
-                                       f"is short, at most {VERDICT_MAX_WORDS}")
-            return text
+            return validate(target.read_text(encoding="utf-8"))
 
         code, text = self.session("design", "verdict", worktree, prompt, context, read)
         if code != EXIT.DONE:
             return code
         self.board.attach_document(title, text, identifier=self.feature)
+        self.record_verdict(title, text)
+        return EXIT.DONE
+
+    def record_verdict(self, title, text):
+        sha256 = plans.digest(text)
+        if self.event(VERDICT, sha256=sha256):
+            return
         lease.post_event(self.board, self.feature, VERDICT,
-                         f"{VERDICT}:{plans.digest(text)}",
-                         text=(f"The verdict is attached as '{title}' ({plans.digest(text)}). "
+                         f"{VERDICT}:{sha256}",
+                         text=(f"The verdict is attached as '{title}' ({sha256}). "
                                "A bug's verdict has no review gate: planning cuts one PBI "
                                "from it now."),
-                         sha256=plans.digest(text))
-        return EXIT.DONE
+                         sha256=sha256)
 
     # -- one round of 3.3 ---------------------------------------------------
 
