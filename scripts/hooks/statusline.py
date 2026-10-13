@@ -94,10 +94,9 @@ def own_line(payload):
     parts = []
     context = dig(payload, "context_window", "used_percentage")
     five = dig(payload, "rate_limits", "five_hour", "used_percentage")
-    if context is not None:
-        parts.append(f"ctx {round(float(context))}%")
-    if five is not None:
-        parts.append(f"5h {round(float(five))}%")
+    for label, value in (("ctx", context), ("5h", five)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            parts.append(f"{label} {round(value)}%")
     return " · ".join(parts) or "idp"
 
 
@@ -107,23 +106,38 @@ def wrapped(state):
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (OSError, ValueError):
         return None
     return data.get("statusLine") if isinstance(data, dict) else None
 
 
+def command_of(entry):
+    """The shell command a `statusLine` setting runs: a dict's `command`, or a string."""
+    if isinstance(entry, str):
+        return entry.strip() or None
+    if isinstance(entry, dict) and isinstance(entry.get("command"), str):
+        return entry["command"].strip() or None
+    return None
+
+
 def chain(raw, state, run=subprocess.run):
-    """Run the wrapped status line on the same stdin. Its output, or None."""
-    previous = wrapped(state)
-    command = (previous or {}).get("command")
-    if not command:
-        return None
+    """Run the wrapped status line on the same stdin. Its output, or None.
+
+    None whenever it did not work — no wrapped line, a setting of an unknown
+    shape, a command that cannot start, times out or exits non-zero — so the
+    caller shows its own line instead and the status line never breaks.
+    """
     try:
+        command = command_of(wrapped(state))
+        if not command:
+            return None
         answer = run(command, shell=True, input=raw, capture_output=True, text=True,
                      timeout=CHAIN_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
+        if answer.returncode != EXIT.OK:
+            return None
+        return answer.stdout
+    except Exception:                                   # noqa: BLE001 - never break the line
         return None
-    return answer.stdout
 
 
 def show(raw, state, run=subprocess.run):
@@ -135,8 +149,8 @@ def show(raw, state, run=subprocess.run):
     if isinstance(payload, dict):
         try:
             record(payload, state)
-        except OSError:
-            pass                                        # never break the status line
+        except Exception:                               # noqa: BLE001 - never break the line
+            pass
     out = chain(raw, state, run)
     return out if out is not None else own_line(payload if isinstance(payload, dict) else {})
 
@@ -146,7 +160,7 @@ def show(raw, state, run=subprocess.run):
 # ---------------------------------------------------------------------------
 
 def ours(entry):
-    return isinstance(entry, dict) and MARK in str(entry.get("command") or "")
+    return MARK in (command_of(entry) or "")
 
 
 def install(settings_path, state, script=None, out=sys.stdout):
@@ -170,7 +184,7 @@ def install(settings_path, state, script=None, out=sys.stdout):
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     if current:
-        shown = str(current.get("command") if isinstance(current, dict) else current)
+        shown = command_of(current) or json.dumps(current)
         print(f"wrapped your status line — it still runs and still decides what you see; "
               f"the idp line records the numbers first:\n  {shown[:120]}"
               f"{'…' if len(shown) > 120 else ''}\nkept in {state / NEXT_FILE}; "

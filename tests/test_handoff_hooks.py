@@ -343,6 +343,49 @@ class LayerOneTests(unittest.TestCase):
         frame = self.frame(10)
         self.assertEqual(statusline.show(frame, self.state), frame)
 
+    def wrap(self, entry):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / statusline.NEXT_FILE).write_text(json.dumps({"statusLine": entry}),
+                                                       encoding="utf-8")
+
+    def test_a_string_status_line_is_a_command_too(self):
+        self.wrap("cat")
+        frame = self.frame(10)
+        self.assertEqual(statusline.show(frame, self.state), frame)
+
+    def test_a_failing_wrapped_line_falls_back_to_ours(self):
+        for entry in ({"type": "command", "command": "exit 7"}, "exit 7",
+                      {"type": "command", "command": "/nonexistent/statusline"},
+                      {"type": "command"}, 42, ["cat"]):
+            self.wrap(entry)
+            self.assertEqual(statusline.show(self.frame(42.4, 13.0), self.state),
+                             "ctx 42% · 5h 13%", entry)
+
+    def test_a_wrapped_line_that_hangs_or_cannot_start_falls_back(self):
+        def hangs(*args, **kwargs):
+            raise subprocess.TimeoutExpired("x", statusline.CHAIN_TIMEOUT)
+
+        self.wrap("sleep 60")
+        self.assertIsNone(statusline.chain(self.frame(1), self.state, run=hangs))
+        self.assertEqual(statusline.show(self.frame(1), self.state, run=hangs), "ctx 1%")
+        (self.state / statusline.NEXT_FILE).write_text("{not json", encoding="utf-8")
+        self.assertEqual(statusline.show(self.frame(1), self.state), "ctx 1%")
+
+    def test_odd_numbers_never_break_our_own_line(self):
+        self.assertEqual(statusline.own_line({"context_window": {"used_percentage": "x"}}),
+                         "idp")
+
+    def test_install_wraps_a_string_status_line_and_restores_it(self):
+        settings = self.root / "settings.json"
+        settings.write_text(json.dumps({"statusLine": "~/bin/my-line.sh"}), encoding="utf-8")
+        out = io.StringIO()
+        statusline.install(settings, self.state, script="/opt/idp/" + statusline.MARK, out=out)
+        self.assertIn("~/bin/my-line.sh", out.getvalue())
+        self.assertEqual(statusline.wrapped(self.state), "~/bin/my-line.sh")
+        statusline.uninstall(settings, self.state, out=io.StringIO())
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["statusLine"],
+                         "~/bin/my-line.sh")
+
     def test_install_wraps_the_existing_line_says_so_and_uninstall_restores_it(self):
         settings = self.root / "settings.json"
         orca = {"type": "command", "command": "/bin/sh ~/.orca/agent-hooks/claude-statusline.sh",
