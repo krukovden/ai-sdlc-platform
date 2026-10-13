@@ -137,7 +137,7 @@ silent default.
 | `project_id`, `workspace` | Board identifiers the adapter needs. |
 | `repositories` | Repositories the drift checks and docs may need to search. |
 | `approvers` | Humans at the gates, in order; the first gets the QA Testing PBI. |
-| `protected_branches` | Branches the runner never pushes to or merges into, on top of `main` and the remote default branch. |
+| `protected_branches` | Branches the runner never pushes to or merges into, on top of `main`, `master`, and the remote default branch resolved live with `git ls-remote --symref <remote> HEAD`. |
 | `memory_doc` | Legacy board document id kept so older profiles still validate; the feature registry is now `memory/index.md` in the product repository. |
 
 ### Azure DevOps-only keys

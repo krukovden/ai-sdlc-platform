@@ -39,7 +39,7 @@ MERGE_MARK = "idp-merge:"
 
 # Never a merge target, whatever the board says. The repository's default
 # branch and the profile's `protected_branches` join it at the call.
-PROTECTED = ("main",)
+PROTECTED = ("main", "master")
 HEADS = "refs/heads/"
 
 PROTECTED_KIND = "protected"
@@ -65,20 +65,33 @@ def branch_name(name):
     return text
 
 
-def protected_names(git, extra=()):
-    """`main`, the remote's default branch, and the profile's list — folded.
-
-    Folded because Azure Repos treats branch names without case: `Main` is the
-    branch `main` there.
-    """
+def protected_names(extra=()):
+    """The names protected without asking the remote, folded for Azure Repos."""
     names = {branch_name(n) for n in tuple(PROTECTED) + tuple(extra or ())}
+    return {n.casefold() for n in names if n}
+
+
+def authoritative_default_branch(git):
+    """The remote's default branch, or `MergeRefused` with a FIX line."""
+    remote = getattr(git, "remote", "origin")
     try:
         default = git.default_branch()
-    except GitError:
-        default = None
-    if default:
-        names.add(branch_name(default))
-    return {n.casefold() for n in names if n}
+    except GitError as exc:
+        detail = exc.stderr.strip() or str(exc)
+        raise MergeRefused(
+            f"the runner could not ask remote '{remote}' for its default branch "
+            f"(`git ls-remote --symref {remote} HEAD`): {detail}",
+            f"restore access to '{remote}' and make `git ls-remote --symref {remote} HEAD` "
+            "report `refs/heads/<branch>`; the runner refuses to push or merge without "
+            "that authoritative answer", INVALID_KIND)
+    default = branch_name(default)
+    if not default:
+        raise MergeRefused(
+            f"remote '{remote}' did not report a default branch from HEAD, so the runner "
+            "refuses to trust the clone's cached origin/HEAD",
+            f"set remote HEAD so `git ls-remote --symref {remote} HEAD` reports "
+            "`refs/heads/<branch>`, then retry", INVALID_KIND)
+    return default
 
 
 def writable_target(target, git, extra=()):
@@ -96,7 +109,15 @@ def writable_target(target, git, extra=()):
             "give the Feature a plain feature branch name on the board, such as "
             "feature/<id>-<slug>; the runner writes only to that branch and to "
             "pbi/* branches", INVALID_KIND)
-    if name.casefold() in protected_names(git, extra):
+    protected = protected_names(extra)
+    if name.casefold() in protected:
+        raise MergeRefused(
+            f"'{name}' is a protected branch: main, the repository's default branch or "
+            "one the profile lists under protected_branches. The runner never pushes or "
+            "merges into it",
+            "give the Feature its own feature branch on the board (feature/<id>-<slug>); "
+            "the human merges that into main after QA", PROTECTED_KIND)
+    if name.casefold() == authoritative_default_branch(git).casefold():
         raise MergeRefused(
             f"'{name}' is a protected branch: main, the repository's default branch or "
             "one the profile lists under protected_branches. The runner never pushes or "

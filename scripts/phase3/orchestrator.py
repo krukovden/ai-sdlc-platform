@@ -287,12 +287,13 @@ class Development:
         merges.writable_target(branch, self.git, self.profile.get("protected_branches"))
 
     def default_sha(self):
-        name = self.git.default_branch() or "main"
+        name = merges.authoritative_default_branch(self.git)
         sha = self.git.tracking(name) or self.git.remote_sha(name)
         if sha is None:
             raise self.runner.error(EXIT.BLOCKED, f"the remote has neither {self.feature_branch} "
                                                   f"nor a default branch to cut it from",
-                                    "push the product repository's main branch, then re-run")
+                                    f"push the product repository's default branch `{name}`, "
+                                    "then re-run")
         return sha
 
     def preflight(self):

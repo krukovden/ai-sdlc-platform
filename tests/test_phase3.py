@@ -1204,6 +1204,7 @@ class ProtectedTargetTests(Phase3TestCase):
         git(world.repo, "remote", "set-head", "origin", "trunk")
         world.profile = dict(world.profile, protected_branches=["release/2026"])
         for branch in ("main", "refs/heads/main", " main ", "Main", "refs/heads/ main",
+                       "master", "refs/heads/master", "Master",
                        "trunk", "refs/heads/trunk", "release/2026",
                        "refs/heads/release/2026", "refs/tags/v1", "HEAD", "bad..name"):
             with self.subTest(branch=branch):
@@ -1211,6 +1212,19 @@ class ProtectedTargetTests(Phase3TestCase):
                 self.assertEqual(world.runner().run_feature(FEATURE), EXIT.REFUSED)
         self.assertEqual(world.board.side_effects, 0)
         self.assertIsNone(world.remote_file("main", "src/a.py"))
+
+    def test_the_remote_default_branch_is_asked_live_not_taken_from_origin_head(self):
+        world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
+        git(world.remote, "branch", "trunk", "main")
+        git(world.remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+        cached = git(world.repo, "symbolic-ref", "refs/remotes/origin/HEAD")
+        self.assertEqual(cached, "refs/remotes/origin/main")
+        branch_on_board(world, "trunk")
+        out = io.StringIO()
+        self.assertEqual(world.runner(out=out).run_feature(FEATURE), EXIT.REFUSED)
+        self.assertIn("protected branch", out.getvalue())
+        self.assertEqual(world.board.side_effects, 0, "refused before the claim")
+        self.assertIsNone(world.remote_file("trunk", "src/a.py"))
 
     def test_refs_heads_on_a_feature_branch_is_normalized_not_refused(self):
         world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
@@ -1235,6 +1249,19 @@ class ProtectedTargetTests(Phase3TestCase):
         dev = phase3.Development(world.runner(), worktrees=world.home / "worktrees")
         with self.assertRaises(phase3.merge.MergeRefused):
             dev.before_push("main")
+
+    def test_a_target_is_refused_when_the_remote_default_branch_is_unknown(self):
+        class NoDefaultGit(StubGit):
+            remote = "origin"
+
+            def default_branch(self):
+                return None
+
+        with self.assertRaises(phase3.merge.MergeRefused) as caught:
+            phase3.merge.writable_target(FEATURE_BRANCH, NoDefaultGit())
+        self.assertEqual(caught.exception.kind, phase3.merge.INVALID_KIND)
+        self.assertIn("did not report a default branch", caught.exception.message)
+        self.assertIn("ls-remote --symref origin HEAD", caught.exception.fix)
 
 
 class FencingTests(Phase3TestCase):
