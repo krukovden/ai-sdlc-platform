@@ -765,6 +765,34 @@ lock.release()
         self.assertEqual(caught.exception.code, EXIT.REFUSED)
         self.assertIn("already starting or live", caught.exception.message)
 
+    def test_releasing_a_lock_never_unlinks_a_successors_inode(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        first = run.agent_mode.RunLock(home, "run-1").acquire()
+        second = run.agent_mode.RunLock(home, "run-1")
+        third = run.agent_mode.RunLock(home, "run-1")
+        original = Path.read_text
+        injected = {"done": False}
+
+        def racing_read_text(path, *args, **kwargs):
+            text = original(path, *args, **kwargs)
+            if path == first.presence.lock_file and not injected["done"]:
+                injected["done"] = True
+                second.acquire()
+            return text
+
+        with mock.patch.object(Path, "read_text", racing_read_text):
+            first.release()
+        if second.fd is None:
+            second.acquire()
+        self.assertTrue(second.presence.lock_file.exists())
+        with self.assertRaises(run.agent_mode.AgentError):
+            third.acquire()
+        second.release()
+        third.acquire()
+        third.release()
+
     def test_cmd_run_refuses_a_live_run_before_opening_the_board(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

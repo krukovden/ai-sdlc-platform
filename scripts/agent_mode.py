@@ -365,12 +365,21 @@ class Presence:
         directory = Path(home) / "agent"
         if not directory.exists():
             return []
-        runs = {path.stem for glob in ("*.pid", "*.lock") for path in directory.glob(glob)}
+        runs = {path.stem for path in directory.glob("*.pid")}
+        for path in directory.glob("*.lock"):
+            try:
+                holder = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if holder and holder != RunLock.FREE:
+                runs.add(path.stem)
         return sorted(runs, key=natural)
 
 
 class RunLock:
     """A process-lifetime local mutex for one run id."""
+
+    FREE = "free"
 
     def __init__(self, home, run_id):
         self.presence = Presence(home, run_id)
@@ -391,6 +400,8 @@ class RunLock:
                 holder = self.presence.lock_file.read_text(encoding="utf-8").strip()
             except OSError:
                 pass
+            if not holder.isdigit():
+                holder = ""
             raise AgentError(
                 EXIT.REFUSED,
                 f"run '{self.presence.run_id}' is already starting or live on this machine"
@@ -424,17 +435,13 @@ class RunLock:
         if self.fd is None:
             return
         try:
+            os.ftruncate(self.fd, 0)
+            os.write(self.fd, self.FREE.encode("utf-8"))
             if fcntl is not None:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
         finally:
             os.close(self.fd)
             self.fd = None
-        try:
-            holder = self.presence.lock_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            holder = None
-        if holder == str(self.pid) and self.presence.lock_file.exists():
-            self.presence.lock_file.unlink()
 
 
 def stop_signal(board, presence):
