@@ -86,12 +86,27 @@ def changed_lines(diff_text):
     return ranges
 
 
+def finding_path(raw, ranges):
+    """The diff's own name for a finding's file.
+
+    Only an exact `./` prefix is dropped, and a diff's `a/` or `b/` prefix only
+    when the name without it is in the diff: `.gitignore` and `.github/` are real
+    names, and stripping every leading dot would drop findings on them as noise.
+    """
+    path = str(raw or "")
+    while path.startswith("./"):
+        path = path[2:]
+    if path not in ranges and path[:2] in ("a/", "b/") and path[2:] in ranges:
+        path = path[2:]
+    return path
+
+
 def inside(finding, ranges):
     try:
         line = int(finding.get("line"))
     except (TypeError, ValueError):
         return False
-    path = str(finding.get("file") or "").lstrip("./")
+    path = finding_path(finding.get("file"), ranges)
     return any(first <= line <= last for first, last in ranges.get(path, ()))
 
 

@@ -850,6 +850,27 @@ class ReviewFilterTests(unittest.TestCase):
         self.assertEqual(len(sorted_["dropped"]), 2)
 
 
+    DOTFILES = ("diff --git a/.gitignore b/.gitignore\n--- a/.gitignore\n+++ b/.gitignore\n"
+                "@@ -1,0 +1,1 @@\n+build/\n"
+                "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
+                "--- a/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n"
+                "@@ -3,0 +4,2 @@\n+x\n+y\n")
+
+    def test_findings_on_dotfiles_are_kept(self):
+        review = phase3.review
+        found = [finding("high", ".gitignore", 1), finding("high", ".github/workflows/ci.yml", 5),
+                 finding("high", "./.gitignore", 1), finding("high", "b/.github/workflows/ci.yml", 4)]
+        sorted_ = review.triage(found, self.DOTFILES)
+        self.assertEqual(len(sorted_["blocking"]), 4)
+        self.assertEqual(sorted_["dropped"], [])
+
+    def test_a_leading_dot_is_never_stripped_into_another_name(self):
+        ranges = phase3.review.changed_lines(self.DOTFILES)
+        self.assertEqual(phase3.review.finding_path(".gitignore", ranges), ".gitignore")
+        self.assertEqual(phase3.review.finding_path("./.gitignore", ranges), ".gitignore")
+        self.assertFalse(phase3.review.inside(finding("high", "gitignore", 1), ranges))
+
+
 class StatesTests(unittest.TestCase):
 
     def test_the_catalog_move_is_called_with_allow_idp_and_json(self):
