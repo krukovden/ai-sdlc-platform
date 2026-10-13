@@ -391,7 +391,9 @@ def claim_pbi(board, pbi, run, worker, feature, status=None):
                            f"resolve the reason in its comments, then remove {BLOCKED}")
         if _held_by_other(card, mine) == mine:
             return tags, status
-        return _with(tags, owner_tag(mine)), status
+        # A paused PBI is taken at once, as a paused Feature is in `claim`.
+        kept = without_idp(tags, *[PAUSED_PREFIX + p for p in [paused_of(tags)] if p])
+        return _with(kept, owner_tag(mine)), status
 
     return _write(board, pbi, decide)
 
@@ -482,7 +484,12 @@ def release(board, identifier, run, status=None):
 
 
 def pause(board, identifier, run):
-    """Swap `idp:owner:<run>` for `idp:paused:<run>`: anyone may take it at once."""
+    """Swap `idp:owner:<run>` for `idp:paused:<run>`: anyone may take it at once.
+
+    A PBI is held by one of the run's workers, `idp:owner:<run>/w<N>`, and the
+    handoff layers pause it from that worker's session; the worker's tag goes
+    and the paused tag names the run, which is what the vocabulary has.
+    """
     run = check_run_id(run)
 
     def decide(card):
@@ -490,10 +497,10 @@ def pause(board, identifier, run):
         owner = owner_of(tags)
         if owner is None and paused_of(tags) == run:
             return tags, None
-        if owner != run:
+        if run_of(owner) != run:
             raise _Conflict(f"{identifier} is held by '{owner or 'nobody'}', not by "
                             f"'{run}'.", "only the owner pauses a card")
-        return _with(without_idp(tags, owner_tag(run)), PAUSED_PREFIX + run), None
+        return _with(without_idp(tags, owner_tag(owner)), PAUSED_PREFIX + run), None
 
     return _write(board, identifier, decide)
 

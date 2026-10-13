@@ -265,6 +265,29 @@ class PauseTests(ScriptTestCase):
         self.assertEqual(tags.claim(board, "1", B, tags.DESIGN)["outcome"], "written")
         self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(B)])
 
+    def pbi(self, *labels):
+        board = FakeBoard()
+        feature(board, "1", tags.DEVELOPMENT, tags.owner_tag(B))
+        board.add_card("2", labels, kind="pbi", parent="1")
+        return board
+
+    def test_a_worker_pauses_its_pbi_in_the_name_of_its_run(self):
+        # Handoff layers 2 and 3 pause from inside the worker's session.
+        board = self.pbi("idp:owner:run-a/w1", "sdlc:cid=x")
+        self.assertEqual(tags.pause(board, "2", A)["outcome"], "written")
+        self.assertEqual(board.cards["2"]["tags"], ["sdlc:cid=x", "idp:paused:run-a"])
+        self.assertEqual(tags.pause(board, "2", A)["outcome"], "unchanged")
+
+    def test_another_runs_worker_is_not_paused(self):
+        board = self.pbi("idp:owner:run-b/w1")
+        self.assertEqual(tags.pause(board, "2", A)["outcome"], "conflict")
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-b/w1"])
+
+    def test_a_paused_pbi_is_claimed_at_once_and_loses_the_paused_tag(self):
+        board = self.pbi("idp:paused:run-a")
+        self.assertEqual(tags.claim_pbi(board, "2", B, 3, feature="1")["outcome"], "written")
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-b/w3"])
+
 
 class ReapTests(ScriptTestCase):
 
