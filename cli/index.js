@@ -49,16 +49,47 @@ function files(root, relative, result = {}) {
   } else result[relative] = {data: fs.readFileSync(absolute), mode: stat.mode};
   return result;
 }
+function changedSinceJournal(journal, file) {
+  if (!journal.expected || !journal.discardRoot) return false;
+  const expected = journal.expected[file];
+  const live = expected && path.join(journal.discardRoot, file);
+  return Boolean(live && exists(live) && hash(fs.readFileSync(live)) !== expected);
+}
+function recoveryDecision(journal, file, options) {
+  if (!changedSinceJournal(journal, file)) return 'clean';
+  if (options.overwrite) return 'overwrite';
+  if (options['keep-local']) return 'keep-local';
+  throw new Error('Local edits preserved; use --keep-local or --overwrite');
+}
 // An install, update or uninstall is a transaction: the new payload is staged, a journal naming every
 // remaining step is made durable, and only then do live paths change. Each step is idempotent, so a
 // run that finds a journal simply finishes it. The previous payload is deleted after the receipt commits.
-function settle(state, base, journal) {
+function settle(state, base, journal, options = {}) {
   const staging = path.join(state, 'staging'), receiptFile = path.join(state, 'receipt.json');
   for (const file of journal.place) {
     const source = path.join(staging, file);
     if (!exists(source)) continue;
-    fs.mkdirSync(path.dirname(path.join(journal.payload, file)), {recursive: true});
-    fs.renameSync(source, path.join(journal.payload, file));
+    const target = path.join(journal.payload, file);
+    const live = journal.discardRoot && path.join(journal.discardRoot, file);
+    const decision = recoveryDecision(journal, file, options);
+    if (decision === 'keep-local') {
+      if (journal.receipt) journal.receipt.files[file] = journal.expected[file];
+      if (live !== target) {
+        write(source, fs.readFileSync(live));
+        fs.chmodSync(source, fs.lstatSync(live).mode);
+      } else continue;
+    }
+    fs.mkdirSync(path.dirname(target), {recursive: true});
+    fs.renameSync(source, target);
+  }
+  for (const file of journal.discard) {
+    const absolute = path.join(journal.discardRoot, file);
+    if (recoveryDecision(journal, file, options) !== 'keep-local' || !journal.receipt) continue;
+    journal.receipt.files[file] = journal.expected[file];
+    if (journal.payload !== journal.discardRoot && exists(absolute)) {
+      write(path.join(journal.payload, file), fs.readFileSync(absolute));
+      fs.chmodSync(path.join(journal.payload, file), fs.lstatSync(absolute).mode);
+    }
   }
   for (const [link, oldTarget] of Object.entries(journal.fromLinks)) {
     if (link in journal.toLinks) continue;
@@ -78,6 +109,11 @@ function settle(state, base, journal) {
   else { fs.rmSync(receiptFile, {force: true}); fs.rmSync(path.join(state, 'freshness.json'), {force: true}); }
   for (const file of journal.discard) {
     const absolute = path.join(journal.discardRoot, file);
+    const decision = recoveryDecision(journal, file, options);
+    if (decision === 'keep-local') {
+      if (!journal.receipt) continue;
+      if (journal.payload === journal.discardRoot) continue;
+    }
     removeBytecode(absolute, base);
     fs.rmSync(absolute, {force: true}); prune(path.dirname(absolute), base);
   }
@@ -119,10 +155,11 @@ async function run(argv, context = {}) {
   const receiptFile = path.join(state, 'receipt.json'), journalFile = path.join(state, 'journal.json');
   if (['install', 'update', 'uninstall'].includes(args.command) && exists(journalFile)) {
     const pending = read(journalFile);
-    settle(state, base, pending);
+    settle(state, base, pending, args);
     out(`Finished an interrupted ${pending.command}`);
   }
   const receipt = exists(receiptFile) ? read(receiptFile) : {targets: [], files: {}, links: {}};
+  if (args.command === 'uninstall' && !receipt.version) { out('Uninstalled; any explicitly kept local edits remain'); return; }
   const targets = args.target ? args.target === 'all' ? Object.keys(TARGETS) : [args.target] : receipt.targets.length ? receipt.targets : Object.keys(TARGETS);
   if (args.command === 'list') { out(`${catalog.name} ${pkg.version}`); catalog.skills.forEach(s => out(`skill ${s.name}`)); return; }
   if (args.command === 'check') {
@@ -210,10 +247,10 @@ async function run(argv, context = {}) {
     if (kept.has(file) && (uninstalling || samePayload)) return false;
     return !(samePayload && !uninstalling && desired[file]);
   }) : [];
-  const journal = {command: args.command, payload, place, fromLinks: receipt.links, toLinks: links, discard, discardRoot: receipt.payload,
+  const journal = {command: args.command, payload, place, expected: receipt.files, fromLinks: receipt.links, toLinks: links, discard, discardRoot: receipt.payload,
     receipt: uninstalling ? null : {version: pkg.version, source: catalog.source, payload, targets: activeTargets, files: hashes, links}};
   durable(journalFile, JSON.stringify(journal, null, 2) + '\n');
-  settle(state, base, journal);
+  settle(state, base, journal, args);
   if (uninstalling) { out('Uninstalled; any explicitly kept local edits remain'); return; }
   out(`Installed ${pkg.version}: ${activeTargets.join(', ')}. Add ${path.join(base, '.local/bin')} to PATH.`);
 }

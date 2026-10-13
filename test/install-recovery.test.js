@@ -159,6 +159,50 @@ test('update into existing version directory protects unmanaged files', async t 
   await assert.rejects(run(['update', '--yes'], ctx), new RegExp(`Unmanaged payload preserved: ${dest.replace(/\./g, '\\.')}`));
 });
 
+test('interrupted recovery revalidates edited files before replacing or deleting them', async t => {
+  await t.test('same-version update keeps a post-interruption edit unless overwrite is explicit', async () => {
+    const ctx = fixture(t);
+    await run(['install'], ctx);
+    const receipt = receiptOf(ctx);
+    const installed = path.join(receipt.payload, 'skills/design/SKILL.md');
+    fs.appendFileSync(path.join(ctx.root, 'skills/design/SKILL.md'), '\nrelease change\n');
+    const staged = path.join(ctx.home, '.idp/platform/staging/skills/design/SKILL.md');
+    const original = fs.renameSync;
+    let fired = false;
+    fs.renameSync = function (from, to) {
+      if (from === staged && to === installed) { fired = true; throw new Error('injected place'); }
+      return original.call(this, from, to);
+    };
+    try { await assert.rejects(run(['update', '--yes'], ctx), /injected place/); } finally { fs.renameSync = original; }
+    assert.ok(fired);
+    fs.appendFileSync(installed, '\nintervening edit\n');
+    await assert.rejects(run(['update', '--yes'], ctx), /Local edits preserved/);
+    await run(['update', '--keep-local'], ctx);
+    assert.match(fs.readFileSync(installed, 'utf8'), /intervening edit\n$/);
+    assert.match(await statusOf(ctx), /skills\/design\/SKILL.md: missing or edited locally/);
+  });
+  await t.test('uninstall keeps a post-interruption edit unless overwrite is explicit', async () => {
+    const ctx = fixture(t);
+    await run(['install'], ctx);
+    const receipt = receiptOf(ctx);
+    const installed = path.join(receipt.payload, 'skills/design/SKILL.md');
+    const original = fs.rmSync;
+    let fired = false;
+    fs.rmSync = function (target, options) {
+      if (target === installed) { fired = true; throw new Error('injected delete'); }
+      return original.call(this, target, options);
+    };
+    try { await assert.rejects(run(['uninstall', '--yes'], ctx), /injected delete/); } finally { fs.rmSync = original; }
+    assert.ok(fired);
+    fs.appendFileSync(installed, '\nintervening edit\n');
+    await assert.rejects(run(['uninstall', '--yes'], ctx), /Local edits preserved/);
+    await run(['uninstall', '--keep-local'], ctx);
+    assert.match(fs.readFileSync(installed, 'utf8'), /intervening edit\n$/);
+    assert.equal(fs.existsSync(path.join(ctx.home, '.claude')), false);
+    assert.equal(fs.existsSync(path.join(ctx.home, '.idp/platform/receipt.json')), false);
+  });
+});
+
 // --- recoverable update transaction -------------------------------------------------------
 
 const FAULTS = ['writeFileSync', 'mkdirSync', 'renameSync', 'symlinkSync', 'unlinkSync', 'rmSync', 'chmodSync', 'openSync', 'fsyncSync'];
