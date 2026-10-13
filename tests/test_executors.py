@@ -246,8 +246,9 @@ class EnvironmentTests(ScriptTestCase):
     def test_command_argv_switches_user_only_when_configured(self):
         wrapped = executors.environment.command_argv(
             ["copilot", "-p", "hi"], run_as="agent", current="idp")
-        self.assertEqual(wrapped[:6],
-                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent", "--"])
+        self.assertEqual(wrapped[:7],
+                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent",
+                          "--preserve-environment", "--"])
         plain = executors.environment.command_argv(
             ["copilot", "-p", "hi"], run_as=None, current="idp")
         self.assertEqual(plain, ["copilot", "-p", "hi"])

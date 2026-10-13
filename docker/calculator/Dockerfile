@@ -28,15 +28,17 @@ RUN git clone --depth 1 https://github.com/krukovden/engineering-catalog /opt/en
     && chmod 0440 /etc/sudoers.d/idp-runuser-agent
 
 WORKDIR /work/platform
-COPY --chown=idp:idpwork . /work/platform
+COPY --chown=root:root . /work/platform
 
 RUN mkdir -p /home/idp/.copilot/skills \
     && ln -s /opt/engineering-catalog/skills/shared/ado-board /home/idp/.copilot/skills/ado-board \
-    && chown -R idp:idpwork /work/platform /home/idp /home/agent \
-    && chmod -R g+rwX /work/platform /home/idp /home/agent
+    && mkdir -p /work/runs \
+    && chown -R idp:idpwork /home/idp /home/agent /work/runs \
+    && chmod -R a+rX /work/platform \
+    && chmod -R g+rwX /home/idp /home/agent /work/runs
 
 COPY docker/calculator/entrypoint.sh /usr/local/bin/idp-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/idp-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/idp-entrypoint.sh"]
-CMD ["python3", "docker/calculator/scenario.py"]
+CMD ["sleep", "infinity"]

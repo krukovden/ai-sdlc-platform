@@ -52,6 +52,13 @@ class CalculatorAdoTests(ScriptTestCase):
         )
         self.assertIn("does not support --dry", message)
 
+    def test_ado_mode_defaults_output_to_the_current_run_directory(self):
+        args = scenario.parse_args(
+            ["--board", "ado", "--org", "https://dev.azure.com/HAL-TSS",
+             "--project", "TSS-Orion", "--i-understand-this-writes"]
+        )
+        self.assertIsNone(args.out)
+
     def test_the_pat_is_redacted_from_captured_output(self):
         token = "secret-pat-value"
         text = scenario.redact_text(
@@ -154,10 +161,40 @@ class CalculatorAdoTests(ScriptTestCase):
         self.assertIn("docker stop \"$container_name\"", script)
         self.assertIn("docker inspect -f '{{.State.Running}}'", script)
 
-    def test_the_entrypoint_drops_from_root_to_idp(self):
+    def test_ado_mode_runs_the_scenario_in_a_long_lived_container_exec(self):
+        script = (Path(__file__).resolve().parents[1] / "docker" / "calculator" / "run.sh") \
+            .read_text(encoding="utf-8")
+        self.assertIn("host_runs_dir=$HOME/orca/docker/idp-ado-test", script)
+        self.assertIn("docker run -d --init", script)
+        self.assertIn("--volume \"$host_runs_dir:/work/runs\"", script)
+        self.assertIn("docker exec \\", script)
+        self.assertIn("-u idp \\", script)
+        self.assertIn("-e HOME \\", script)
+        self.assertIn("-e AZURE_DEVOPS_EXT_PAT \\", script)
+        self.assertIn("-e COPILOT_GITHUB_TOKEN \\", script)
+        self.assertIn("-w \"$ado_run_root\" \\", script)
+        self.assertIn("--out \"$ado_out\"", script)
+        self.assertIn("python3 /work/platform/docker/calculator/scenario.py", script)
+
+    def test_the_entrypoint_prepares_run_storage_and_drops_from_root_to_idp(self):
         script = (Path(__file__).resolve().parents[1] / "docker" / "calculator"
                   / "entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn("prepare_dir /work/runs", script)
+        self.assertIn("prepare_dir /work/platform/docker/calculator/out", script)
         self.assertIn("exec /usr/sbin/runuser -u idp -- \"$@\"", script)
+
+    def test_the_docker_image_keeps_the_platform_read_only_and_stays_idle(self):
+        dockerfile = (Path(__file__).resolve().parents[1] / "docker" / "calculator"
+                      / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("COPY --chown=root:root . /work/platform", dockerfile)
+        self.assertIn("chmod -R a+rX /work/platform", dockerfile)
+        self.assertIn('CMD ["sleep", "infinity"]', dockerfile)
+
+    def test_the_runbook_documents_parallel_exec_shells_and_shared_seat(self):
+        doc = (Path(__file__).resolve().parents[1] / "docs" / "experiments"
+               / "ado-robotics-run.md").read_text(encoding="utf-8")
+        self.assertIn("docker exec -it -u idp -e AZURE_DEVOPS_EXT_PAT -w /work/runs/<name> idp-ado-test bash", doc)
+        self.assertIn("two runs share one Copilot seat", doc)
 
 
 if __name__ == "__main__":

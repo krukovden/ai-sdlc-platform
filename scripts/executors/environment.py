@@ -186,6 +186,6 @@ def command_argv(argv, run_as=None, current=None, runuser="/usr/sbin/runuser", s
     holder = current if current is not None else current_user()
     if holder == user:
         return command
-    prefix = [runuser, "-u", user, "--"] if holder == "root" else \
-        [sudo, "-n", runuser, "-u", user, "--"]
+    prefix = [runuser, "-u", user, "--preserve-environment", "--"] if holder == "root" else \
+        [sudo, "-n", runuser, "-u", user, "--preserve-environment", "--"]
     return prefix + command

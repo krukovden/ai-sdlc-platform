@@ -70,6 +70,7 @@ ADO_GUARD_FILE = "ado-created-items.json"
 ADO_RUN_SECONDS = 7200
 ADO_SESSION_SECONDS = 1200
 VERIFY_TIMEOUT_SECONDS = 300
+ADO_RUN_NAME = "ado-robotics"
 
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Calculator Harness",
@@ -2202,8 +2203,9 @@ def parse_args(argv=None):
     parser.add_argument("--board", choices=("fake", "ado"), default="fake",
                         help="which board to exercise: fake (default) or ado")
     parser.add_argument("--dry", action="store_true", help="use scripted sessions instead of Copilot")
-    parser.add_argument("--out", default=str(Path(__file__).resolve().parent / "out"),
-                        help="directory for logs, worktrees and report.md")
+    parser.add_argument("--out",
+                        help="directory for logs, worktrees and report.md "
+                             "(default: docker/calculator/out for fake, ./out for ado)")
     experiment_common.add_target_arguments(parser)
     parser.add_argument("scenarios", nargs="*", choices=SCENARIOS,
                         help="scenario names; default: all in order")
@@ -2212,15 +2214,18 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    out = Path(args.out) if args.out else (
+        Path.cwd() / "out" if args.board == "ado"
+        else Path(__file__).resolve().parent / "out")
     if args.board == "ado":
         experiment_common.require_explicit(args)
         try:
-            return AdoScenarioRunner(Path(args.out), args).run()
+            return AdoScenarioRunner(out, args).run()
         except AdoScenarioFailure as exc:
             ado.fail(EXIT.INVALID, str(exc),
                      fix="correct the live-run configuration or inspect the archived evidence")
     selected = args.scenarios or list(SCENARIOS)
-    runner = ScenarioRunner(Path(args.out), dry=args.dry)
+    runner = ScenarioRunner(out, dry=args.dry)
     return runner.run(selected)
 
 

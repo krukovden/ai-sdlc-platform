@@ -40,27 +40,56 @@ Prerequisites:
    docker/calculator/run.sh ado
    ```
 
-The script builds `docker/calculator/Dockerfile`, starts the named container
-`idp-ado-test` without `--rm`, mounts `docker/calculator/out/`, and runs:
+The script builds `docker/calculator/Dockerfile`, creates the named container
+`idp-ado-test` if needed as a detached `sleep infinity` keep-alive, binds
+`~/orca/docker/idp-ado-test/` to `/work/runs/`, and then runs the scenario with
+`docker exec` as user `idp`. The container itself starts with **no board or
+Copilot secret in its environment**; `AZURE_DEVOPS_EXT_PAT` and
+`COPILOT_GITHUB_TOKEN` are passed only to the one `docker exec` that runs the
+scenario.
+
+The live run's own state is kept under:
+
+```text
+/work/runs/ado-robotics/
+```
+
+That directory holds the run-local `HOME`, `.idp`, worktrees, product
+repository, bare remote, logs and reports. Another run can use
+`/work/runs/<other>/` in the same container without colliding with it.
+
+The scenario command is:
 
 ```bash
-python3 docker/calculator/scenario.py \
+python3 /work/platform/docker/calculator/scenario.py \
   --board ado \
   --org https://dev.azure.com/HAL-TSS \
   --project TSS-Orion \
+  --out /work/runs/ado-robotics/out \
   --i-understand-this-writes
 ```
 
 Reuse the stopped container instead of recreating it:
 
 ```bash
-docker start -ai idp-ado-test
+docker start idp-ado-test
 ```
 
 Inside the image, `/usr/local/bin/idp-entrypoint.sh` starts as root only long
-enough to make the shared output directory group-writable and drop to `idp`.
+enough to make `/work/runs/` group-writable and drop to `idp`.
 From there the platform uses `sudo ... runuser -u agent -- ...` only for the
 profiled `run_as` commands.
+
+To inspect or run something else in parallel inside the same container, start it
+and open another shell rooted in a separate run directory:
+
+```bash
+docker start idp-ado-test
+docker exec -it -u idp -e AZURE_DEVOPS_EXT_PAT -w /work/runs/<name> idp-ado-test bash
+```
+
+two runs share one Copilot seat, so parallel work in one container must be
+planned with that rate limit in mind.
 
 ## What it proves
 
@@ -79,7 +108,9 @@ The live run proves the real Azure DevOps path that the fake-board harness canno
 
 ## Read the output
 
-The run writes these files under `docker/calculator/out/`:
+The run writes these files under `/work/runs/ado-robotics/out/` on the
+container side, which is `~/orca/docker/idp-ado-test/ado-robotics/out/` on the
+host:
 
 | File | Meaning |
 | --- | --- |
@@ -93,5 +124,5 @@ matching timestamp in `ado-run.log`.
 
 If the container is started again, the previous `ado-run.log`, `ado-report.md`,
 `problems.md`, guard file and `work/ado/` tree are moved under
-`docker/calculator/out/archive/<timestamp>/` before the next run starts, so a
-restart never erases earlier evidence.
+`/work/runs/ado-robotics/out/archive/<timestamp>/` before the next run starts,
+so a restart never erases earlier evidence.

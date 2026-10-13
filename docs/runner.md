@@ -489,6 +489,9 @@ backend and witness runner wrap commands with `runuser`:
   sign-in variables;
 - witnesses, integration build/test, and scanners run as the configured
   non-model user, with the witness allowlist only;
+- `runuser --preserve-environment` keeps the run-local `HOME`, so a long-lived
+  container may give each run its own home and `.idp` tree even when several
+  runs share one `agent` account;
 - if the current process already is that user, nothing is wrapped.
 
 The live ADO calculator image uses that mode with two accounts: `idp` holds the

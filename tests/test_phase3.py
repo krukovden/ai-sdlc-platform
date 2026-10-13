@@ -1348,8 +1348,9 @@ class PinnedWitnessSchemaTests(unittest.TestCase):
                                       run=runner, clock=lambda: 0.0)
             record = finalizer.execute(repo, "AC-1", "echo ok", 10, "M")
         self.assertEqual(record["exit"], 0)
-        self.assertEqual(seen[0][0][:6],
-                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent", "--"])
+        self.assertEqual(seen[0][0][:7],
+                         ["sudo", "-n", "/usr/sbin/runuser", "-u", "agent",
+                          "--preserve-environment", "--"])
 
     class BugRepo:
         def __init__(self, path, plan_text):
