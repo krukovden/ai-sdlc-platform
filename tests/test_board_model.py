@@ -437,6 +437,28 @@ class ReapTests(ScriptTestCase):
         self.assertEqual(len(beats), 1)
         self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
 
+    def test_an_interrupted_reacquisition_renews_even_after_a_heartbeat_of_the_earlier_hold(self):
+        # The reviewer's R1 cases: a heartbeat in the previous hold, then a release,
+        # 61 minutes, a crash after the owner-tag write; and the same twice in a row.
+        for bumps in (False, True):
+            with self.subTest(comment_bumps_rev=bumps):
+                board = FakeBoard(comment_bumps_rev=bumps)
+                feature(board, "1", tags.DESIGN)
+                lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+                lease.heartbeat(board, "1", A, 1)
+                for _ in range(2):
+                    self.assertEqual(tags.release(board, "1", A)["outcome"], "written")
+                    board.advance(61)
+                    board.crash_after(1)
+                    with self.assertRaises(Crash):
+                        lease.claim(board, "1", A, tags.DESIGN, profile=HASH, base="original")
+                    board.disarm()
+                    self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH,
+                                                 base="replacement")["outcome"], "unchanged")
+                    self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+                claims = lease.events(board.list_comments("1"), lease.CLAIM)
+                self.assertEqual([c["base"] for c in claims], ["original"])
+
     def test_a_second_stop_pause_that_dedupes_still_renews_the_resumed_lease(self):
         board = FakeBoard()
         feature(board, "1", tags.DESIGN)

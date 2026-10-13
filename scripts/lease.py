@@ -346,10 +346,18 @@ def _claim_key(board, identifier, run, phase, result):
             return candidate, n, None
         if _missing_claim_for_current_hold(board, identifier, run, prior[-1]):
             return candidate, n, None
+        # `unchanged` means this run already holds the owner tag and is alive right
+        # now. Whatever happened in between — a release, a pause whose comment
+        # deduped, a heartbeat of an earlier hold — a lease this run's last sign of
+        # life has let age past half its term is renewed here, before anything can
+        # reap it. Renewal is a heartbeat, not a new claim: the pinned claim facts
+        # stay. A fresh lease (a retry right after a crash) gets nothing, so a
+        # resumed run leaves the same board as a clean one.
         renewed = None
-        if _renewed_claim_for_current_hold(board, identifier, run, prior[-1], result):
+        if _lease_ageing(board, identifier, run, result):
             renewed = f"{HEARTBEAT}:{run}:claim:r{result.get('rev')}"
         return prior[-1]["key"], n, renewed
+
     return base, n, None
 
 
@@ -371,28 +379,15 @@ def _missing_claim_for_current_hold(board, identifier, run, latest):
     return False
 
 
-def _renewed_claim_for_current_hold(board, identifier, run, latest, result):
-    """Whether an unchanged owner can prove a later reacquisition by revision gap.
-
-    A retry after the first claim's own comment may see one extra revision when
-    comments move the card revision, but a release/pause followed by a fresh
-    owner-tag write moves it farther. Only that wider gap renews the lease
-    without replacing the claim's pinned facts.
-    """
-    found_latest = False
-    for event in events(board.list_comments(identifier)):
-        if event.get("key") == latest.get("key"):
-            found_latest = True
-            continue
-        if found_latest and event.get("run") == run and \
-                event.get("kind") in (HEARTBEAT, CLAIM, TAKEOVER):
-            return False
-    try:
-        latest_rev = int(latest.get("rev"))
-        current_rev = int(result.get("rev"))
-    except (TypeError, ValueError):
-        return False
-    return current_rev > latest_rev + 1
+def _lease_ageing(board, identifier, run, result):
+    """Whether this run's last sign of life on the card is older than half a lease."""
+    card = dict(result.get("card") or {})
+    card.setdefault("identifier", str(identifier))
+    seen = last_sign_of_life(board, card, run)
+    now = parse_time(board.server_now())
+    if seen is None or now is None:
+        return True
+    return (now - seen).total_seconds() > LEASE_MINUTES * 60 / 2
 
 
 def generation(board, identifier):
