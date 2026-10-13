@@ -146,17 +146,20 @@ is `subprocess`. Naming `orca` explicitly is refused with a FIX.
 
 `subprocess` launches:
 
-| Agent | Command |
-| -- | -- |
-| claude | `claude -p <prompt> --output-format stream-json --verbose --permission-mode bypassPermissions [--model M]` |
-| codex | `codex exec --full-auto --skip-git-repo-check [-m M] <prompt>` |
-| copilot | `copilot -p <prompt> --allow-all-tools [--model M]` |
-| cursor | `cursor-agent -p <prompt> --force [--model M]` |
-| opencode | `opencode run [-m M] <prompt>` |
-| gemini | `gemini -p <prompt> --yolo [-m M]` |
+| Agent | Command | Status |
+| -- | -- | -- |
+| claude | `claude -p <prompt> --output-format stream-json --verbose --permission-mode bypassPermissions [--model M]` | written against the docs |
+| codex | `codex exec --full-auto --skip-git-repo-check [-m M] <prompt>` | written against the docs |
+| copilot | `copilot -p <prompt> --allow-all-tools [--model M]` | **unverified until experiment 6** |
+| cursor | `cursor-agent -p <prompt> --force [--model M]` | **unverified until experiment 6** |
+| opencode | `opencode run [-m M] <prompt>` | **unverified until experiment 6** |
+| gemini | `gemini -p <prompt> --yolo [-m M]` | **unverified until experiment 6** |
 
-These flags are not yet confirmed against the live tools. Experiments 4 and 6 of
-the ADR record what each tool actually does.
+No flag here has been confirmed against a live tool; experiments 4 and 6 of the
+ADR record what each one actually does. The four marked unverified
+(`agents.UNVERIFIED`) count as available **only when their probe ran and
+passed** — a resolver with no probe to ask never picks them. An agent leaves
+that set only with its experiment record written here.
 
 The environment a session starts with is an allowlist: `PATH`, `HOME`, locale,
 proxies, CA bundles, the agent's own sign-in variables (`ANTHROPIC_*` for

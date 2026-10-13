@@ -116,6 +116,34 @@ class ResolutionTableTests(ScriptTestCase):
         self.assertEqual(len(probes), len(set(probes)))
 
 
+class UnverifiedAgentTests(ScriptTestCase):
+    """Agents whose command lines experiment 6 has not confirmed are never assumed."""
+
+    def test_the_unverified_set_is_the_agents_the_suite_never_launched(self):
+        self.assertEqual(executors.agents.UNVERIFIED,
+                         {"copilot", "cursor", "opencode", "gemini"})
+
+    def test_an_unverified_agent_without_a_probe_is_unavailable(self):
+        handle = executors.Resolver(SPEC_EXECUTORS, launchable=lambda agent: True)
+        self.assertFalse(handle.available(Choice("copilot", "gpt")))
+        self.assertTrue(handle.available(Choice("claude", "opus")))
+        self.assertEqual(str(handle.resolve("review", author="codex")), "claude:opus")
+
+    def test_an_unverified_agent_whose_probe_passes_is_available(self):
+        handle = executors.Resolver(SPEC_EXECUTORS, launchable=lambda agent: True,
+                                    probe=lambda choice: True)
+        self.assertEqual(str(handle.resolve("review", author="codex")), "copilot:gpt")
+
+    def test_the_real_resolver_always_probes(self):
+        asked = []
+        handle = executors.default_resolver(
+            SPEC_EXECUTORS, which=lambda binary: "/bin/" + binary,
+            run=lambda argv, **kw: asked.append(argv[0]) or type(
+                "Answer", (), {"returncode": EXIT.NO})())
+        self.assertFalse(handle.available(Choice("copilot", "gpt")))
+        self.assertEqual(asked, ["copilot"])
+
+
 class ParallelTests(ScriptTestCase):
 
     def test_a_busy_agent_at_its_cap_gives_way_to_the_next_entry(self):

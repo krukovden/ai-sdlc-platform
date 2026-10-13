@@ -21,6 +21,8 @@ failure, never an unreviewed merge.
 import re
 from collections import namedtuple
 
+from .agents import UNVERIFIED
+
 AGENTS = ("claude", "codex", "copilot", "cursor", "opencode", "gemini")
 ROLES = ("design", "worker", "review", "integration")
 
@@ -82,7 +84,7 @@ class Resolver:
                       for role, entries in (executors.get("roles") or {}).items()}
         self.parallel = dict(executors.get("parallel") or {})
         self.launchable = launchable or (lambda agent: False)
-        self.probe = probe or (lambda choice: True)
+        self.probe = probe
         self._launchable = {}
         self._available = {}
 
@@ -94,10 +96,17 @@ class Resolver:
         return self._launchable[agent]
 
     def available(self, choice):
+        """Launchable, and past the probe. With no probe to ask, an agent whose
+        command line is still unverified (agents.UNVERIFIED) is not available."""
         choice = as_choice(choice)
         if choice not in self._available:
-            self._available[choice] = self.can_launch(choice.agent) and bool(
-                self.probe(choice))
+            if not self.can_launch(choice.agent):
+                answer = False
+            elif self.probe is None:
+                answer = choice.agent not in UNVERIFIED
+            else:
+                answer = bool(self.probe(choice))
+            self._available[choice] = answer
         return self._available[choice]
 
     # -- resolution ---------------------------------------------------------

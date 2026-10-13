@@ -11,6 +11,13 @@ launcher is a different backend (IDE-147 build step 6).
 
 PROBE_TIMEOUT = 60
 
+# **Unverified until experiment 6** of IDE-147: these command lines are written
+# from the tools' documentation and have never launched a session here. Such an
+# agent is never taken on faith — it counts as available only when its probe
+# actually ran and passed (see `roles.Resolver.available`). Move an agent out
+# of this set only with the experiment's record in docs/runner.md.
+UNVERIFIED = frozenset({"copilot", "cursor", "opencode", "gemini"})
+
 BINARIES = {
     "claude": "claude",
     "codex": "codex",
