@@ -99,7 +99,7 @@ class Finalizer:
     def prepare(self, wt, branch, mention):
         """Step 1: the remote tip of the claimed branch, without `handoff.md`."""
         wt.fetch()
-        tip = wt.remote_sha(branch)
+        tip = wt.tracking(branch)
         if tip is None:
             return None, Outcome(DEFECT, f"the branch {branch} is not on the remote: the "
                                          "worker pushed nothing")
@@ -141,7 +141,7 @@ class Finalizer:
             plan = plans.read_pinned(wt, pinned)
         except plans.PlanError as exc:
             return Outcome(MALFORMED, f"the pinned plan cannot be read: {exc}"), []
-        if pinned["path"] in wt.changed_files(feature_sha, merged):
+        if pinned["path"] in self.changed(wt, feature_sha, merged):
             return Outcome(DEFECT, f"the PBI's diff touches {pinned['path']}, the plan "
                                    "finalize reads its witnesses from; revert that change"), []
         entry = plans.entry(plan, key)
@@ -205,9 +205,15 @@ class Finalizer:
 
     # -- steps 4 and 5 ------------------------------------------------------
 
+    def changed(self, wt, feature_sha, merged):
+        key = (str(wt.path), feature_sha, merged)
+        if getattr(self, "_changed", (None,))[0] != key:
+            self._changed = (key, wt.changed_files(feature_sha, merged))
+        return self._changed[1]
+
     def outside(self, wt, feature_sha, merged, declared):
         planning = planning_module()
-        changed = wt.changed_files(feature_sha, merged)
+        changed = self.changed(wt, feature_sha, merged)
         return [path for path in changed
                 if not any(planning.paths_overlap(path, d) for d in declared or [])]
 
@@ -230,7 +236,7 @@ class Finalizer:
             if failed:
                 return failed
             return self.test(wt, branch, feature_branch, pinned, key, declared, mention,
-                             pbi_sha)
+                             pbi_sha, feature_sha=wt.tracking(feature_branch))
         except (GitError, OSError, subprocess.SubprocessError) as exc:
             return Outcome(INFRA, f"finalize could not reach git: {exc}")
 
@@ -240,7 +246,7 @@ class Finalizer:
         try:
             if feature_sha is None:
                 wt.fetch()
-                feature_sha = wt.remote_sha(feature_branch)
+                feature_sha = wt.tracking(feature_branch)
             merged, failed = self.merge(wt, branch, feature_sha, mention, feature_branch)
             if failed:
                 return failed

@@ -72,6 +72,18 @@ class Git:
                 return sha.strip()
         return None
 
+    def tracking(self, branch):
+        """The branch's tip as the last fetch saw it: the remote's answer, read offline.
+
+        Only ever read right after `fetch`, which is what makes it the remote's
+        tip and not a guess; it saves asking the remote twice in one breath.
+        """
+        answer = self.run("rev-parse", "--verify", "-q",
+                          f"refs/remotes/{self.remote}/{branch}", check=False)
+        if answer.returncode != EXIT.OK:
+            return None
+        return answer.stdout.strip() or None
+
     def default_branch(self):
         out = self.run("ls-remote", "--symref", self.remote, "HEAD")
         for line in out.splitlines():
@@ -86,6 +98,7 @@ class Git:
         """
         args = ["push", self.remote, f"{sha}:refs/heads/{branch}"]
         if expect is not None:
+            # An empty `expect` is "the branch must not exist yet": create, never move.
             args.insert(1, f"--force-with-lease=refs/heads/{branch}:{expect}")
         answer = self.run(*args, check=False)
         if answer.returncode == EXIT.OK:

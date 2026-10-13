@@ -1,0 +1,829 @@
+"""Phase 3, 3.1 planning and 3.2 building, end to end (IDE-147, build step 3).
+
+The board is the fake board, which honours `test /rev`; git is real, with a
+bare repository as the remote; the model is a scripted executor that runs the
+real planning.py for the planning session and commits and pushes for a worker.
+Everything between them — claims, generations, finalize and its witnesses, the
+outcome routes, the review filter, the tested-SHA merges, the counters — is the
+runner's real code.
+"""
+
+import io
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from support import ScriptTestCase
+from fakeboard import Crash, crash_and_resume
+from phase3_world import (EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, World, crashes,
+                          default_plan, design, finding, git, lease, ok, pbi, phase3,
+                          planning, reports, run, shape, tags, witness_for)
+
+fin = phase3.finalize
+orchestrator = phase3.orchestrator
+
+
+class Phase3TestCase(ScriptTestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for patch in (mock.patch.dict(os.environ, GIT_ENV),
+                      mock.patch.object(design, "HOME", self.root / "idp")):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.count = 0
+
+    def world(self, **kwargs):
+        self.count += 1
+        return World(self.root / f"world-{self.count}", **kwargs)
+
+    def labels(self, world, key):
+        return world.board.cards[world.items()[key]["id"]]["tags"]
+
+    def status(self, world, key):
+        return world.board.cards[world.items()[key]["id"]]["status"]
+
+    def attempts(self, world, key):
+        card = world.items()[key]["id"]
+        return [e["cause"] for e in world.events(card, orchestrator.ATTEMPT)]
+
+
+# ---------------------------------------------------------------------------
+# 3.1 Planning
+# ---------------------------------------------------------------------------
+
+class PlanningTests(Phase3TestCase):
+
+    def test_planning_creates_the_board_shape_qa_testing_included(self):
+        world = self.world()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        items = world.items()
+        self.assertEqual(sorted(items), ["a", "b", "c", shape.QA_KEY])
+        for key in ("a", "b", "c"):
+            tasks = shape.tasks_of(world.board, items[key]["id"])
+            self.assertEqual(len(tasks), 1)
+            self.assertIn("grep -q", tasks[0][1]["description"])      # its witness
+        qa = items[shape.QA_KEY]
+        self.assertEqual(qa["meta"]["depends_on"], ["a", "b", "c"])
+        self.assertEqual([t[1]["title"] for t in shape.tasks_of(world.board, qa["id"])],
+                         ["[Task] Write test cases and Playwright",
+                          "[Task] Run the feature's tests"])
+
+    def test_the_plan_is_committed_and_its_hash_pinned_in_the_planning_comment(self):
+        world = self.world()
+        world.runner().run_feature(FEATURE)
+        pin = phase3.plan.pinned(world.board, FEATURE)
+        text = git(world.remote, "show", f"{pin['commit']}:{pin['path']}") + "\n"
+        self.assertEqual(phase3.plan.digest(text), pin["sha256"])
+        self.assertEqual(json.loads(text), world.plan)
+        self.assertEqual(pin["branch"], FEATURE_BRANCH)
+
+    def test_the_feature_journal_is_one_replaced_attachment(self):
+        world = self.world()
+        world.runner().run_feature(FEATURE)
+        title = run.memory.feature_file(FEATURE, "history")
+        journals = [d for d in world.board.attachments[FEATURE] if d["title"] == title]
+        self.assertEqual(len(journals), 1)
+        content = journals[0]["content"]
+        self.assertIn("## Development", content)
+        self.assertIn("Planning cut 3 PBIs", content)
+        self.assertIn("Building done", content)
+
+    def test_phase_three_refuses_without_the_approved_adr(self):
+        world = self.world(approve=False)
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.REFUSED)
+        self.assertEqual(world.board.side_effects, 0)
+
+    def test_an_adr_edited_after_approval_is_refused(self):
+        world = self.world()
+        world.board.attachments[FEATURE][0]["content"] += "\nedited\n"
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.REFUSED)
+        self.assertEqual(world.board.side_effects, 0)
+
+    def test_the_small_feature_route_needs_no_adr(self):
+        world = self.world(route="small-feature",
+                           plan={"pbis": [pbi("a", )]})
+        world.plan["pbis"][0]["adr_sections"] = ["Storage"]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.status(world, "a"), "Resolved")
+
+    def test_a_plan_the_runner_refuses_is_an_attempt_and_three_block(self):
+        # The session says done, and the runner finds no coverage review for the
+        # plan: the runner's own check refuses it, and counts.
+        world = self.world()
+        world.skip_finalize = True
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        causes = [e["cause"] for e in world.events(FEATURE, orchestrator.ATTEMPT,
+                                                    phase="planning")]
+        self.assertEqual(causes, ["plan"] * 3)
+        self.assertIn(tags.BLOCKED, world.board.cards[FEATURE]["tags"])
+        self.assertIn(tags.DEVELOPMENT, world.board.cards[FEATURE]["tags"])
+
+    def test_the_planning_cache_rebuilds_from_the_context(self):
+        # Under the runner a missing state.json is a session reopened from the
+        # card, never exit 3 or 4.
+        world = self.world()
+        context = self.root / "ctx"
+        context.mkdir()
+        issue = world.board.get_issue(FEATURE)
+        (context / "card.json").write_text(json.dumps(
+            {"issue": issue, "answer": {"identifier": FEATURE, "phase": "planning",
+                                        "position": "active"}, "profile": PROFILE}))
+        (context / "adr.md").write_text(world.board.attachments[FEATURE][0]["content"])
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"IDP_CONTEXT_DIR": str(context),
+                                          "PLANNING_HOME": str(self.root / "cache")}), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", io.StringIO()):
+            planning.main(["context", FEATURE, "--json"])
+        self.assertEqual(json.loads(out.getvalue())["feature"], FEATURE)
+        self.assertTrue((self.root / "cache" / FEATURE / "state.json").exists())
+
+
+# ---------------------------------------------------------------------------
+# 3.2 Building
+# ---------------------------------------------------------------------------
+
+class BuildingTests(Phase3TestCase):
+
+    def test_every_pbi_merges_and_the_qa_testing_pbi_is_never_worked(self):
+        world = self.world()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        items = world.items()
+        for key in ("a", "b", "c"):
+            card = world.board.cards[items[key]["id"]]
+            self.assertEqual(card["status"], "Resolved")
+            self.assertIsNone(tags.owner_of(card["tags"]))
+            self.assertEqual(world.remote_file(FEATURE_BRANCH, f"src/{key}.py"), "VALUE = 1\n")
+        qa = world.board.cards[items[shape.QA_KEY]["id"]]
+        self.assertEqual((qa["status"], qa["tags"]), ("New", []))
+        self.assertNotIn(items[shape.QA_KEY]["id"], world.sessions["worker"])
+        feature = world.board.cards[FEATURE]["tags"]
+        self.assertEqual(feature, [tags.DEVELOPMENT])                 # released, waiting
+        self.assertTrue(world.events(FEATURE, orchestrator.BUILT))
+
+    def test_a_dependency_runs_only_after_what_it_waits_on_merged(self):
+        world = self.world()
+        world.runner().run_feature(FEATURE)
+        ids = {k: i["id"] for k, i in world.items().items()}
+        order = world.sessions["worker"]
+        self.assertLess(order.index(ids["a"]), order.index(ids["c"]))
+        merged_a = world.events(ids["a"], orchestrator.MERGED)[0]["head"]
+        claim_c = world.events(ids["c"], lease.CLAIM)[0]
+        self.assertEqual(claim_c["base"], merged_a)
+
+    def test_the_claim_comment_records_base_branch_generation_and_profile(self):
+        world = self.world()
+        world.runner().run_feature(FEATURE)
+        card = world.items()["a"]["id"]
+        claim = world.events(card, lease.CLAIM)[0]
+        self.assertEqual(claim["generation"], 1)
+        self.assertEqual(claim["owner"], "run-1/w1")
+        self.assertTrue(claim["branch"].startswith(f"pbi/{card}-module-a/g1"))
+        self.assertEqual(claim["profile"], run.board_cli.profile_hash(PROFILE))
+        self.assertEqual(len(claim["base"]), 40)
+
+    def test_running_twice_changes_nothing_the_second_time(self):
+        world = self.world()
+        world.runner().run_feature(FEATURE)
+        before, effects = world.board.snapshot(), world.board.side_effects
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.board.snapshot(), before)
+        self.assertEqual(world.board.side_effects, effects)
+        self.assertEqual(world.executor_.calls, [])
+
+    def test_parallel_workers_are_capped_per_agent(self):
+        # codex may run two at once; the third ready PBI goes to the next agent
+        # with a free slot, and nothing waits for a cap that is not full.
+        world = self.world(plan={"pbis": [pbi("a"), pbi("b"), pbi("x")]})
+        world.runner(executor=world.executor(
+            executors_profile={"roles": {"worker": ["codex:gpt-5"],
+                                         "review": ["copilot:gpt-4.1", "codex:gpt-5"]},
+                               "parallel": {"codex": 2, "copilot": 1}},
+            available=["codex", "copilot"])).run_feature(FEATURE)
+        calls = [c for c in world.executor_.calls if c["role"] != "design"]
+        self.assertEqual([(c["role"], c["choice"]) for c in calls[:4]],
+                         [("worker", "codex:gpt-5"), ("worker", "codex:gpt-5"),
+                          ("worker", "copilot:gpt-4.1"), ("review", "copilot:gpt-4.1")])
+
+        capped = self.world(plan={"pbis": [pbi("a"), pbi("b")]})
+        capped.runner(executor=capped.executor(
+            executors_profile={"roles": {"worker": ["codex:gpt-5"],
+                                         "review": ["codex:o3"]},
+                               "parallel": {"codex": 1}},
+            available=["codex"])).run_feature(FEATURE)
+        roles = [c["role"] for c in capped.executor_.calls if c["role"] != "design"]
+        self.assertEqual(roles[:3], ["worker", "review", "worker"])
+
+    def test_real_threads_build_the_same_feature(self):
+        world = self.world()
+        code = world.runner(pool=orchestrator.ThreadPool()).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.DONE)
+        self.assertTrue(all(self.status(world, k) == "Resolved" for k in ("a", "b", "c")))
+
+    def test_the_termination_rule_blocks_the_feature_naming_what_waits(self):
+        world = self.world()
+        world.behaviors["a"] = [reports(EXIT.BLOCKED)]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        ids = {k: i["id"] for k, i in world.items().items()}
+        self.assertIn(tags.BLOCKED, self.labels(world, "a"))
+        self.assertEqual(self.status(world, "b"), "Resolved")          # b was not starved
+        self.assertNotIn(ids["c"], world.sessions["worker"])            # c waits on a
+        feature = world.board.cards[FEATURE]["tags"]
+        self.assertIn(tags.BLOCKED, feature)
+        self.assertIsNone(tags.owner_of(feature))
+        reason = world.events(FEATURE, lease.BLOCK)[-1]["reason"]
+        self.assertIn(ids["a"], reason)
+        self.assertIn(ids["c"], reason)
+
+    def test_a_refusal_is_reported_once_and_never_repolled(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.behaviors["a"] = [reports(EXIT.REFUSED)]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        card = world.items()["a"]["id"]
+        self.assertEqual(world.sessions["worker"], [card])
+        self.assertEqual(len(world.events(card, orchestrator.REFUSAL)), 1)
+
+
+class GenerationTests(Phase3TestCase):
+
+    def test_a_zombie_push_to_the_old_generation_is_ignored(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        # run-1 claims a, its worker pushes, and the run dies before finalize.
+        runner = world.runner()
+        make = runner.development
+
+        def dies_after_the_worker(owner):
+            development = make(owner)
+
+            def die(item, claim, wt):
+                raise Crash("the laptop slept")
+            development.after_session = die
+            return development
+
+        runner.development = dies_after_the_worker
+        with self.assertRaises(Crash):
+            runner.run_feature(FEATURE)
+        card = world.items()["a"]["id"]
+        g1 = world.events(card, lease.CLAIM)[0]["branch"]
+        g1_tip = git(world.remote, "rev-parse", g1)
+
+        # The lease runs out; the reaper releases the Feature and its PBIs.
+        world.board.advance(90)
+        lease.reap(world.board, FEATURE)
+        self.assertIsNone(tags.owner_of(world.board.cards[card]["tags"]))
+
+        # run-2 takes over on g2, cut from the tip of g1. The zombie wakes and
+        # pushes to g1 while run-2's worker works.
+        def zombie_then_ok(w, worktree, key, branch, card_):
+            zombie = self.root / "zombie"
+            git(self.root, "clone", "-q", "-b", g1, str(w.remote), str(zombie))
+            (zombie / "src" / "zombie.py").write_text("BROKEN\n")
+            git(zombie, "add", "-A")
+            git(zombie, "commit", "-q", "-m", f"zombie #{card_}")
+            git(zombie, "push", "-q", "origin", f"HEAD:refs/heads/{g1}")
+            return ok()(w, worktree, key, branch, card_)
+
+        world.behaviors["a"] = [zombie_then_ok]
+        self.assertEqual(world.runner(run_id="run-2").run_feature(FEATURE), EXIT.DONE)
+        claims = world.events(card, lease.CLAIM)
+        self.assertEqual([c["generation"] for c in claims], [1, 2])
+        self.assertTrue(claims[1]["branch"].endswith("/g2"))
+        self.assertEqual(claims[1]["start"], g1_tip)
+        self.assertIsNotNone(world.remote_file(g1, "src/zombie.py"))
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "src/zombie.py"))
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/a.py"), "VALUE = 1\n")
+
+
+# ---------------------------------------------------------------------------
+# Finalize outcomes and their routes
+# ---------------------------------------------------------------------------
+
+class OutcomeTests(Phase3TestCase):
+
+    def one(self, **kwargs):
+        return self.world(plan={"pbis": [pbi("a", **kwargs)]})
+
+    def test_a_defect_is_an_attempt_and_the_next_session_gets_the_output(self):
+        world = self.one()
+        world.behaviors["a"] = [ok("VALUE = 2\n"), ok()]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "a"), ["defect"])
+        feedback = [c for c in world.executor_.calls if c["role"] == "worker"][1]
+        context = Path(feedback["context"]["IDP_CONTEXT_DIR"])
+        self.assertIn("feedback.md", feedback["prompt"])
+        self.assertIn("grep -q 'VALUE = 1' src/a.py", (context / "feedback.md").read_text())
+
+    def test_three_defects_block_the_pbi(self):
+        world = self.one()
+        world.behaviors["a"] = [ok("VALUE = 2\n")]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(self.attempts(world, "a"), ["defect"] * 3)
+        self.assertIn(tags.BLOCKED, self.labels(world, "a"))
+        self.assertIsNone(tags.owner_of(self.labels(world, "a")))
+
+    def test_a_witness_timeout_blocks_and_sends_the_pbi_to_planning(self):
+        world = self.one(witness={"command": "sleep 5", "timeout": 1})
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(self.attempts(world, "a"), [])
+        reason = world.events(world.items()["a"]["id"], lease.BLOCK)[-1]["reason"]
+        self.assertIn("planning", reason)
+
+    def test_a_witness_that_cannot_fit_the_budget_is_refused_up_front(self):
+        world = self.one(witness={"command": "true", "timeout": 4000})
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        reason = world.events(world.items()["a"]["id"], lease.BLOCK)[-1]["reason"]
+        self.assertIn("budget", reason)
+        record = world.board.attachments.get(world.items()["a"]["id"], [])
+        self.assertFalse([d for d in record if "Witness record" in d["title"]])
+
+    def test_zero_runnable_witnesses_is_malformed_never_a_pass(self):
+        world = self.one(witness={"manual": "a human looks at it"})
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        reason = world.events(world.items()["a"]["id"], lease.BLOCK)[-1]["reason"]
+        self.assertIn("zero runnable witnesses", reason)
+        self.assertEqual(self.attempts(world, "a"), [])
+
+    def test_a_diff_touching_the_plan_is_refused(self):
+        world = self.one()
+        world.behaviors["a"] = [ok(extra={f"docs/plans/{FEATURE}.plan.json": "{}\n"}), ok()]
+        world.runner().run_feature(FEATURE)
+        self.assertEqual(self.attempts(world, "a")[:1], ["defect"])
+
+    def test_a_merge_conflict_is_a_counted_conflict_attempt(self):
+        world = self.world(plan={"pbis": [pbi("a", paths=["src/shared.py"]),
+                                          pbi("b", depends_on=["a"],
+                                              paths=["src/shared.py"])]})
+
+        def writes_shared(text):
+            def action(w, worktree, key, branch, card):
+                from phase3_world import commit_push
+                commit_push(worktree, branch, f"feat #{card}",
+                            {f"src/{key}.py": "VALUE = 1\n", "src/shared.py": text})
+                return EXIT.DONE
+            return action
+
+        # b starts from a's merge, so make the conflict by moving the feature
+        # branch under b while it works.
+        def b_then_conflict(w, worktree, key, branch, card):
+            mover = self.root / "mover"
+            if not mover.exists():
+                git(self.root, "clone", "-q", "-b", FEATURE_BRANCH, str(w.remote), str(mover))
+                (mover / "src" / "shared.py").write_text("THEIRS\n")
+                git(mover, "commit", "-qam", "someone else")
+                git(mover, "push", "-q", "origin", FEATURE_BRANCH)
+            return writes_shared("OURS\n")(w, worktree, key, branch, card)
+
+        def resolves(w, worktree, key, branch, card):
+            git(worktree, "fetch", "-q", "origin")
+            git(worktree, "merge", "-q", "-X", "ours", f"origin/{FEATURE_BRANCH}", "-m",
+                f"resolve #{card}")
+            git(worktree, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+            return EXIT.DONE
+
+        world.behaviors["a"] = [writes_shared("BASE\n")]
+        world.behaviors["b"] = [b_then_conflict, resolves]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "b"), ["conflict"])
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/shared.py"), "OURS\n")
+
+    def test_infra_is_retried_with_backoff_and_never_counted(self):
+        world = self.one()
+        real = fin.Finalizer(env=run.executors.environment.witness_env(os.environ),
+                             clock=lambda: 0.0)
+        failures = [2]
+
+        class Flaky:
+            def finalize(self, *args, **kwargs):
+                if failures[0]:
+                    failures[0] -= 1
+                    return fin.Outcome(fin.INFRA, "the remote answered 503")
+                return real.finalize(*args, **kwargs)
+
+            def test(self, *args, **kwargs):
+                return real.test(*args, **kwargs)
+
+        self.assertEqual(world.runner(finalizer=Flaky()).run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertEqual(world.slept, list(orchestrator.INFRA_BACKOFF[:2]))
+
+    def test_infra_that_never_clears_leaves_the_pbi_waiting_unblocked(self):
+        world = self.one()
+
+        class Down:
+            def finalize(self, *args, **kwargs):
+                return fin.Outcome(fin.INFRA, "the remote is down")
+
+        self.assertEqual(world.runner(finalizer=Down()).run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertNotIn(tags.BLOCKED, self.labels(world, "a"))
+        self.assertIsNone(tags.owner_of(self.labels(world, "a")))
+
+    def test_every_witness_leaves_a_record_with_sha_command_exit_and_tail(self):
+        world = self.one()
+        world.runner().run_feature(FEATURE)
+        card = world.items()["a"]["id"]
+        record = [d for d in world.board.attachments[card] if "Witness record" in d["title"]]
+        self.assertEqual(len(record), 1)
+        text = record[0]["content"]
+        merged = world.events(card, orchestrator.FINALIZED)[-1]["merge"]
+        self.assertIn(f"- SHA: `{merged}`", text)
+        self.assertIn("grep -q 'VALUE = 1' src/a.py", text)
+        self.assertIn("- Exit: 0", text)
+        self.assertIn("- Duration: 0.0 s", text)
+
+    def test_files_outside_the_declared_paths_are_a_comment_not_a_failure(self):
+        world = self.one()
+        world.behaviors["a"] = [ok(extra={"docs/notes.md": "why\n"})]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        card = world.items()["a"]["id"]
+        self.assertIn("docs/notes.md", " ".join(c["body"] for c in
+                                                 world.board.list_comments(card)
+                                                 if "declared paths" in c["body"]))
+
+    def test_exit_four_without_a_new_push_counts_and_with_one_does_not(self):
+        world = self.one()
+
+        def pushes_then_hands_off(w, worktree, key, branch, card):
+            ok("VALUE = 0\n")(w, worktree, key, branch, card)
+            return EXIT.HANDOFF
+
+        world.behaviors["a"] = [pushes_then_hands_off, reports(EXIT.HANDOFF), ok()]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "a"), ["handoff-without-progress"])
+        self.assertEqual(len(world.events(world.items()["a"]["id"], orchestrator.HANDOFF)), 1)
+
+    def test_a_crash_is_an_attempt(self):
+        world = self.one()
+        world.behaviors["a"] = [crashes(), ok()]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(self.attempts(world, "a"), ["crash"])
+
+
+class CounterTests(Phase3TestCase):
+
+    def test_counters_survive_a_crash_a_reap_and_a_takeover(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.behaviors["a"] = [ok("VALUE = 2\n")]
+        card = None
+        # run-1 spends one attempt, then the process dies.
+        world.board.crash_when(lambda b: any(
+            lease.events(b.list_comments(c), orchestrator.ATTEMPT)
+            for c in list(b.cards) if c != FEATURE))
+        with self.assertRaises(Crash):
+            world.runner().run_feature(FEATURE)
+        world.board.disarm()
+        card = world.items()["a"]["id"]
+        self.assertEqual(self.attempts(world, "a"), ["defect"])
+
+        # Reaped, then taken by run-2: it counts on from the board.
+        world.board.advance(90)
+        lease.reap(world.board, FEATURE)
+        world.board.crash_when(lambda b: len(lease.events(
+            b.list_comments(card), orchestrator.ATTEMPT)) == 2)
+        with self.assertRaises(Crash):
+            world.runner(run_id="run-2").run_feature(FEATURE)
+        world.board.disarm()
+
+        # A human takes over for run-3: the third attempt blocks.
+        lease.takeover(world.board, FEATURE, "run-3", confirm=lambda info: True)
+        self.assertEqual(world.runner(run_id="run-3").run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(self.attempts(world, "a"), ["defect"] * 3)
+        self.assertIn(tags.BLOCKED, self.labels(world, "a"))
+
+
+class MergeTests(Phase3TestCase):
+
+    def test_a_sibling_moving_the_head_is_retested_not_charged(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+
+        def sibling_merges_first(context):
+            # While a is reviewed, another PBI lands on the feature branch.
+            other = self.root / "sibling"
+            git(self.root, "clone", "-q", "-b", FEATURE_BRANCH, str(world.remote), str(other))
+            (other / "src" / "sibling.py").write_text("VALUE = 1\n")
+            git(other, "add", "-A")
+            git(other, "commit", "-q", "-m", "sibling #999")
+            git(other, "push", "-q", "origin", FEATURE_BRANCH)
+            self.sibling = git(other, "rev-parse", "HEAD")
+            return []
+
+        world.findings["a"] = [sibling_merges_first]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        card = world.items()["a"]["id"]
+        finalized = world.events(card, orchestrator.FINALIZED)
+        merged = world.events(card, orchestrator.MERGED)[0]
+        self.assertEqual(len(finalized), 2)                      # first F, then the new head
+        self.assertEqual(finalized[1]["feature"], self.sibling)
+        self.assertEqual(merged["feature"], self.sibling)
+        self.assertEqual(merged["merge"], finalized[1]["merge"])
+        self.assertEqual(self.attempts(world, "a"), [])
+        # What merged is exactly the tested tree, sibling included.
+        tree = git(world.remote, "rev-parse", f"{merged['head']}^{{tree}}")
+        self.assertEqual(tree, git(world.remote, "rev-parse", f"{merged['merge']}^{{tree}}"))
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/sibling.py"), "VALUE = 1\n")
+
+    def test_merges_are_squashes_onto_the_tested_feature_head(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.runner().run_feature(FEATURE)
+        card = world.items()["a"]["id"]
+        merged = world.events(card, orchestrator.MERGED)[0]
+        parents = git(world.remote, "rev-list", "--parents", "-n", "1", merged["head"]).split()
+        self.assertEqual(parents[1:], [merged["feature"]])
+        self.assertIn(f"#{card}", git(world.remote, "log", "-1", "--format=%B", merged["head"]))
+
+    def test_the_pbi_and_its_tasks_go_done_with_a_summary(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.runner().run_feature(FEATURE)
+        card = world.items()["a"]["id"]
+        for task, _ in shape.tasks_of(world.board, card):
+            self.assertEqual(world.board.cards[task]["status"], "Resolved")
+        self.assertTrue(world.events(card, orchestrator.SUMMARY))
+        self.assertTrue(world.events(card, orchestrator.PULL_REQUEST))
+
+
+class ReviewTests(Phase3TestCase):
+
+    def test_critical_findings_go_back_to_the_worker_as_a_review_round(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.findings["a"] = [[finding("critical", "src/a.py", 1)], []]
+        world.behaviors["a"] = [ok(), ok("VALUE = 1\n# the second call is handled\n")]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        card = world.items()["a"]["id"]
+        verdicts = [e["verdict"] for e in world.events(card, orchestrator.REVIEWED)]
+        self.assertEqual(verdicts[0], "fix")
+        self.assertEqual(self.attempts(world, "a"), [])           # rounds are not attempts
+        self.assertEqual(world.sessions["worker"].count(card), 2)
+
+    def test_a_review_finding_left_unaddressed_is_a_counted_attempt(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.findings["a"] = [[finding("critical", "src/a.py", 1)]]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(self.attempts(world, "a"), ["review-unaddressed"] * 3)
+
+    def test_two_review_rounds_then_the_pbi_is_blocked(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.findings["a"] = [[finding("high", "src/a.py", 1)]]
+
+        def changes(n=[0]):
+            def action(w, worktree, key, branch, card):
+                n[0] += 1
+                return ok(f"VALUE = 1\n# round {n[0]}\n")(w, worktree, key, branch, card)
+            return action
+
+        world.behaviors["a"] = [changes()]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        card = world.items()["a"]["id"]
+        self.assertIn("review rounds", world.events(card, lease.BLOCK)[-1]["reason"])
+
+    def test_findings_outside_the_diff_are_dropped_low_confidence_is_unverified(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.findings["a"] = [[finding("critical", "README.md", 1),
+                                finding("high", "src/a.py", 1, confidence="low"),
+                                finding("medium", "src/a.py", 1, title="naming")]]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        card = world.items()["a"]["id"]
+        review = [c["body"] for c in world.board.list_comments(card)
+                  if '"kind":"review"' in c["body"]][0]
+        self.assertIn("### Unverified", review)
+        self.assertIn("### Dropped", review)
+        comments = world.events(card, "review-comment")
+        self.assertEqual(len(comments), 1)                         # medium → PR comment
+
+    def test_the_reviewer_is_never_the_author(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.runner().run_feature(FEATURE)
+        reviews = [c for c in world.executor_.calls if c["role"] == "review"]
+        self.assertEqual(reviews[0]["author"], "codex:gpt-5")
+        self.assertEqual(reviews[0]["choice"], "copilot:gpt-4.1")
+
+    def test_the_review_rule_refuses_to_start_with_nothing_written(self):
+        world = self.world()
+        same = {"roles": {"design": ["claude"], "worker": ["claude"], "review": ["claude"]}}
+        runner = world.runner(executor=world.executor(executors_profile=same,
+                                                       available=["claude"]))
+        with self.assertRaises(run.RunnerError) as caught:
+            runner.run_feature(FEATURE)
+        self.assertEqual(caught.exception.code, EXIT.BLOCKED)
+        self.assertIn("review", caught.exception.message)
+        self.assertEqual(world.board.side_effects, 0)
+
+
+class EnvironmentTests(Phase3TestCase):
+
+    SECRETS = {"AZURE_DEVOPS_EXT_PAT": "pat-secret", "LINEAR_API_KEY": "lin-secret",
+               "ANTHROPIC_API_KEY": "model-secret", "OPENAI_API_KEY": "model-secret-2"}
+
+    def test_no_board_token_or_model_key_reaches_a_witness(self):
+        world = self.world(plan={"pbis": [pbi("a", witness={"command": "env", "timeout": 30})]})
+        with mock.patch.dict(os.environ, self.SECRETS):
+            world.runner(finalizer=fin.Finalizer(
+                env=run.executors.environment.witness_env(os.environ),
+                clock=lambda: 0.0)).run_feature(FEATURE)
+        card = world.items()["a"]["id"]
+        record = [d for d in world.board.attachments[card] if "Witness record" in d["title"]]
+        for value in self.SECRETS.values():
+            self.assertNotIn(value, record[0]["content"])
+
+    def test_no_board_token_reaches_a_worker_process(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        seen = []
+
+        class Process:
+            def __init__(self, argv, cwd, env, **_):
+                seen.append(env)
+                self.stdout = io.StringIO("")
+                key = "a"
+                branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+                ok()(world, Path(cwd), key, branch, env["IDP_CARD"])
+                run.executors.write_result(cwd, EXIT.DONE, "built")
+
+            def wait(self, timeout=None):
+                return 0
+
+        scripted = world.executor()
+        subprocess_executor = run.executors.SubprocessExecutor(
+            scripted.resolver, environ=dict(os.environ, **self.SECRETS), popen=Process)
+
+        class Mixed(type(scripted)):
+            def run_role(self, role, *args, **kwargs):
+                if role == "worker":
+                    return subprocess_executor.run_role(role, *args, **kwargs)
+                return super().run_role(role, *args, **kwargs)
+
+        mixed = Mixed(world.step)
+        mixed.resolver = scripted.resolver
+        self.assertEqual(world.runner(executor=mixed).run_feature(FEATURE), EXIT.DONE)
+        self.assertTrue(seen)
+        for env in seen:
+            for name in self.SECRETS:
+                if name.startswith(("ANTHROPIC", "AZURE", "LINEAR")):
+                    self.assertNotIn(name, env)
+            self.assertNotIn("pat-secret", json.dumps(env))
+
+
+class HandoffLayerThreeTests(Phase3TestCase):
+
+    def test_a_limit_hands_off_mechanically_pauses_and_another_agent_finishes(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.behaviors["a"] = [
+            crashes(limit="rate_limit", last_message="I was writing the module",
+                    leave={"src/a.py": "VALUE = 1\n", ".env": "TOKEN=x\n",
+                           "big.bin": b"0" * (6 * 1024 * 1024)}),
+            ok()]
+        profile = {"roles": {"design": ["claude:opus"],
+                             "worker": ["codex:gpt-5", "claude:sonnet"],
+                             "review": ["copilot:gpt-4.1"]}, "parallel": {"codex": 1}}
+        self.assertEqual(world.runner(executor=world.executor(executors_profile=profile))
+                         .run_feature(FEATURE), EXIT.DONE)
+        card = world.items()["a"]["id"]
+        claims = world.events(card, lease.CLAIM)
+        g1 = claims[0]["branch"]
+        log = git(world.remote, "log", "--format=%s", g1)
+        self.assertIn(f"wip(handoff): the codex session hit rate_limit #{card}", log)
+        handoff = world.remote_file(g1, "handoff.md")
+        self.assertIn("`.env` — matches a secret pattern", handoff)
+        self.assertIn("`big.bin` — larger than 5 MB", handoff)
+        self.assertIn("I was writing the module", handoff)
+        self.assertEqual(world.remote_file(g1, "src/a.py"), "VALUE = 1\n")
+        self.assertIsNone(world.remote_file(g1, ".env"))
+        # Paused, not counted; the next claim is a new generation on the next agent.
+        self.assertTrue(world.events(card, orchestrator.PAUSE))
+        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertEqual([(c["generation"], c["agent"]) for c in claims],
+                         [(1, "codex"), (2, "claude")])
+        # Finalize deleted handoff.md before the evidence; it never reaches the feature.
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "handoff.md"))
+        self.assertEqual(self.status(world, "a"), "Resolved")
+
+    def test_the_handoff_script_refuses_the_feature_branch_and_main(self):
+        handoff = phase3.common.handoff_module()
+        world = self.world()
+        for branch in ("main", FEATURE_BRANCH):
+            git(world.repo, "checkout", "-q", "-B", branch)
+            with self.assertRaises(handoff.HandoffError) as caught:
+                handoff.handoff(world.repo, "limit", "1", feature_branch=FEATURE_BRANCH)
+            self.assertEqual(caught.exception.code, EXIT.INVALID)
+        self.assertEqual(git(world.repo, "status", "--porcelain"), "")
+
+    def test_the_paused_tag_replaces_the_owner_in_one_fenced_write(self):
+        world = self.world()
+        world.board.add_card("7", tags_=["idp:owner:run-1/w2"], kind="pbi", parent=FEATURE)
+        rev = world.board.cards["7"]["rev"]
+        result = phase3.common.handoff_module().pause(world.board, "7", "run-1")
+        self.assertEqual(result["outcome"], "written")
+        self.assertEqual(world.board.cards["7"]["tags"], ["idp:paused:run-1"])
+        self.assertEqual(world.board.cards["7"]["rev"], rev + 1)
+
+
+class CrashResumeTests(Phase3TestCase):
+
+    def test_a_crash_after_every_side_effect_resumes_to_the_same_board(self):
+        worlds = []
+
+        def make_board():
+            world = self.world(route="small-feature", plan={"pbis": [pbi("a")]})
+            worlds.append(world)
+            return world.board
+
+        def scenario(board):
+            world = next(w for w in worlds if w.board is board)
+            world.runner().run_feature(FEATURE)
+
+        exercised = crash_and_resume(make_board, scenario)
+        self.assertGreaterEqual(exercised, 20)
+
+
+# ---------------------------------------------------------------------------
+# Units: the review filter, the states contract, the PR merger
+# ---------------------------------------------------------------------------
+
+class ReviewFilterTests(unittest.TestCase):
+
+    DIFF = ("diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n"
+            "@@ -1,0 +1,3 @@\n+x\n+y\n+z\n")
+
+    def test_lines_inside_a_hunk_count_and_others_do_not(self):
+        review = phase3.review
+        sorted_ = review.triage([dict(finding("high", "src/a.py", 2), confidence="high"),
+                                 dict(finding("high", "src/a.py", 9), confidence="high"),
+                                 dict(finding("high", "src/b.py", 1), confidence="high")],
+                                self.DIFF)
+        self.assertEqual(len(sorted_["blocking"]), 1)
+        self.assertEqual(len(sorted_["dropped"]), 2)
+
+
+class StatesTests(unittest.TestCase):
+
+    def test_the_catalog_move_is_called_with_allow_idp_and_json(self):
+        calls = []
+
+        class Answer:
+            returncode, stdout, stderr = 0, "{}", ""
+
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card("5", kind="pbi")
+        mover = phase3.states.CatalogStates(board, "/catalog/ado-board.js", PROFILE,
+                                            run=lambda argv, **kw: calls.append(argv) or Answer)
+        mover.move(board, "5", "doing", "claimed")
+        self.assertEqual(calls[0][:5], ["node", "/catalog/ado-board.js", "move", "5", "doing"])
+        self.assertIn("--allow-idp", calls[0])
+        self.assertIn("--json", calls[0])
+
+    def test_without_a_catalog_the_adapter_map_is_used_and_said_once(self):
+        from fakeboard import FakeBoard
+        out = io.StringIO()
+        mover = phase3.states.select(FakeBoard(), {"board": "azure-devops"}, out=out,
+                                     environ={"IDP_ADO_BOARD": "/nowhere"})
+        self.assertEqual(mover.name, "adapter")
+        self.assertIn("not installed", out.getvalue())
+
+
+class AzureReposMergerTests(unittest.TestCase):
+
+    def test_the_pr_is_opened_without_auto_complete_and_completed_pinned_to_m(self):
+        calls = []
+
+        class Board:
+            def create_pull_request(self, *args):
+                calls.append(("create",) + args)
+                return {"id": 9, "url": "u"}
+
+            def complete_pull_request(self, *args):
+                calls.append(("complete",) + args)
+
+        class Git:
+            def fetch(self):
+                pass
+
+            def remote_sha(self, branch):
+                return "F"
+
+        merger = phase3.merge.AzureReposMerger(Board(), Git(), "repo")
+        pr = merger.open("pbi/5-x/g1", FEATURE_BRANCH, "X", "d", "5")
+        self.assertEqual(calls[0], ("create", "repo", "pbi/5-x/g1", FEATURE_BRANCH, "X", "d",
+                                    ["5"]))
+        merger.complete(pr, "pbi/5-x/g1", FEATURE_BRANCH, "F", "M", "X", "#5")
+        self.assertEqual(calls[1][:4], ("complete", "repo", 9, "M"))
+
+    def test_a_moved_head_completes_nothing(self):
+        class Git:
+            def fetch(self):
+                pass
+
+            def remote_sha(self, branch):
+                return "G"
+
+        merger = phase3.merge.AzureReposMerger(object(), Git(), "repo")
+        self.assertIsNone(merger.complete({"id": 1}, "b", "t", "F", "M", "X", "#5"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -156,7 +156,8 @@ class InlinePool:
 class Development:
 
     def __init__(self, runner, git=None, mover=None, merger=None, finalizer=None,
-                 pool=None, sleep=time.sleep, planning_home=None, environ=None):
+                 pool=None, sleep=time.sleep, planning_home=None, environ=None,
+                 worktrees=None):
         self.runner = runner
         self.board = runner.board
         self.profile = runner.profile
@@ -174,7 +175,8 @@ class Development:
         self.sleep = sleep
         self.planning = planning_module()
         self.planning_home = Path(planning_home) if planning_home else self.planning.home()
-        self.home = Path(runner.design.HOME) / "worktrees" / Path(runner.repo).resolve().name
+        self.home = Path(worktrees or Path(runner.design.HOME) / "worktrees") \
+            / Path(runner.repo).resolve().name
         self.running = {}
         self.busy = {}
         self.skip = {}
@@ -211,7 +213,7 @@ class Development:
 
         self.preflight()
         self.git.fetch()
-        base = self.git.remote_sha(self.feature_branch) or self.default_sha()
+        base = self.git.tracking(self.feature_branch) or self.default_sha()
         claimed = lease.claim(self.board, feature, self.run_id, phase=tags.DEVELOPMENT,
                               profile=self.runner.profile_hash, base=base)
         if claimed["outcome"] in ("refused", "conflict"):
@@ -231,7 +233,7 @@ class Development:
 
     def default_sha(self):
         name = self.git.default_branch() or "main"
-        sha = self.git.remote_sha(name)
+        sha = self.git.tracking(name) or self.git.remote_sha(name)
         if sha is None:
             raise self.runner.error(EXIT.BLOCKED, f"the remote has neither {self.feature_branch} "
                                                   f"nor a default branch to cut it from",
@@ -239,6 +241,9 @@ class Development:
         return sha
 
     def finished(self, feature):
+        """Built, and nothing left half-done: no owner still on the card."""
+        if tags.owner_of(self.board.read_card(feature).get("tags")):
+            return False
         if not lease.events(self.board.list_comments(feature), BUILT):
             return False
         items = [i for i in shape.work_items(self.board, feature) if not shape.is_qa(i)]
@@ -261,7 +266,7 @@ class Development:
         pinned = plans.pinned(self.board, feature)
         if pinned is None:
             path = plans.plan_path(feature)
-            tip = self.git.remote_sha(self.feature_branch)
+            tip = self.git.tracking(self.feature_branch)
             text = self.git.show(tip, path) if tip else None
             if text is None:
                 code, text = self.plan_session(feature, route, base)
@@ -375,9 +380,10 @@ class Development:
         path = plans.plan_path(feature)
         for _ in range(MAX_RETESTS):
             self.git.fetch()
-            tip = self.git.remote_sha(self.feature_branch)
+            tip = self.git.tracking(self.feature_branch)
+            if tip is None and self.git.push(base, self.feature_branch, expect=""):
+                tip = base
             if tip is None:
-                self.git.ensure_remote_branch(self.feature_branch, base)
                 continue
             if self.git.show(tip, path) == text:
                 return tip
@@ -399,6 +405,9 @@ class Development:
             work = [i for i in shape.work_items(self.board, feature, self.plan)
                     if not shape.is_qa(i)]
             status = {i["id"]: self.mover.bucket(i["issue"]) for i in work}
+            for item in work:
+                if status[item["id"]] == "done":
+                    self.finish_merged(item)
             pending = [i for i in work if status[i["id"]] != "done"]
             if not pending and not self.running:
                 return self.built(feature, work)
@@ -418,12 +427,10 @@ class Development:
     def ready(self, item, by_key, status):
         if item["id"] in self.running or item["id"] in self.skip:
             return False
-        labels = item["labels"]
-        if tags.is_blocked(labels):
+        if tags.is_blocked(item["labels"]):
             return False
-        owner = tags.owner_of(labels)
-        if owner and tags.run_of(owner) != self.run_id:
-            return False
+        # A PBI held by another run is a stale claim: only the Feature's owner may
+        # claim its PBIs, and that is this run. `claim` releases it, fenced.
         for need in item["depends_on"]:
             other = by_key.get(need)
             if other is None or status[other["id"]] != "done":
@@ -484,19 +491,23 @@ class Development:
             choice = self.free_worker()
             if choice is None:
                 return None
+        if owner and not mine_now:
+            # Left by a run that lost the Feature — reaped, or taken over by a human.
+            # Released the way the reaper releases it: fenced on that exact tag.
+            tags.release_stale(self.board, pbi, owner)
         result = tags.claim_pbi(self.board, pbi, self.run_id, worker, self.feature)
         if result["outcome"] in ("refused", "conflict"):
             self.skip[pbi] = result["message"]
             return None
         if not reuse:
             generation = int(last.get("generation") or 0) + 1 if last else 1
-            self.git.fetch()
-            base = self.git.remote_sha(self.feature_branch)
-            previous = self.git.remote_sha(last["branch"]) if last and last.get("branch") \
+            base = self.git.tracking(self.feature_branch)
+            previous = self.git.tracking(last["branch"]) if last and last.get("branch") \
                 else None
             start = previous or base
             branch = f"pbi/{pbi}-{slug(item['title'].replace('[PBI]', ''))}/g{generation}"
-            self.git.ensure_remote_branch(branch, start)
+            if self.git.tracking(branch) is None:
+                self.git.push(start, branch, expect="")
             lease.post_event(
                 self.board, pbi, lease.CLAIM, f"{lease.CLAIM}:{mine}:g{generation}",
                 text=(f"Claimed by `{mine}` (generation {generation}) on `{branch}`, cut "
@@ -514,8 +525,9 @@ class Development:
         return dict(last, worker=worker, choice=choice)
 
     def worktree(self, claim, pbi):
-        self.git.fetch()
-        tip = self.git.remote_sha(claim["branch"]) or claim["start"]
+        # `advance` fetched just before the claim, and a push updates the tracking
+        # ref, so the tip read here is the remote's.
+        tip = self.git.tracking(claim["branch"]) or claim["start"]
         wt = self.git.worktree(self.home / f"{pbi}-g{claim['generation']}", sha=tip,
                                branch=claim["branch"])
         local_excludes(wt.path)
@@ -523,6 +535,7 @@ class Development:
 
     def advance(self, item):
         """Take the PBI as far as the board and git say it already got, then on."""
+        self.git.fetch()
         claim = self.claim(item)
         if claim is None:
             return
@@ -533,7 +546,7 @@ class Development:
             if pr else None
         if head or self.event(pbi, MERGED, branch=claim["branch"]):
             return self.after_merge(item, claim, head)
-        tip = self.git.remote_sha(claim["branch"])
+        tip = self.git.tracking(claim["branch"])
         done = self.event(pbi, FINALIZED, branch=claim["branch"], merge=tip)
         if done:
             return self.review_and_merge(item, claim, wt, done)
@@ -672,7 +685,7 @@ class Development:
         """Exit 4: a fresh session, unless nothing new was pushed since the previous 4."""
         pbi = item["id"]
         self.git.fetch()
-        tip = self.git.remote_sha(claim["branch"])
+        tip = self.git.tracking(claim["branch"])
         before = self.event(pbi, HANDOFF, branch=claim["branch"])
         previous = before.get("sha") if before else claim.get("start")
         if tip == previous:
@@ -746,8 +759,16 @@ class Development:
     def after_session(self, item, claim, wt):
         outcome = self.finalize(item, claim, wt)
         if self.settle(item, claim, wt, outcome):
-            done = self.event(item["id"], FINALIZED, branch=claim["branch"],
-                              merge=outcome.tested["merge"])
+            pbi = item["id"]
+            merged = outcome.tested["merge"]
+            done = self.event(pbi, FINALIZED, branch=claim["branch"], merge=merged)
+            sent_back = self.event(pbi, REVIEWED, merge=merged)
+            if sent_back and sent_back.get("verdict") == "fix":
+                # The session after a review sent it back changed nothing: the
+                # same commit would be sent back again for ever. That is spent.
+                return self.count(item, "review-unaddressed",
+                                  "the review's critical or high findings were sent back, "
+                                  "and the next session pushed no change")
             self.review_and_merge(item, claim, wt, done)
 
     def settle(self, item, claim, wt, outcome):
@@ -912,7 +933,7 @@ class Development:
             # The feature head moved — a sibling merged first. Re-run steps 2–3 on the
             # new head; this is not charged as an attempt.
             self.git.fetch()
-            moved = self.git.remote_sha(self.feature_branch)
+            moved = self.git.tracking(self.feature_branch)
             outcome = self.finalize(item, claim, wt, retest_feature=moved,
                                     pbi_sha=done["pbi"])
             if not self.settle(item, claim, wt, outcome):
@@ -942,6 +963,16 @@ class Development:
                 return events_text(comment.get("body"))
         return ""
 
+    def finish_merged(self, item):
+        """A merged PBI already in done whose owner tag or summary a crash left behind."""
+        pbi = item["id"]
+        merged = self.event(pbi, MERGED)
+        if merged is None:
+            return
+        if tags.owner_of(item["labels"]) is None and self.event(pbi, SUMMARY):
+            return
+        self.after_merge(item, {"branch": merged.get("branch")}, merged.get("head"))
+
     def after_merge(self, item, claim, head):
         """PBI and its remaining Tasks → done, the owner tag off, a summary comment."""
         pbi = item["id"]
@@ -955,14 +986,24 @@ class Development:
         for task, _ in shape.tasks_of(self.board, pbi):
             self.mover.move(self.board, task, "done", evidence)
         self.mover.move(self.board, pbi, "done", evidence)
-        tags.release(self.board, pbi, self.run_id)
+        owner = tags.owner_of(self.board.read_card(pbi).get("tags"))
+        if owner and tags.run_of(owner) == self.run_id:
+            tags.release(self.board, pbi, self.run_id)
+        elif owner:
+            tags.release_stale(self.board, pbi, owner)
         lease.post_event(
             self.board, pbi, SUMMARY, f"{SUMMARY}:{pbi}",
             text=(f"Done: {evidence}. Tested merge `{(merged or {}).get('merge', '')[:12]}`; "
                   f"{self.attempts(pbi)} counted attempt(s); review "
                   f"{(self.event(pbi, REVIEWED) or {}).get('verdict', 'n/a')}."),
             head=(merged or {}).get("head"))
-        self.journal.add(f"{pbi} {item['title']} merged at `{(merged or {}).get('head', '')[:12]}`.")
+        self.journal_merged(item)
+
+    def journal_merged(self, item):
+        merged = self.event(item["id"], MERGED)
+        if merged:
+            self.journal.add(f"{item['id']} {item['title']} merged at "
+                             f"`{merged.get('head', '')[:12]}`.")
 
     # -- the end of the loop ---------------------------------------------------
 
@@ -1002,12 +1043,14 @@ class Development:
 
     def built(self, feature, work):
         done = sorted(i["id"] for i in work)
+        for item in work:
+            self.journal_merged(item)
+        self.journal.add(f"Building done: {', '.join(done) or 'nothing'} merged.")
+        self.journal.upload()
         lease.post_event(self.board, feature, BUILT, f"{BUILT}:{feature}:{','.join(done)}",
                          text=f"Building (3.2) is done: {len(done)} item(s) merged into "
                               f"`{self.feature_branch}`. Integration (3.3) runs next.",
                          items=len(done), run=self.run_id)
-        self.journal.add(f"Building done: {', '.join(done) or 'nothing'} merged.")
-        self.journal.upload()
         tags.release(self.board, feature, self.run_id)
         self.say(f"{feature}: every PBI is merged into {self.feature_branch}. Integration "
                  "(3.3) is IDE-147 build step 4; the card waits at idp:development.")

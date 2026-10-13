@@ -57,9 +57,8 @@ class GitMerger(Merger):
         return {"id": f"git:{branch}", "url": None}
 
     def complete(self, pr, branch, target, feature_sha, merged, title, mention):
-        self.git.fetch()
-        if self.git.remote_sha(target) != feature_sha:
-            return None
+        # No look before the leap: the push is a compare-and-swap on F, so a head
+        # that moved makes it lose, which is the only check that cannot race.
         tree = self.git.run("rev-parse", f"{merged}^{{tree}}")
         squash = self.git.run("commit-tree", tree, "-p", feature_sha, "-m",
                               merge_message(title, mention, branch, merged))
@@ -69,7 +68,7 @@ class GitMerger(Merger):
 
     def merged(self, pr, branch, target):
         self.git.fetch()
-        tip = self.git.remote_sha(target)
+        tip = self.git.tracking(target)
         if tip is None:
             return None
         try:

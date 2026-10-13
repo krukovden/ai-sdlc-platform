@@ -93,17 +93,21 @@ class AdapterStates(StateMover):
     def move(self, board, identifier, bucket, evidence):
         issue = board.get_issue(identifier)
         current = self.bucket(issue)
-        if BUCKETS.index(current) >= BUCKETS.index(bucket):
-            return {"moved": False, "bucket": current}
         target = self.names(issue).get(bucket)
+        if BUCKETS.index(current) > BUCKETS.index(bucket):
+            return {"moved": False, "bucket": current}
         if not target:
             return {"moved": False, "bucket": current,
                     "reason": f"this board has no '{bucket}' state for {identifier}"}
-        board.update_issue(identifier, status=target)
+        moved = current != bucket
+        if moved:
+            board.update_issue(identifier, status=target)
+        # Posted even when the state was already there: a move that crashed
+        # between its two writes still gets the comment that names its evidence.
         lease.post_event(board, identifier, "move", f"move:{identifier}:{bucket}",
                          text=f"Moved to {target}: {evidence}", bucket=bucket,
                          status=target)
-        return {"moved": True, "bucket": bucket}
+        return {"moved": moved, "bucket": bucket}
 
 
 class CatalogStates(AdapterStates):
