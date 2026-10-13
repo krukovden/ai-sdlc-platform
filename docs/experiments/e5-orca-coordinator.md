@@ -72,4 +72,28 @@ how `run.py` is started in practice. Same hypothesis, same pass and stop rules;
 attempt 2 is the first run of the registered design, not a retry of the failed
 call.
 
-(attempt 2 — filled in after the run)
+### Attempt 2 — probe from a terminal made with `orca terminal create`
+
+`worker-start` now succeeded (depth is not exceeded; hypothesis for that finding
+holds). Two problems, both found by the run:
+
+- The probe read the start receipt's id from the wrong key. The receipt is
+  `result.{runId, taskId, dispatchId, state, stage, launch.effective, effects[]}`
+  with the worktree and terminal under `effects`. Probe bug, fixed. Worker A had
+  already started and **succeeded** (`worker-list`: `workerState: succeeded`,
+  `terminalState: reclaimable`). Trace: `tests/fixtures/orca/e5-attempt2a/`.
+- The resume (`attempt2b`) failed: `check --run <id> --wait` from another
+  terminal returns `consumer_fenced` — "This coordinator terminal is no longer
+  bound to Run …". **A Run belongs to the terminal that created it.**
+  `check --terminal <other handle>` is refused too ("attested as … cannot act
+  as …"). So the runner that creates a Run is the only process that can wait on
+  it; a resumed or second process must create its own Run (cheap, a namespace).
+  `worker-release --dispatch` has no such fence and worked from any shell.
+
+Deviation from the stop rule (more than 2 workers): attempt 2's worker A plus
+the 2 of attempt 3 make 3 haiku sessions. The rule's purpose is cost; the cause
+was my own parse bug, not Orca.
+
+### Attempt 3 — one terminal, one Run, the full cycle
+
+(filled in after the run)

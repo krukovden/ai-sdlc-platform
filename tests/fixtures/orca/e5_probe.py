@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """IDE-147 experiment 5: drive Orca's supervised cycle from a script, no model.
 
-    python3 e5_probe.py OUTDIR
+    python3 e5_probe.py OUTDIR [RUN TASK_A TASK_B DISPATCH_A]
+
+The optional four arguments resume a cycle whose first worker is already
+running (attempt 2 lost its parse of the start receipt, not the worker).
 
 Writes every verb's argv, exit code and raw stdout to OUTDIR/trace.jsonl. The
 recorded traces are the fixtures the fake `orca` in tests/ replays.
@@ -15,6 +18,7 @@ import time
 from pathlib import Path
 
 OUT = Path(sys.argv[1])
+RESUME = sys.argv[2:6] if len(sys.argv) >= 6 else None
 OUT.mkdir(parents=True, exist_ok=True)
 TRACE = OUT / "trace.jsonl"
 STARTED = time.time()
@@ -45,8 +49,11 @@ def need(label, code, doc):
 def main():
     code, doc = orca("status", "--json")
     need("status", code, doc)
-    run = need("run-create", *orca("orchestration", "run-create", "--objective",
-                                   "IDE-147 experiment 5", "--json"))["run"]["id"]
+    if RESUME:
+        run = RESUME[0]
+    else:
+        run = need("run-create", *orca("orchestration", "run-create", "--objective",
+                                       "IDE-147 experiment 5", "--json"))["run"]["id"]
     print("run", run)
 
     def task(spec, deps=None):
@@ -55,11 +62,15 @@ def main():
             argv[-1:-1] = ["--deps", json.dumps(deps)]
         return need("task-create", *orca(*argv))
 
-    a = task("Run `echo ok` in the shell, then report with worker_done --outcome succeeded.")
-    a_id = (a.get("task") or a)["id"]
-    b = task("Do nothing else: report immediately with worker_done --outcome failed "
+    if RESUME:
+        a_id, b_id = RESUME[1], RESUME[2]
+    else:
+        a_id = b_id = None
+    a = a_id or task("Run `echo ok` in the shell, then report with worker_done --outcome succeeded.")
+    a_id = a_id or (a.get("task") or a)["id"]
+    b = b_id or task("Do nothing else: report immediately with worker_done --outcome failed "
              "and the body 'experiment: failure path'.", deps=[a_id])
-    b_id = (b.get("task") or b)["id"]
+    b_id = b_id or (b.get("task") or b)["id"]
     print("tasks", a_id, b_id)
 
     settled = {}
@@ -84,8 +95,10 @@ def main():
         sys.exit(1)
 
     for task_id, name in ((a_id, "e5-a"), (b_id, "e5-b")):
-        receipt = start(task_id, name)
-        dispatch = (receipt.get("dispatch") or receipt)["id"]
+        if RESUME and task_id == a_id:
+            dispatch = RESUME[3]
+        else:
+            dispatch = start(task_id, name)["dispatchId"]
         print("started", name, dispatch)
         settled[name] = (dispatch, wait_done(dispatch))
         need("worker-list", *orca("orchestration", "worker-list", "--run", run, "--json"))
