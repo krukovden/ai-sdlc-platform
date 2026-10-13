@@ -405,8 +405,27 @@ class SubphaseOrderTests(DesignTestCase):
             (design.session_dir(self.identifier) / name).unlink()
         self.assertEqual(self.next_action(), before)
 
-    def test_a_command_on_a_session_that_does_not_exist_is_exit_4(self):
-        self.expect_exit(4, "next", "--id", "IDE-999")
+    def test_a_command_on_a_session_that_does_not_exist_rebuilds_it_from_the_card(self):
+        # IDE-147: the session is a cache. A takeover on another machine has no
+        # state.json, and exit 4 there would be read as "start a fresh session"
+        # for ever.
+        answer = json.loads(self.run_cli("next", "--id", self.identifier, "--json"))
+        self.assertEqual(answer["action"], "draft_adr")
+        self.assertIn("rebuilt", [e["event"] for e in self.journal()])
+
+    def test_a_corrupt_state_is_set_aside_and_the_session_rebuilt(self):
+        self.start()
+        self.draft()
+        path = design.session_dir(self.identifier) / "state.json"
+        path.write_text("{half a file", encoding="utf-8")
+        self.assertEqual(self.next_action()["action"], "draft_adr")
+        self.assertTrue(path.with_suffix(".json.corrupt").exists())
+
+    def test_a_lost_pointer_file_falls_back_to_the_card_the_runner_named(self):
+        self.start()
+        design.CURRENT.unlink()
+        with mock.patch.dict(design.os.environ, {"IDP_CARD": self.identifier}):
+            self.assertEqual(self.next_action()["action"], "draft_adr")
 
 
 # ---------------------------------------------------------------------------
@@ -1178,6 +1197,70 @@ class JournalTests(DesignTestCase):
             .read_text(encoding="utf-8")
         self.assertNotIn("Propose ONE alternative", text)
         self.assertNotIn("token", text)
+
+
+
+class RunnerContextTests(DesignTestCase):
+    """Under the runner the session holds no board credential and reads its context."""
+
+    def setUp(self):
+        super().setUp()
+        self.context = Path(self.tmp.name) / "context"
+        self.context.mkdir()
+        (self.context / "card.json").write_text(json.dumps({
+            "issue": self.issue, "answer": dict(self.answer, position="active"),
+            "profile": {"board": "linear"}}), encoding="utf-8")
+        patch = mock.patch.dict(design.os.environ, {"IDP_CONTEXT_DIR": str(self.context)})
+        patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(design, "open_card", REAL_OPEN_CARD)
+        patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(design, "load_board_module",
+                                  side_effect=AssertionError("the board was opened"))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_init_reads_the_card_from_the_context_and_never_the_board(self):
+        self.start()
+        self.assertEqual(self.state()["identifier"], self.identifier)
+        self.assertEqual(self.journal()[0]["claimed"], False)
+
+    def test_the_last_adr_on_the_card_seeds_the_restarted_session(self):
+        (self.context / "adr.md").write_text("---\ntype: adr\n---\nold\n", encoding="utf-8")
+        self.start()
+        seeded = design.session_dir(self.identifier) / "previous-adr.md"
+        self.assertEqual(seeded.read_text(encoding="utf-8"), "---\ntype: adr\n---\nold\n")
+        self.assertTrue(self.state()["previous_adr"].startswith("sha256:"))
+
+    def test_a_context_for_another_card_is_refused(self):
+        self.expect_exit(design.EXIT.INVALID, "init", "IDE-1")
+
+    def test_publish_is_the_runners_job_here(self):
+        self.reach_integration()
+        self.run_cli("integrate")
+        stderr = self.expect_exit(design.EXIT.FORBIDDEN, "publish", "--approver", "x")
+        self.assertIn("run.py report", stderr)
+
+
+class ScopeTests(DesignTestCase):
+
+    def test_the_scope_reaches_the_machine_header(self):
+        self.start()
+        self.run_cli("scope", "medium")
+        self.assertIn("\nscope: medium\n", design.render_adr(self.state()))
+
+    def test_a_scope_outside_the_three_is_refused(self):
+        self.start()
+        stderr = self.expect_exit(design.EXIT.INVALID, "scope", "huge")
+        self.assertIn("FIX:", stderr)
+
+    def test_setting_it_after_integration_rewrites_the_issued_draft(self):
+        self.reach_integration()
+        self.run_cli("integrate")
+        self.run_cli("scope", "small")
+        adr = (design.session_dir(self.identifier) / "adr.md").read_text(encoding="utf-8")
+        self.assertIn("\nscope: small\n", adr)
 
 
 if __name__ == "__main__":
