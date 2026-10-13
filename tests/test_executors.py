@@ -188,16 +188,36 @@ class EnvironmentTests(ScriptTestCase):
     def test_path_is_not_mistaken_for_a_pat(self):
         self.assertFalse(executors.environment.denied("PATH"))
 
-    def test_a_named_provider_gets_its_own_keys_and_an_unnamed_one_every_agents(self):
+    def test_a_named_provider_gets_its_own_agents_keys_only(self):
         named = executors.environment.provider_env(self.SOURCE, "claude-subagent")
         self.assertIn("ANTHROPIC_API_KEY", named)
         self.assertNotIn("OPENAI_API_KEY", named)
-        unnamed = executors.environment.provider_env(self.SOURCE, "some-model")
-        self.assertIn("ANTHROPIC_API_KEY", unnamed)
-        self.assertIn("OPENAI_API_KEY", unnamed)
-        for env in (named, unnamed):
+        explicit = executors.environment.provider_env(self.SOURCE, "my-reviewer",
+                                                      agent="codex")
+        self.assertIn("OPENAI_API_KEY", explicit)
+        self.assertNotIn("ANTHROPIC_API_KEY", explicit)
+        for env in (named, explicit):
             for name in self.BOARD:
                 self.assertNotIn(name, env)
+
+    def test_a_provider_naming_no_known_agent_is_refused_never_widened(self):
+        for name, agent in (("some-model", None), ("codexx", None), ("m", None),
+                            ("codex", "grok")):
+            with self.subTest(name=name, agent=agent):
+                with self.assertRaises(executors.environment.UnknownAgent) as caught:
+                    executors.environment.provider_env(self.SOURCE, name, agent=agent)
+                self.assertIn("registry/providers.json", caught.exception.fix)
+
+    def test_the_reviewer_refuses_an_unknown_provider_before_launching_it(self):
+        from unittest import mock
+        from support import REPO_ROOT, load_script
+        reviewer = load_script("reviewer", REPO_ROOT / "skills" / "feature-discovery")
+        with mock.patch.object(reviewer.subprocess, "run",
+                               side_effect=AssertionError("launched")):
+            with self.assertRaises(reviewer.ReviewerError) as caught:
+                reviewer.run_provider({"name": "some-model", "command": ["x"]}, "p",
+                                      "reviewer.schema.json")
+        self.assertIn("FIX:", str(caught.exception))
 
     def test_the_reviewer_uses_this_allowlist_and_has_none_of_its_own(self):
         from support import REPO_ROOT, load_script

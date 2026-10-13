@@ -249,13 +249,18 @@ class CoverageHardening(PlanBorrowings):
 
 
 class ProviderEnvironment(unittest.TestCase):
-    def test_board_credentials_are_stripped_and_model_keys_kept(self):
+    def test_board_credentials_are_stripped_and_only_the_agents_own_key_kept(self):
         reviewer = design.load_reviewer_module()
         env = reviewer.provider_environment({
             "LINEAR_API_KEY": "x", "AZURE_DEVOPS_EXT_PAT": "x", "ADO_ORG": "x",
             "HAL_PAT": "x", "SOME_TOKEN": "x", "PATH": "/bin", "HOME": "/h",
-            "OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k"})
-        self.assertEqual(sorted(env), ["ANTHROPIC_API_KEY", "HOME", "OPENAI_API_KEY", "PATH"])
+            "OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k"}, name="codex")
+        self.assertEqual(sorted(env), ["HOME", "OPENAI_API_KEY", "PATH"])
+
+    def test_a_provider_with_no_known_agent_is_refused(self):
+        reviewer = design.load_reviewer_module()
+        with self.assertRaises(reviewer.ReviewerError):
+            reviewer.provider_environment({"OPENAI_API_KEY": "k"}, name="m")
 
     def test_run_provider_hands_the_subprocess_a_stripped_environment(self):
         import os
@@ -270,7 +275,8 @@ class ProviderEnvironment(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LINEAR_API_KEY": "secret",
                                           "AZURE_DEVOPS_EXT_PAT": "secret"}), \
                 mock.patch.object(reviewer.subprocess, "run", fake_run):
-            reviewer.run_provider({"name": "m", "command": ["m"]}, "prompt", "reviewer.schema.json")
+            reviewer.run_provider({"name": "codex", "command": ["m"]}, "prompt",
+                                  "reviewer.schema.json")
         self.assertNotIn("LINEAR_API_KEY", seen)
         self.assertNotIn("AZURE_DEVOPS_EXT_PAT", seen)
         self.assertIn("PATH", seen)

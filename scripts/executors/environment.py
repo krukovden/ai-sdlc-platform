@@ -89,26 +89,37 @@ def session_env(source, agent=None, extra=None):
     return env
 
 
+class UnknownAgent(ValueError):
+    """A provider whose agent cannot be named. Refused, never widened."""
+
+    def __init__(self, message, fix):
+        super().__init__(message)
+        self.message, self.fix = message, fix
+
+
 def agent_of(name):
-    """The agent a provider name stands for: `claude-subagent` is claude."""
+    """The agent a provider name stands for: `claude-subagent` is claude, `m` is nobody."""
     head = re.split(r"[^a-z]", str(name or "").casefold(), maxsplit=1)[0]
     return head if head in AGENT_PREFIXES else None
 
 
-def provider_env(source, name=None):
+def provider_env(source, name=None, agent=None):
     """For a provider command from registry/providers.json (the reviewer's door).
 
-    A provider that names a known agent gets that agent's keys only. One that
-    does not gets every agent's sign-in keys — a provider is a model CLI, and
-    which one is the registry's business — and still no board credential.
+    **Fails closed.** The provider's agent is its explicit `agent` field, or
+    else what its `name` starts with; only that agent's sign-in keys pass. A
+    provider whose agent cannot be named is refused: handing it every agent's
+    keys "to be safe" is exactly the leak this list exists to prevent, and a
+    typo in the registry would be the way it happened.
     """
-    agent = agent_of(name)
-    if agent is not None:
-        return session_env(source, agent)
-    env = session_env(source, None)
-    for candidate in AGENT_PREFIXES:
-        env.update(session_env(source, candidate))
-    return env
+    chosen = agent if agent is not None else agent_of(name)
+    if chosen not in AGENT_PREFIXES:
+        raise UnknownAgent(
+            f"provider '{name}' names no agent this platform knows "
+            f"(agent: {agent!r}), so no sign-in variables can be chosen for it",
+            f"add \"agent\": one of {', '.join(AGENT_PREFIXES)} to its entry in "
+            "registry/providers.json, or name it after its agent")
+    return session_env(source, chosen)
 
 
 def witness_env(source, extra=None):

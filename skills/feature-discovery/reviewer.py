@@ -244,16 +244,21 @@ def _environment_rules():
     return module
 
 
-def provider_environment(environ=None, name=None):
+def provider_environment(environ=None, name=None, agent=None):
     """The environment a model subprocess gets: an allowlist, with no board credential.
 
     A reviewer sees a prompt built from artifacts; it has no business holding
-    the key that can write to the board. `name` is the provider's name from
-    providers.json; when it names a known agent only that agent's sign-in keys
-    pass, otherwise every agent's do.
+    the key that can write to the board. Only the provider's own agent's
+    sign-in keys pass — its `agent` field in providers.json, or the agent its
+    `name` starts with. A provider naming neither is refused with a FIX
+    (ReviewerError), never handed every agent's keys.
     """
     source = os.environ if environ is None else environ
-    return _environment_rules().provider_env(source, name)
+    rules = _environment_rules()
+    try:
+        return rules.provider_env(source, name, agent)
+    except rules.UnknownAgent as exc:
+        raise ReviewerError(f"{exc.message}\nFIX: {exc.fix}")
 
 
 def run_provider(spec, prompt, schema_name, timeout=300):
@@ -265,10 +270,10 @@ def run_provider(spec, prompt, schema_name, timeout=300):
     """
     command = [part.replace("{schema}", str(SCHEMAS / schema_name))
                for part in spec["command"]]
+    env = provider_environment(name=spec.get("name"), agent=spec.get("agent"))
     try:
         result = subprocess.run(command, input=prompt, capture_output=True,
-                                text=True, timeout=timeout,
-                                env=provider_environment(name=spec.get("name")))
+                                text=True, timeout=timeout, env=env)
     except FileNotFoundError:
         raise ReviewerError(f"provider '{spec.get('name')}' is not installed")
     except subprocess.TimeoutExpired:
