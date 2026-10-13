@@ -196,7 +196,8 @@ def publish(board, profile, session, plan, planning, remote="origin", base=None,
     try:
         planning.require_coverage(session, plan, planning.load_adr(session))
     except planning.PlanError as exc:
-        fail(exc.code, exc.message)
+        fail(exc.code, f"{exc.message}\nFIX: run `planning.py finalize` for this ADR and plan "
+                       "(it runs the coverage pass on a different model), then publish again")
 
     by_key = {p["key"]: p for p in plan["pbis"]}
     order = planning.topological(planning.build_graph(plan["pbis"]))
