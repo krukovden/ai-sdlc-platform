@@ -10,6 +10,7 @@ flags. Whether the real board behaves is what the human run is for.
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,10 +30,13 @@ import experiment_common as common  # noqa: E402
 
 e2 = load_script("e2_claim_race", EXPERIMENTS)
 e3 = load_script("e3_attachment_roundtrip", EXPERIMENTS)
+e4 = load_script("e4_cliff_hooks", EXPERIMENTS)
 e7 = load_script("e7_mentions", EXPERIMENTS)
 EXIT = common.EXIT
 
 FLAGS = ["--org", "contoso", "--project", "Scratch", "--i-understand-this-writes"]
+CODEX_LIMIT = ("You've hit your usage limit. Upgrade to Pro or try again at "
+               "Oct 13th, 2026 12:12 AM")
 
 
 class Args:
@@ -132,6 +136,90 @@ class Results(unittest.TestCase):
             for word in ("Hypothes", "**n.**", "Pass rule", "Stop rule"):
                 self.assertIn(word, text, name)
             self.assertTrue(text.rstrip().endswith("## Results"), name)
+
+
+class CliffHooks(unittest.TestCase):
+
+    SENTINELS = {
+        "claude": ("ANTHROPIC_API_KEY", "claude-secret"),
+        "codex": ("OPENAI_API_KEY", "codex-secret"),
+        "copilot": ("GITHUB_TOKEN", "copilot-secret"),
+    }
+
+    def test_probe_uses_a_session_environment_and_redacts_persisted_output(self):
+        for agent, (allowed_name, allowed_value) in self.SENTINELS.items():
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "repo").mkdir()
+                seen = {}
+
+                def fake_run(argv, **kw):
+                    seen["env"] = kw["env"]
+                    return subprocess.CompletedProcess(
+                        argv, EXIT.NO,
+                        stdout=("Authorization: Bearer board-secret\n"
+                                f"{allowed_name}={allowed_value}\n"),
+                        stderr="AZURE_DEVOPS_EXT_PAT=board-secret\n")
+
+                source = {
+                    "PATH": os.environ.get("PATH", ""),
+                    "HOME": os.environ.get("HOME", str(Path(tmp))),
+                    "AZURE_DEVOPS_EXT_PAT": "board-secret",
+                    "ANTHROPIC_API_KEY": "claude-secret",
+                    "OPENAI_API_KEY": "codex-secret",
+                    "GITHUB_TOKEN": "copilot-secret",
+                }
+                with mock.patch.dict(os.environ, source, clear=True):
+                    entry = e4.probe(tmp, agent, run=fake_run)
+                self.assertNotIn("AZURE_DEVOPS_EXT_PAT", seen["env"])
+                self.assertEqual(seen["env"][allowed_name], allowed_value)
+                for denied in {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN"} - {allowed_name}:
+                    self.assertNotIn(denied, seen["env"])
+                dumped = "\n".join(entry["tail"] + entry["raw_output"])
+                self.assertNotIn("board-secret", dumped)
+                self.assertNotIn(allowed_value, dumped)
+
+    def test_judging_requires_host_specific_limit_evidence(self):
+        claude_retry = json.dumps({"type": "system", "subtype": "api_retry", "error": "rate_limit"})
+        events = [
+            {"host": "claude", "session": "claude-1", "event": "StopFailure",
+             "payload": {"error": "rate_limit", "session_id": "claude-1"},
+             "push": {"returncode": EXIT.OK, "landed": True}},
+            {"host": "copilot", "session": "copilot-1", "event": "errorOccurred",
+             "payload": {"recoverable": False, "error": {"message": "usage limit exceeded"},
+                         "session_id": "copilot-1"}},
+        ]
+        probes = [
+            {"agent": "claude", "returncode": EXIT.NO, "tail": ["boom"], "api_retry": [],
+             "raw_output": [claude_retry], "observed_limit_lines": []},
+            {"agent": "codex", "returncode": EXIT.NO, "tail": [], "api_retry": [],
+             "raw_output": [CODEX_LIMIT], "observed_limit_lines": [CODEX_LIMIT]},
+        ]
+        results = e4.judge(events, probes)
+        self.assertEqual({h: v for h, (v, _) in results.items()},
+                         {"H1": "PASS", "H2": "PASS", "H3": "PASS", "H4": "PASS",
+                          "H5": "PASS"})
+
+    def test_missing_copilot_or_codex_limit_evidence_is_inconclusive(self):
+        claude_retry = json.dumps({"type": "system", "subtype": "api_retry", "error": "rate_limit"})
+        events = [
+            {"host": "claude", "session": "claude-1", "event": "StopFailure",
+             "payload": {"error": "rate_limit", "session_id": "claude-1"},
+             "push": {"returncode": EXIT.OK, "landed": True}},
+            {"host": "copilot", "session": "copilot-1", "event": "sessionEnd",
+             "payload": {"reason": "abort", "session_id": "copilot-1"}},
+        ]
+        probes = [{"agent": "claude", "returncode": EXIT.NO, "tail": ["boom"], "api_retry": [],
+                   "raw_output": [claude_retry], "observed_limit_lines": []}]
+        results = e4.judge(events, probes)
+        self.assertEqual((results["H3"][0], results["H5"][0]), ("INCONCLUSIVE", "INCONCLUSIVE"))
+        verdict, _ = e4.render(results)
+        self.assertEqual(verdict, "INCONCLUSIVE")
+
+    def test_h2_requires_exit_zero_and_a_landed_push(self):
+        events = [{"host": "claude", "session": "claude-1", "event": "StopFailure",
+                   "payload": {"error": "rate_limit", "session_id": "claude-1"},
+                   "push": {"returncode": EXIT.NO, "landed": True}}]
+        self.assertEqual(e4.judge(events, [])["H2"][0], "FAIL")
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +465,19 @@ class AttachmentRoundTrip(unittest.TestCase):
         self.assertEqual(replaced["relations_after"], 1)
         self.assertEqual(e3.verdict_of(cases, replaced), e3.PASS)
 
+    def test_missing_the_original_relation_is_inconclusive(self):
+        verdict = e3.verdict_of(
+            [{"match": True}],
+            {"relations_before": 0, "relations_after": 1, "old_relation_gone": True,
+             "download_match": True},
+        )
+        self.assertEqual(verdict, e3.INCONCLUSIVE)
+        self.assertIn("INCONCLUSIVE",
+                      e3.render([{"case": "x", "match": True, "bytes_sent": 1, "bytes_got": 1}],
+                                {"relations_before": 0, "relations_after": 1,
+                                 "old_relation_gone": True, "download_match": True},
+                                verdict, "7"))
+
     def test_a_changed_byte_is_found_by_hash(self):
         cases, replaced = e3.run(FakeScratch(mangle=lambda t: t.replace("\r\n", "\n")))
         broken = {c["case"] for c in cases if not c["match"]}
@@ -473,12 +574,21 @@ class ScriptedCard:
         return snap
 
 
-def snap(state="New", *shas):
-    return {"state": state, "rev": 1, "artifacts": [
+def update(rev, old, new, *shas, author="Microsoft.VisualStudio.Services.TFS"):
+    return {"rev": rev,
+            "fields": {"System.State": {"oldValue": old, "newValue": new}},
+            "revisedBy": {"displayName": author},
+            "relations": {"added": [
+                {"rel": "ArtifactLink", "url": f"vstfs:///Git/Commit/proj%2Frepo%2F{s}"}
+                for s in shas]}}
+
+
+def snap(state="New", *shas, rev=1, updates=None):
+    return {"state": state, "rev": rev, "updates": list(updates or []), "artifacts": [
         {"name": "Fixed in Commit", "url": f"vstfs:///Git/Commit/proj%2Frepo%2F{s}"} for s in shas]}
 
 
-class Mentions(unittest.TestCase):
+class Mentions(ScriptTestCase):
 
     def test_prepare_makes_a_branch_with_both_mentions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -508,48 +618,92 @@ class Mentions(unittest.TestCase):
             return ""
 
         with mock.patch.object(e7, "git", fake_git):
-            e7.push("/r", "origin", "abc:refs/heads/b", "SECRET-PAT")
+            e7.push("/r", "origin", "abc:refs/heads/b", "SECRET-PAT",
+                    ["https://dev.azure.com/contoso/Scratch/_git/r"])
         self.assertNotIn("SECRET-PAT", " ".join(seen["args"]))
-        self.assertEqual(seen["env"]["GIT_CONFIG_KEY_0"], "http.extraheader")
+        self.assertEqual(seen["env"]["GIT_CONFIG_KEY_0"],
+                         "http.https://dev.azure.com/contoso/Scratch/_git/r.extraheader")
         self.assertTrue(seen["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic "))
         self.assertNotIn("SECRET-PAT", seen["env"]["GIT_CONFIG_VALUE_0"])    # it is base64
+
+    def test_validated_push_urls_reads_every_resolved_push_url(self):
+        urls = "\n".join([
+            "https://dev.azure.com/contoso/Scratch/_git/r1",
+            "https://dev.azure.com/contoso/Scratch/_git/r2",
+        ])
+        with mock.patch.object(e7, "git", return_value=urls):
+            self.assertEqual(
+                e7.validated_push_urls("/r", "origin", "contoso", "Scratch"),
+                ["https://dev.azure.com/contoso/Scratch/_git/r1",
+                 "https://dev.azure.com/contoso/Scratch/_git/r2"],
+            )
+
+    def test_e7_refuses_a_remote_mismatch_before_it_connects(self):
+        argv = FLAGS + ["--repo-path", "/scratch", "--push"]
+        with mock.patch.object(e7, "validated_push_urls",
+                               side_effect=e7.GitError("remote mismatch")), \
+                mock.patch.object(common, "connect", side_effect=AssertionError("connected")):
+            err = self.assert_exits(EXIT.INVALID, e7.main, argv)
+        self.assertIn("remote mismatch", err)
 
     def test_commit_linked_matches_the_sha(self):
         self.assertTrue(e7.commit_linked(snap("New", "ABCDEF123"), "abcdef123"))
         self.assertFalse(e7.commit_linked(snap("New", "ffff"), "abcdef123"))
 
     def test_watch_stops_when_linked_and_moved(self):
-        card = ScriptedCard([snap("New"), snap("New", "aaa"), snap("Resolved", "aaa")])
+        card = ScriptedCard([snap("New", rev=1), snap("New", "aaa", rev=1),
+                             snap("Resolved", "aaa", rev=2,
+                                  updates=[update(2, "New", "Resolved", "aaa")])])
         sleeps = []
-        seen = e7.watch(card, "aaa", "New", 100, 5, sleep=sleeps.append, clock=lambda: 0)
+        seen = e7.watch(card, "aaa", {"state": "New", "rev": 1},
+                        100, 5, sleep=sleeps.append, clock=lambda: 0)
         self.assertEqual((seen["linked"], seen["state"], seen["polls"]), (True, "Resolved", 3))
         self.assertEqual(sleeps, [5, 5])
 
     def test_watch_gives_up_at_the_deadline(self):
-        card = ScriptedCard([snap("New")])
+        card = ScriptedCard([snap("New", rev=1)])
         ticks = iter(range(0, 1000, 10))
-        seen = e7.watch(card, "aaa", "New", 30, 10, sleep=lambda s: None,
+        seen = e7.watch(card, "aaa", {"state": "New", "rev": 1}, 30, 10, sleep=lambda s: None,
                         clock=lambda: next(ticks))
         self.assertFalse(seen["linked"])
         self.assertGreaterEqual(seen["polls"], 2)
 
     def test_analyse_and_the_settings_hint(self):
-        absent = e7.analyse("New", {"linked": False, "state": "New"},
-                            {"linked": False, "state": "New"})
+        initial = {"state": "New", "rev": 1}
+        absent = e7.analyse(initial, {"linked": False, "state": "New"},
+                            {"linked": False, "state": "New", "before_state": "New",
+                             "transition": None})
         self.assertEqual((absent["mention_links_commit"], absent["fixes_transitions"]),
                          (e7.ABSENT, e7.UNCHANGED))
         shas = {e7.MENTION: "a" * 40, e7.FIXES: "b" * 40}
         self.assertIn("SETTINGS TO CHECK", e7.render(absent, "br", shas, "7"))
-        good = e7.analyse("New", {"linked": True, "state": "New"},
-                          {"linked": True, "state": "Resolved"})
+        good = e7.analyse(initial, {"linked": True, "state": "New"},
+                          {"linked": True, "state": "Resolved", "before_state": "New",
+                           "transition": {"rev": 3, "author": "Microsoft.VisualStudio.Services.TFS"}})
         self.assertEqual((good["mention_links_commit"], good["fixes_transitions"]),
                          (e7.LINKED, e7.TRANSITIONED))
         self.assertNotIn("SETTINGS TO CHECK", e7.render(good, "br", shas, "7"))
+        prior = e7.analyse(initial, {"linked": True, "state": "Active"},
+                           {"linked": True, "state": "Active", "before_state": "Active",
+                            "transition": None})
+        self.assertEqual(prior["fixes_transitions"], e7.PRIOR)
+        self.assertIn("prior rather than attributing", e7.render(prior, "br", shas, "7"))
 
     def test_a_mention_that_moves_state_on_its_own_is_noted(self):
-        facts = e7.analyse("New", {"linked": True, "state": "Active"},
-                           {"linked": True, "state": "Active"})
+        facts = e7.analyse({"state": "New", "rev": 1}, {"linked": True, "state": "Active"},
+                           {"linked": True, "state": "Active", "before_state": "Active",
+                            "transition": None})
         self.assertTrue(facts["mention_alone_moved_state"])
+
+    def test_fixes_transition_requires_a_later_automation_authored_revision(self):
+        after = snap("Resolved", "bbb", rev=3, updates=[
+            update(2, "New", "Active", "bbb"),
+            update(3, "Active", "Resolved", "bbb", author="A Person"),
+        ])
+        self.assertIsNone(e7.matching_transition(after, "bbb", 2))
+        after["updates"].append(update(4, "Resolved", "Closed", "bbb"))
+        transition = e7.matching_transition(after, "bbb", 2)
+        self.assertEqual((transition["rev"], transition["new"]), (4, "Closed"))
 
     def test_guided_mode_without_a_terminal_says_how_to_continue(self):
         with mock.patch.object(sys, "stdin", io.StringIO("")), \

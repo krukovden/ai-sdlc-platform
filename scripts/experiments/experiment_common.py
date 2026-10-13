@@ -264,8 +264,10 @@ class AdoScratch:
         """Everything the card says about itself beyond attachments: state and artifact links."""
         item = self.board._rest(f"wit/workitems/{self.identifier}",
                                 query={"$expand": "relations"}) or {}
+        updates = self.board._rest(f"wit/workitems/{self.identifier}/updates") or {}
         fields = item.get("fields") or {}
         artifacts = [r for r in item.get("relations") or [] if r.get("rel") == "ArtifactLink"]
         return {"state": fields.get("System.State"), "rev": item.get("rev"),
+                "updates": list(updates.get("value") or []),
                 "artifacts": [{"name": (r.get("attributes") or {}).get("name"),
                                "url": r.get("url")} for r in artifacts]}

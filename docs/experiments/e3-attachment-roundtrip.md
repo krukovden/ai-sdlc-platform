@@ -15,7 +15,7 @@ Spec: "Before implementation" item 3. Script: `scripts/experiments/e3_attachment
 
 **n.** 6 round trips and 1 replace sequence; no repetition.
 
-**Pass rule.** PASS only if all six hashes match, the replace leaves exactly one relation, the old relation is not among them, and the replacement downloads identical. Anything else is FAIL.
+**Pass rule.** PASS only if all six hashes match, the replace leaves exactly one relation, at least one original `design.md` relation was observed before the replace, that old relation is not among the relations afterwards, and the replacement downloads identical. FAIL if bytes change, more than one relation remains, the old relation is still there, or the replacement downloads different. **INCONCLUSIVE** if no original relation was ever observed before the replace, because the run then did not prove a relation was removed.
 
 **Stop rule.** None needed: the whole run is seven operations. A failure in one case does not stop the others, so the report shows which kinds of content break.
 
