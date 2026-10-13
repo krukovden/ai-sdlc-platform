@@ -8,7 +8,7 @@ platform revision ADR, [IDE-147](https://linear.app/krukov-idea-hub/issue/IDE-14
 how to run it.
 
 What it serves today: **phase 2, design**, and **phase 3, development** through
-planning (3.1) and building (3.2). Integration (3.3) and QA are later build steps:
+planning (3.1) and building (3.2), from a terminal or unattended (`--agent`). Integration (3.3) and QA are later build steps:
 a Feature that reaches them stays where it is, waiting.
 
 ## Before the first run
@@ -263,6 +263,128 @@ When every item is done, the runner posts a `built` comment, uploads the journal
 releases the Feature and exits 0; the card waits at `idp:development` for
 integration (3.3).
 
+## Agent mode: a night you can leave
+
+```bash
+python3 scripts/run.py --agent                 # every phase this machine serves
+python3 scripts/run.py --agent --serve design  # only these phases
+python3 scripts/run.py stop                    # from another terminal: stop after the task in flight
+python3 scripts/run.py takeover IDE-88         # a human claims a dead run's card
+```
+
+`--agent` loops until it is stopped. Every pass it reaps the project's stale
+leases, lists the cards, and takes the first one waiting for a phase it serves:
+cards it already holds first (a restarted loop resumes them), then
+`idp:paused:<run>` cards — any run may take those at once — then free ones. It runs
+that card exactly as `run.py <feature-id>` would, to its next stop, then lists
+again. **Which phases it serves is not a profile key**: design needs the `design`
+role, development needs `worker` and a `review` that may differ from it, and a
+phase whose roles this machine cannot fill is not served. `--serve` narrows that.
+
+The rules are CRAP's agent mode:
+
+* **The two human gates are never approved.** A Feature that reaches
+  `idp:design-review` is left there, and the loop posts a decision comment saying
+  so — once per ADR hash. The merge into `main` is never the runner's; a Feature
+  whose board branch is `main` or `master` is refused, reported once, and skipped.
+* **Calls a session would have asked a human are made conservatively and
+  recorded.** Every session's prompt gains the agent-mode rules and
+  `IDP_AGENT_MODE=1`, and the session records each call with
+  `run.py decide --context … --decision … --rationale … --alternative …
+  --load-bearing yes|no`. After the session the runner posts each one on the
+  Feature as a decision-journal comment — Context, Decision, Rationale, Sign-off,
+  Load-bearing, Alternative — keyed, so a crash and a resume post it once.
+* **`blocked` always halts that card.** It keeps `idp:blocked` until a human lifts
+  it, and the loop moves on to the next card.
+* **A refusal is reported once and backed off.** A card that answers exit 3 — or
+  that ran and changed nothing on the board, because it waits for something this
+  run does not do — is not looked at again for 5 minutes, then 10, 20, up to two
+  hours. The same refusal is printed once; nothing is written to the board, because
+  exit 3 means nothing changed.
+* **An idle loop slows down.** A pass that ran nothing sleeps 1 minute, then 2, 4,
+  8, up to 15. A machine that can fill no role says so once and asks again every 15
+  minutes, with a fresh executor, so an agent whose usage limit reset comes back.
+
+Nothing in agent mode prompts: a takeover refuses (below), and a gate never waits
+for a keypress.
+
+### Stop, and `idp:stop`
+
+`run.py stop` does not kill anything. It writes a stop request
+(`~/.idp/agent/<run>.stop`) that the loop and the phases read **before they start
+the next session**. The session in flight finishes and its result is routed as
+usual — a finished PBI is still finalized, reviewed and merged. Then nothing new
+starts: every PBI the run still holds gets the mechanical handoff in its worktree
+(wip commit, `handoff.md`, both pushed), its owner tag becomes `idp:paused:<run>`,
+the Feature is paused last, and the loop exits. With no live loop on this machine
+(`~/.idp/agent/<run>.pid` names a dead process, or none), `stop` releases the run's
+claims the same way at once. Without `--run-id` it stops every live loop here, or
+else this user and machine's run.
+
+An **`idp:stop`** tag on a Feature is the same request for that Feature only: its
+run pauses it before the next session and goes on with other cards. No run claims
+a card carrying `idp:stop`; remove the tag to let runs take it again.
+`run.py <feature-id>` in a terminal honours both the same way.
+
+### Takeover
+
+`run.py takeover <card>` is for a human who knows a run is dead — their own laptop,
+a session that ran out of tokens — and does not want to wait out the 60-minute
+lease. It shows the current owner, its last sign of life by the board's clock, and
+the revision; asks you to type `yes`; and claims fenced on that revision, so if the
+owner wrote anything in between, nothing is taken. Then it says where the work
+resumes — `handoff.md` on the PBI branches that carry one, else git and the board —
+and runs the Feature on from there (`--claim-only` stops after the claim). A
+takeover is a new lease generation, so whatever the dead run still pushes to its
+old PBI branches is ignored.
+
+It is **never done in agent mode**: without a terminal, or with
+`IDP_AGENT_MODE` set, it refuses with exit 3. A **paused** card needs no takeover:
+any run claims it at once, and `takeover` on one claims it without asking. A PBI is
+refused toward its Feature, whose owner holds the PBI claims.
+
+## When a session ends early: the handoff layers
+
+| Layer | Fires | Writes the handoff | Status |
+| -- | -- | -- | -- |
+| 1. Before the cliff | the status line sees context or five-hour usage at 90% | the model, told once per session by a `PostToolUse` hook | Claude only; advisory |
+| 2. At the cliff | Claude `StopFailure`; Copilot `errorOccurred` (not recoverable) / `sessionEnd` (error, timeout, abort) | `scripts/hooks/cliff_handoff.py`, no model | best-effort; unverified until experiment 4 |
+| 3. After the cliff | the runner sees its worker exit on a limit | the runner, no model | the guarantee (see *Phase 3*) |
+
+**Layer 2** runs `handoff.py` steps 1 and 2 — the `wip(handoff)` commit and a
+mechanical `handoff.md`, pushed — on a `pbi/*` branch only, once per session, and
+never pauses the card: a model session holds no board credential, so layer 3 or
+`reap` does that. The card is `IDP_CARD` under the runner, else the id in the PBI
+branch name. Claude gets it from the plugin's `hooks/hooks.json`. Copilot gets no
+plugin hook — and never a `sessionStart` one, which could make it drop the
+freshness hook's message — so install `hooks/copilot-hooks.json` by hand into
+`~/.copilot/hooks/` with `IDP_PLATFORM_ROOT` set, or print one with absolute paths:
+`python3 scripts/hooks/cliff_handoff.py --print-config copilot`. Whether these
+events fire at a real limit, and whether a hook can still push then, is
+[experiment 4](experiments/e4-cliff-hooks.md); until it runs nothing relies on
+this layer.
+
+**Layer 1** needs the status line, which a plugin cannot set:
+
+```bash
+python3 scripts/hooks/statusline.py --install     # wraps the status line you have
+python3 scripts/hooks/statusline.py --uninstall   # puts it back
+```
+
+`--install` never replaces a status line silently. It keeps the one configured —
+on a machine with Orca, Orca's `claude-statusline.sh` — prints what it wrapped,
+and runs it on the same input after recording the numbers, so what you see does
+not change. The numbers go to `~/.idp/hooks/sessions/<session>.json`; the plugin's
+`PostToolUse` hook (`scripts/hooks/context_watch.py`) reads them and, the first
+time either reaches 90% (`IDP_HANDOFF_THRESHOLD`), tells the model to finish the
+step in flight, commit, write `handoff.md`, push and `report --code 4`. It is
+advice: CRAP saw its own fire about twenty times without one committed handoff.
+If Orca rewrites the status line later, the wrapper is simply gone and the hook
+stays silent.
+
+A `handoff.md` the model wrote itself is kept by layers 2 and 3: the mechanical
+facts go under it, not over it.
+
 ## What a session does at the end
 
 ```bash
@@ -307,7 +429,7 @@ at every held card of the project. `adr-check` is phase 3's precondition.
 | 0 | the run reached a gate or a phase it does not serve, and left the card waiting; in phase 3, every PBI is merged |
 | 2 | the card is blocked, or this machine cannot fill a role (`FIX` says which); in phase 3, nothing can run |
 | 3 | refused: the card is held, stopped, or not in a phase this run starts from |
-| 4 | the card was paused after a rate limit; any run may take it |
+| 4 | the card was paused — after a rate limit, `run.py stop` or `idp:stop`; any run may take it |
 
 ## Where things live
 
@@ -323,6 +445,10 @@ at every held card of the project. `adr-check` is phase 3's precondition.
 | What the session said | `<worktree>/.idp/logs/design.log` |
 | Its report | `<worktree>/.idp/result.json` |
 | Attempts, claims, heartbeats, hand-offs | comments on the card, each with an `idp:event` marker |
+| Decisions made in agent mode | comments on the Feature, Context … Alternative, each with an `idp:event` marker |
+| A session's recorded decisions, until posted | `<worktree>/.idp/decisions.jsonl` |
+| A live agent loop, a stop request | `~/.idp/agent/<run>.pid`, `~/.idp/agent/<run>.stop` |
+| Layer 1's numbers, the wrapped status line | `~/.idp/hooks/sessions/<session>.json`, `~/.idp/hooks/statusline-next.json` |
 
 ## Backends
 
