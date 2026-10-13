@@ -12,11 +12,22 @@ no model, before anything else is lost.
                   sessionEnd    reason error, timeout or abort
 
 It does steps 1 and 2 of the handoff — the `wip(handoff)` commit and a
-mechanical `handoff.md`, both pushed — and never step 3: a model session holds no
-board credential, so the card is paused by the runner (layer 3) or released by
-`reap` when its lease runs out. It acts only on a `pbi/*` branch and refuses
-main, master and the feature branch, exactly as handoff.py does. It runs once
-per session: a second event from the same session finds the marker and stops.
+mechanical `handoff.md`, both pushed — and then step 3, so another machine may
+take the card at once rather than after the lease:
+
+* **with a board credential** — an interactive session, where the profile and
+  the token are this user's — it swaps `idp:owner:<run>` for `idp:paused:<run>`
+  itself, in the same one fenced write `handoff.py --pause` makes;
+* **without one** — always under the runner, whose sessions hold no board
+  credential by design — it writes a **pause request** into the committed
+  handoff.md (card, branch, run, reason). The next runner pass and `run.py reap`
+  read it from the branch and make the swap at once, as long as the handoff is
+  still the branch's last commit.
+
+It acts only on a `pbi/*` branch and refuses main, master and the feature
+branch, exactly as handoff.py does. It runs once per identified session: a
+second event from the same session finds the marker and stops; an event with no
+session id is never marked, so it can never silence another session.
 
 **Best-effort and unverified.** Whether StopFailure and errorOccurred fire at a
 real limit, and whether a command hook can still `git push` at that moment, is
@@ -114,7 +125,25 @@ def mention(card):
     return f"#{card}" if str(card).isdigit() else str(card)
 
 
-def run(host, event, payload, environ=None):
+def default_open_board():
+    """The board as this user's profile and token open it; raises when they cannot."""
+    board_cli = _sibling("board", "idp_board")
+    return board_cli.open_board()[2]
+
+
+def pause_now(card, run, open_board):
+    """Step 3 with a credential: the outcome of the fenced swap, or None without one."""
+    try:
+        board = open_board()
+    except (SystemExit, Exception):                     # noqa: BLE001 - no credential here
+        return None
+    try:
+        return handoff.pause(board, card, run)["outcome"]
+    except Exception:                                   # noqa: BLE001 - the request stands
+        return None
+
+
+def run(host, event, payload, environ=None, open_board=None):
     """The hook's work. Returns (code, a one-line JSON-able result)."""
     environ = os.environ if environ is None else environ
     reason = reason_for(host, event, payload)
@@ -123,10 +152,10 @@ def run(host, event, payload, environ=None):
     worktree = toplevel(payload.get("cwd") or os.getcwd())
     if worktree is None:
         return EXIT.OK, {"outcome": "ignored", "why": "not inside a git worktree"}
-    session = str(payload.get("session_id") or payload.get("sessionId") or "unknown")
+    session = payload.get("session_id") or payload.get("sessionId")
     marker = state_dir(environ) / "handoffs" / \
-        f"{re.sub(r'[^A-Za-z0-9._-]', '_', session)}.done"
-    if marker.exists():
+        f"{re.sub(r'[^A-Za-z0-9._-]', '_', str(session))}.done" if session else None
+    if marker is not None and marker.exists():
         return EXIT.OK, {"outcome": "ignored", "why": "this session already handed off"}
     card = card_of(worktree, environ)
     try:
@@ -136,15 +165,29 @@ def run(host, event, payload, environ=None):
                 f"the branch is '{handoff.current_branch(worktree)}', not a pbi/* branch, "
                 "and IDP_CARD is not set. Nothing was committed.",
                 "the cliff handoff acts only in a PBI's worktree")
+        # Under the runner (IDP_CARD set) the session knows neither the run nor a
+        # credential: the request leaves `run` empty and the reader takes the
+        # owner from the board. Interactive sessions claim as this user and machine.
+        under_runner = bool(environ.get("IDP_CARD"))
+        run_id = environ.get("IDP_RUN_ID") or (None if under_runner
+                                                else handoff.tags.current_run_id())
+        request = {"card": str(card), "branch": handoff.current_branch(worktree),
+                   "run": run_id, "reason": re.sub(r"[{}]", "", reason)}
         done = handoff.handoff(worktree, reason, card, mention=mention(card),
                                last_message=last_message(host, payload),
-                               feature_branch=environ.get("IDP_FEATURE_BRANCH") or None)
+                               feature_branch=environ.get("IDP_FEATURE_BRANCH") or None,
+                               pause_request=request)
     except handoff.HandoffError as exc:
         return exc.code, {"outcome": "refused" if exc.code == EXIT.INVALID else "failed",
                           "message": EXIT.with_fix(exc.message, exc.fix)}
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(done["commit"], encoding="utf-8")
-    return EXIT.OK, {"outcome": "handed-off", "card": card, **done}
+    paused = None
+    if not under_runner and run_id:
+        paused = pause_now(card, run_id, open_board or default_open_board)
+    if marker is not None:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(done["commit"], encoding="utf-8")
+    return EXIT.OK, {"outcome": "handed-off", "card": card, "paused": paused or "requested",
+                     **done}
 
 
 def config(host, root=None):

@@ -760,6 +760,11 @@ def cmd_reap(args):
         for entry in lease.reap(board, card, lease_minutes=args.lease_minutes):
             print(f"{entry['identifier']:<10} {entry['outcome']:<8} "
                   f"{entry.get('owner') or '—'}  last seen {entry.get('last_seen') or 'never'}")
+    # A hook that handed off with no board credential asked on the branch for the
+    # pause it could not make; that is honoured now, not when the lease runs out.
+    held = [board.get_issue(card) for card in cards]
+    agent_mode.honour_pause_requests(board, held, agent_mode.branch_reader(os.getcwd()),
+                                     out=sys.stdout)
     sys.exit(EXIT.DONE)
 
 
@@ -805,7 +810,8 @@ def cmd_agent(args):
         board, profile, run_id, make_executor, make_runner, project_cards(board, profile),
         agent_mode.Presence(load_design().HOME, run_id), executors, SCRIPT_DIR / "run.py",
         serve=serve, out=sys.stderr, worktrees=worktrees_home(os.getcwd()).parent,
-        handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention)
+        handoff=phase3.common.handoff_module(), mention=phase3.gitops.mention,
+        read_branch=agent_mode.branch_reader(os.getcwd()))
     sys.exit(loop.run())
 
 

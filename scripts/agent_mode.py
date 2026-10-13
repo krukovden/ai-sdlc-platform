@@ -40,6 +40,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,7 @@ def _sibling(name, alias):
 EXIT = _sibling("exit_codes", "idp_exit_codes")
 tags = _sibling("tags", "idp_tags")
 lease = _sibling("lease", "idp_lease")
+handoff_script = _sibling("handoff", "idp_handoff")
 
 DECISION = "decision"
 PAUSE = "pause"
@@ -362,6 +364,67 @@ def release_run(board, run, cards, worktrees, reason, handoff=None, mention=None
 
 
 # ---------------------------------------------------------------------------
+# Pause requests: step 3 of a handoff made by a hook with no board credential
+# ---------------------------------------------------------------------------
+
+def branch_reader(repo, run=subprocess.run):
+    """`read(branch) -> (handoff.md text or None, whether the handoff is the tip)`.
+
+    Fetched into a private ref, so nothing the runner relies on — FETCH_HEAD, the
+    tracking refs — moves under a phase that is running beside it.
+    """
+    def git(*args):
+        answer = run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                     stdin=subprocess.DEVNULL)
+        return answer.stdout.strip() if answer.returncode == EXIT.OK else None
+
+    def read(branch):
+        ref = f"refs/idp/pause-check/{branch}"
+        if git("fetch", "-q", "origin", f"+refs/heads/{branch}:{ref}") is None:
+            return None, False
+        tip = git("rev-parse", ref)
+        last = git("log", "-1", "--format=%H", ref, "--", handoff_script.HANDOFF_FILE)
+        return git("show", f"{ref}:{handoff_script.HANDOFF_FILE}"), bool(tip) and tip == last
+    return read
+
+
+def honour_pause_requests(board, cards, read_branch, own_run=None, out=None):
+    """Pause every held PBI whose branch asks for it. Returns the cards paused.
+
+    A request counts only when all of this holds, so a stale one never pauses a
+    live owner: the card is held by a run other than `own_run`; the request
+    names this card and the branch of the card's current claim; it names that
+    owner's run, or none (a runner's session cannot know it); and the handoff
+    that carries it is still the branch's last commit — nobody worked on after it.
+    """
+    out = out or sys.stderr
+    paused = []
+    for item in cards:
+        owner = tags.owner_of(item.get("labels") or item.get("tags") or [])
+        if not owner or owner == tags.run_of(owner) or tags.run_of(owner) == own_run:
+            continue                                    # free, a Feature, or ours
+        card = item["identifier"]
+        claims = lease.events(board.list_comments(card), lease.CLAIM)
+        branch = claims[-1].get("branch") if claims else None
+        if not branch:
+            continue
+        text, at_tip = read_branch(branch)
+        request = handoff_script.read_pause_request(text)
+        if not request or not at_tip:
+            continue
+        run = tags.run_of(owner)
+        if str(request.get("card")) != str(card) or request.get("branch") != branch \
+                or request.get("run") not in (None, run):
+            continue
+        result = pause_card(board, card, run, f"the handoff on `{branch}` asked for it: "
+                                              f"{request.get('reason') or 'no reason given'}")
+        if result["outcome"] == "written":
+            paused.append(card)
+            print(f"{card}: paused on the pause request in handoff.md on {branch}", file=out)
+    return paused
+
+
+# ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
 
@@ -400,7 +463,7 @@ class AgentLoop:
                  clock=time.monotonic, out=None, poll=POLL_SECONDS,
                  max_idle=MAX_IDLE_SECONDS, refusal_backoff=REFUSAL_BACKOFF,
                  lease_minutes=lease.LEASE_MINUTES, worktrees=None, handoff=None,
-                 mention=None):
+                 mention=None, read_branch=None):
         self.board = board
         self.profile = profile
         self.run_id = tags.check_run_id(run_id)
@@ -421,6 +484,7 @@ class AgentLoop:
         self.worktrees = worktrees
         self.handoff = handoff
         self.mention = mention
+        self.read_branch = read_branch
         self.stopping = stop_signal(board, presence)
         self.executor = None
         self.backoff = {}               # card -> {"key", "delay", "until"}
@@ -502,8 +566,15 @@ class AgentLoop:
         except Exception as exc:                        # noqa: BLE001 - the board blinked
             self.say(f"listing the board failed: {exc}")
             return "idle"
-        if self.reap(cards):
-            cards = self.list_cards()                   # what was reaped is waiting now
+        released = self.reap(cards)
+        if self.read_branch is not None:
+            try:
+                released += len(honour_pause_requests(self.board, cards, self.read_branch,
+                                                      own_run=self.run_id, out=self.out))
+            except Exception as exc:                    # noqa: BLE001 - best effort
+                self.say(f"reading pause requests failed: {exc}")
+        if released:
+            cards = self.list_cards()                   # what was released is waiting now
         if self.presence.stop_requested():
             return "stop"
         served = self.served()

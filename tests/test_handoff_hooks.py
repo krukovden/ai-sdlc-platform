@@ -17,7 +17,13 @@ from pathlib import Path
 from unittest import mock
 
 from support import SCRIPTS_DIR, ScriptTestCase, load_package
-from phase3_world import GIT_ENV, git
+from phase3_world import BARE_OK, GIT_ENV, git
+from fakeboard import FakeBoard
+from test_runner import run as runner_module
+
+agent_mode = runner_module.agent_mode
+lease = runner_module.lease
+handoff_script = runner_module.phase3.common.handoff_module()
 
 executors = load_package(SCRIPTS_DIR / "executors", "idp_executors")
 EXIT = executors.EXIT
@@ -61,6 +67,10 @@ class LayerThreeTextTests(unittest.TestCase):
         self.assertIsNone(executors.local.limit_event("the usage of this limit is fine"))
 
 
+def no_board():
+    raise SystemExit(EXIT.CONFIG)
+
+
 class GitTestCase(ScriptTestCase):
 
     def setUp(self):
@@ -80,14 +90,18 @@ class GitTestCase(ScriptTestCase):
         git(self.repo, "remote", "add", "origin", str(self.remote))
         git(self.repo, "push", "-q", "origin", "main")
         self.state = self.root / "state"
-        self.env = {"IDP_STATE_DIR": str(self.state)}
+        self.env = {"IDP_STATE_DIR": str(self.state), "IDP_RUN_ID": "run-1"}
+        # No test may open the real board: without a credential is the default.
+        patch = mock.patch.object(cliff, "default_open_board", no_board)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def branch(self, name):
         git(self.repo, "checkout", "-q", "-B", name)
 
     def remote_file(self, branch, path):
-        answer = subprocess.run(["git", "-C", str(self.remote), "show", f"{branch}:{path}"],
-                                capture_output=True, text=True)
+        answer = subprocess.run(["git", *BARE_OK, "-C", str(self.remote), "show",
+                                 f"{branch}:{path}"], capture_output=True, text=True)
         return answer.stdout if answer.returncode == 0 else None
 
 
@@ -163,6 +177,82 @@ class LayerTwoTests(GitTestCase):
                                                   "cwd": str(self.repo)}, self.env)
         self.assertEqual(result["outcome"], "ignored")
 
+    def test_with_a_credential_the_hook_pauses_the_card_itself(self):
+        self.branch("pbi/7-store/g1")
+        board = FakeBoard(profile={})
+        board.add_card("7", tags_=["idp:owner:run-1/w1"], kind="pbi", parent="IDE-88")
+        code, result = cliff.run("claude", None, self.stop_failure(), self.env,
+                                 open_board=lambda: board)
+        self.assertEqual(result["paused"], "written")
+        self.assertEqual(board.cards["7"]["tags"], ["idp:paused:run-1"])
+
+    def test_without_one_it_commits_a_pause_request_the_next_reader_honours(self):
+        board, card = self.held_pbi("run-7")
+        env = dict(self.env, IDP_CARD=card)                  # under the runner: no run, no token
+        env.pop("IDP_RUN_ID")
+        code, result = cliff.run("claude", None, self.stop_failure(), env)
+        self.assertEqual(result["paused"], "requested")
+        text = self.remote_file(self.pbi_branch, "handoff.md")
+        request = handoff_script.read_pause_request(text)
+        self.assertEqual((request["card"], request["branch"], request["run"]),
+                         (card, self.pbi_branch, None))
+        # Another machine, another clone: the reaper reads the branch and pauses at once.
+        other = self.root / "other"
+        git(self.root, "clone", "-q", str(self.remote), str(other))
+        paused = agent_mode.honour_pause_requests(board, board.list_project(),
+                                                  agent_mode.branch_reader(other),
+                                                  out=io.StringIO())
+        self.assertEqual(paused, [card])
+        self.assertEqual(board.cards[card]["tags"], ["idp:paused:run-7"])
+        # Asked twice, it is one pause.
+        self.assertEqual(agent_mode.honour_pause_requests(
+            board, board.list_project(), agent_mode.branch_reader(other),
+            out=io.StringIO()), [])
+
+    def test_a_request_is_ignored_once_work_moved_on_or_for_another_run(self):
+        board, card = self.held_pbi("run-7")
+        cliff.run("claude", None, self.stop_failure(), dict(self.env, IDP_RUN_ID="run-other"))
+        reader = agent_mode.branch_reader(self.repo)
+        self.assertEqual(agent_mode.honour_pause_requests(board, board.list_project(), reader,
+                                                          out=io.StringIO()), [])
+        board2, card = self.held_pbi("run-other", identifier="8")
+        (self.repo / "more.py").write_text("x = 2\n", encoding="utf-8")
+        git(self.repo, "add", "more.py")
+        git(self.repo, "commit", "-q", "-m", "work goes on #8")
+        git(self.repo, "push", "-q", "origin", f"HEAD:refs/heads/{self.pbi_branch}")
+        self.assertEqual(agent_mode.honour_pause_requests(board2, board2.list_project(), reader,
+                                                          out=io.StringIO()), [])
+        self.assertIn("idp:owner:run-other/w1", board2.cards[card]["tags"])
+
+    def test_the_reader_never_pauses_its_own_runs_cards(self):
+        board, card = self.held_pbi("run-7")
+        env = dict(self.env, IDP_CARD=card)
+        cliff.run("claude", None, self.stop_failure(), env)
+        self.assertEqual(agent_mode.honour_pause_requests(
+            board, board.list_project(), agent_mode.branch_reader(self.repo), own_run="run-7",
+            out=io.StringIO()), [])
+
+    def test_unidentified_sessions_never_share_a_marker(self):
+        self.branch("pbi/7-store/g1")
+        payload = self.stop_failure()
+        del payload["session_id"]
+        cliff.run("claude", None, payload, self.env)
+        (self.repo / "late.py").write_text("y = 1\n", encoding="utf-8")
+        code, result = cliff.run("claude", None, dict(payload), self.env)
+        self.assertEqual(result["outcome"], "handed-off")
+        self.assertIn("late.py", git(self.remote, "show", "--stat", "pbi/7-store/g1~1"))
+        self.assertFalse((self.state / "handoffs").exists())
+
+    def held_pbi(self, run, identifier="7"):
+        self.pbi_branch = f"pbi/{identifier}-store/g1"
+        self.branch(self.pbi_branch)
+        board = FakeBoard(profile={})
+        board.add_card("IDE-88", tags_=["idp:development", f"idp:owner:{run}"])
+        board.add_card(identifier, tags_=[f"idp:owner:{run}/w1"], kind="pbi", parent="IDE-88")
+        lease.post_event(board, identifier, lease.CLAIM, f"claim:{identifier}",
+                         owner=f"{run}/w1", generation=1, branch=self.pbi_branch)
+        return board, identifier
+
     def test_a_handoff_the_model_wrote_is_kept_with_the_facts_under_it(self):
         self.branch("pbi/7-store/g1")
         (self.repo / "handoff.md").write_text("# Where I stopped\n\nHalf of the index.\n",
@@ -178,7 +268,7 @@ class LayerTwoTests(GitTestCase):
         answer = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "hooks" / "cliff_handoff.py"), "--host",
              "claude"], input=json.dumps(self.stop_failure()), capture_output=True, text=True,
-            env=dict(os.environ, **self.env))
+            env=dict(os.environ, **self.env, IDP_CARD="7"))
         self.assertEqual(answer.returncode, EXIT.OK, answer.stderr)
         self.assertEqual(json.loads(answer.stdout)["outcome"], "handed-off")
 
