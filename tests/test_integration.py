@@ -20,8 +20,8 @@ from unittest import mock
 
 from support import ScriptTestCase, load_script
 from fakeboard import Crash, crash_and_resume
-from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, VERDICT, World,
-                          commit_push, design, git, integration_finding, lease, pbi,
+from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, VERDICT,
+                          World, commit_push, design, git, integration_finding, lease, pbi,
                           phase3, run, shape, tags, write_blueprint)
 
 integration = phase3.integration
@@ -740,7 +740,7 @@ def attempts_since_handback(world, phase):
 
 
 class ReviewFixTests(IntegrationTestCase):
-    """Attempt budgets renew when a human lifts the block; a cached bad answer still counts."""
+    """The four defects a re-review still found in 3.3."""
 
     def test_documenter_cannot_push_committed_code_changes(self):
         world = self.world()
@@ -760,6 +760,23 @@ class ReviewFixTests(IntegrationTestCase):
         self.assertIsNone(world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"))
         log = git(world.remote, "log", "--format=%s", FEATURE_BRANCH)
         self.assertNotIn("accidental", log)
+
+    def test_deleted_blueprint_is_rechecked_after_qa_return(self):
+        world = self.world()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(
+            world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"), BLUEPRINT)
+        git(world.repo, "fetch", "-q", "origin")
+        git(world.repo, "checkout", "-q", "-B", "qa-doc-change",
+            f"origin/{FEATURE_BRANCH}")
+        git(world.repo, "rm", "-q", "docs/blueprint/modules.md")
+        git(world.repo, "commit", "-q", "-m", "QA removes obsolete blueprint")
+        git(world.repo, "push", "-q", "origin", f"HEAD:{FEATURE_BRANCH}")
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.documenter = None
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"))
+        self.assertNotEqual(self.feature_tags(world), [tags.QA])
 
     def test_cached_malformed_witness_consumes_an_attempt_on_resume(self):
         world = self.world()

@@ -337,7 +337,9 @@ every link resolves, every built AC links code and test, the word ceiling, and
 nothing changed outside `docs/blueprint/`. A documenter's own commits are part of
 that diff: any path outside `docs/blueprint/**` is refused with a FIX, and nothing
 is committed or pushed. A refusal goes back with its problems as
-an attempt. What passes is committed to the feature branch as
+an attempt. A cached documentation result is rechecked against the current
+feature-branch tip, including an area file a later commit deleted, so a DONE from
+an earlier head is not trusted. What passes is committed to the feature branch as
 `docs(blueprint): … #<card>`, marked `idp-blueprint: <card>@<head>`, so it sits in
 the same pull request into `main` as the code.
 

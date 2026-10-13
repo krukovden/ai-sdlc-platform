@@ -608,7 +608,7 @@ class Integration:
         head = self.git.tracking(self.branch)
         passed = self.green(head)
         if passed:
-            return self.finish(passed["head"])
+            return self.finish(passed["head"], tip=head)
 
         rounds = self.rounds()
         n = len(rounds) + 1
@@ -750,35 +750,102 @@ class Integration:
 
     # -- the documenter, then the hand-off ------------------------------------
 
-    def finish(self, head):
-        code = self.document(head)
+    def finish(self, head, tip=None):
+        code = self.document(head, tip if tip is not None else head)
         if code != EXIT.DONE:
             return code
         return self.hand_off()
 
-    def documented(self, head):
-        """Did the documenter already run on this head? The board, else git, answers."""
+    def documented_record(self, head):
+        """The documented event for this integrated head, repaired from git if a crash ate it."""
         done = self.event(DOCUMENTED, head=head)
         if done:
-            self.record_documented(head, done.get("commit"))
-            return True
+            return done
         tip = self.git.tracking(self.branch)
         try:
-            found = self.git.log_grep(tip, f"{BLUEPRINT_MARK} {self.feature}@{head}")
+            found = self.git.log_grep(tip or head, f"{BLUEPRINT_MARK} {self.feature}@{head}")
         except GitError:
             found = ""
-        if found:
-            self.record_documented(head, found.splitlines()[0])
+        if not found:
+            return None
+        commit = found.splitlines()[0]
+        self.record_documented(head, commit)
+        return self.event(DOCUMENTED, head=head) or {"head": head, "commit": commit}
+
+    def documentation_holds(self, head, tip):
+        """Cached completion counts only for the tree it validated.
+
+        A later commit — including one that deletes a blueprint the documenter
+        added, so the net diff against the integrated head is empty — is checked
+        again. A cached DONE is never enough on its own.
+        """
+        done = self.documented_record(head)
+        if not done:
+            return False
+        commit = done.get("commit") or None
+        if not commit and tip == head:
+            self.record_documented(head, None)
             return True
-        return False
+        required = self.required_areas(head, tip, done)
+        if not required or not self.areas_pass(tip, required):
+            return False
+        if tip == (commit or head):
+            self.record_documented(head, commit)
+        return True
+
+    def required_areas(self, head, tip, done):
+        """Area files a cached completion must still show at `tip`.
+
+        The documented commit's diff names them, and so does any blueprint path
+        in `head..tip`, so an add followed by a delete cannot disappear.
+        """
+        paths = set()
+        raw = (done or {}).get("areas") or ""
+        paths.update(p.strip() for p in str(raw).split(",") if p.strip())
+        commit = (done or {}).get("commit") or None
+        if commit:
+            try:
+                paths.update(self._blueprint_paths(self.git.changed_files(head, commit)))
+            except GitError:
+                pass
+        if tip and head and tip != head:
+            try:
+                log = self.git.run("log", "--name-only", "--pretty=format:",
+                                   f"{head}..{tip}")
+            except GitError:
+                log = ""
+            paths.update(self._blueprint_paths(log.splitlines()))
+        return sorted(paths)
+
+    @staticmethod
+    def _blueprint_paths(lines):
+        prefix = DIRECTORY + "/"
+        return [p for p in lines if p.startswith(prefix) and p.endswith(".md")]
+
+    def areas_pass(self, sha, paths):
+        """Every named area file exists at `sha` and `blueprint.py` accepts it."""
+        if not sha or not paths:
+            return False
+        wt, _ = self.worktree("doc-check", sha)
+        blueprint = blueprint_module()
+        for path in paths:
+            file = wt.path / path
+            if not file.is_file():
+                return False
+            if blueprint.check_file(file, wt.path):
+                return False
+        return True
 
     def record_documented(self, head, commit):
         """The journal line, then the event: both derived from git, so a resume writes
         exactly what an uninterrupted run did."""
+        areas = []
         if commit:
-            areas = sorted({Path(p).stem for p in self.git.changed_files(head, commit)})
+            changed = self.git.changed_files(head, commit)
+            stems = sorted({Path(p).stem for p in changed})
+            areas = self._blueprint_paths(changed)
             self.dev.journal.add(f"Documenter at `{head[:12]}`: blueprints of "
-                                 f"{', '.join(areas)} updated in `{commit[:12]}`.")
+                                 f"{', '.join(stems)} updated in `{commit[:12]}`.")
         else:
             self.dev.journal.add(f"Documenter at `{head[:12]}`: every blueprint already "
                                  "current.")
@@ -789,20 +856,28 @@ class Integration:
                   if commit else
                   f"The documenter found every area blueprint already current at "
                   f"`{head[:12]}`; nothing to commit."),
-            head=head, commit=commit)
+            head=head, commit=commit,
+            **({"areas": ",".join(areas)} if areas else {}))
 
-    def document(self, head):
-        """The last step of 3.3: the area blueprints, checked by script, on the feature branch."""
+    def document(self, head, tip=None):
+        """The last step of 3.3: the area blueprints, checked by script, on the feature branch.
+
+        `head` is the integrated commit the green round validated. `tip` is the
+        feature branch now — the same commit, unless QA moved it. The documenter
+        works on `tip`; a cached completion is trusted only when that tree still
+        holds the blueprints.
+        """
         dev = self.dev
-        if self.documented(head):
+        tip = tip or head
+        if self.documentation_holds(head, tip):
             return EXIT.DONE
         blueprint = blueprint_module()
-        wt, context = self.worktree("documenter", head)
+        wt, context = self.worktree("documenter", tip)
         self.write_common(context)
         main, base_tip = self.main_sha()
-        base = self.git.run("merge-base", base_tip, head) if base_tip else head
+        base = self.git.run("merge-base", base_tip, tip) if base_tip else tip
         feature_changed = self.git.run("diff", "--name-only", "--no-renames",
-                                       base, head).splitlines()
+                                       base, tip).splitlines()
         (context / "changed.txt").write_text(
             "\n".join(feature_changed) + "\n", encoding="utf-8")
         (context / "blueprints.txt").write_text(
@@ -810,10 +885,12 @@ class Integration:
             + "\n", encoding="utf-8")
         skill = self.runner.repo_root / "skills" / "documenter" / "SKILL.md"
         blueprint_py = self.runner.repo_root / "scripts" / "blueprint.py"
+        done = self.event(DOCUMENTED, head=head) or {}
+        required = self.required_areas(head, tip, done)
 
         def prompt(feedback):
             return DOCUMENTER_PROMPT.format(
-                feature=self.feature, skill=skill, head=head, context=context,
+                feature=self.feature, skill=skill, head=tip, context=context,
                 blueprint_py=blueprint_py, run_py=self.runner.run_py,
                 feedback=f"\nThe runner's checks refused the last attempt:\n{feedback}\n"
                          "Fix exactly that." if feedback else "")
@@ -822,7 +899,7 @@ class Integration:
             return [p for p in paths if not p.startswith(DIRECTORY + "/")]
 
         def read():
-            changed = documenter_changed(wt, head)
+            changed = documenter_changed(wt, tip)
             outside = outside_of(changed)
             problems = []
             if outside:
@@ -830,8 +907,13 @@ class Integration:
                     "changed outside docs/blueprint/: " + ", ".join(outside)
                     + ". FIX: the documenter may change only docs/blueprint/**; "
                       "commit nothing else")
-            touched = sorted({p for p in feature_changed + changed
+            touched = sorted({p for p in list(feature_changed) + changed + required
                               if p.startswith(DIRECTORY + "/") and p.endswith(".md")})
+            if not changed and (done.get("commit") or tip != head) and not touched:
+                problems.append(
+                    "docs/blueprint: the feature branch moved after documentation and "
+                    "no area blueprint could be rechecked. FIX: restore the "
+                    "docs/blueprint/** files the documenter wrote")
             post_change = set(blueprint.area_files(wt.path))
             files = []
             for path in touched:
@@ -845,7 +927,7 @@ class Integration:
             for name, found in blueprint.check(files, wt.path).items():
                 problems += found
             if problems:
-                wt.reset_to(head)
+                wt.reset_to(tip)
                 raise IntegrationError("\n".join(problems))
             return changed
 
@@ -855,10 +937,10 @@ class Integration:
             return code
         # read() already refused this. Checked again immediately before any
         # commit or push, so a documenter commit cannot ride out on the blueprint.
-        full = documenter_changed(wt, head)
+        full = documenter_changed(wt, tip)
         outside = outside_of(full)
         if outside:
-            wt.reset_to(head)
+            wt.reset_to(tip)
             return dev.block_feature(
                 "the documenter's diff includes " + ", ".join(outside)
                 + ", outside docs/blueprint/**. FIX: a documenter commit may contain "
@@ -869,13 +951,13 @@ class Integration:
         areas = sorted({Path(p).stem for p in full})
         sha = wt.commit_all(f"docs(blueprint): {', '.join(areas)} {mention_of(self.feature)}"
                             f"\n\n{BLUEPRINT_MARK} {self.feature}@{head}\n", [DIRECTORY])
-        if sha is None and wt.head() != head:
+        if sha is None and wt.head() != tip:
             sha = wt.head()
-        if sha and sha != head and not self.git.push(sha, self.branch, expect=head):
+        if sha and sha != tip and not self.git.push(sha, self.branch, expect=tip):
             raise self.runner.error(EXIT.BLOCKED, f"{self.branch} moved while the documenter "
                                                   "was writing", "re-run; nobody else may "
                                                                  "push to the feature branch")
-        self.record_documented(head, sha if sha != head else None)
+        self.record_documented(head, sha if sha != tip else None)
         return EXIT.DONE
 
     def hand_off(self):
