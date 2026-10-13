@@ -349,13 +349,9 @@ the same pull request into `main` as the code.
 Nothing in the pipeline marks a Feature done. The human tests through the QA
 Testing PBI and either closes it and merges the pull request — the Feature is done
 — or files Bugs under the Feature (engineering-catalog's `qa-ado-work-item`) and
-sets `idp:development`. Then the next run takes the Bugs: an **intake** session
-(role `design`) writes, for every open item the plan does not carry, a plan entry
-with witnesses — a failing test first — the plan is amended and pinned as above
-(source `bug`, the key is the Bug's own id, and the human's card is never
-rewritten; it gets an agent brief attached), 3.2 builds them like PBIs, 3.3 runs
-again, and the Feature returns to `idp:qa`. The pull request into `main` is the
-same one.
+sets `idp:development`. Then the next run takes the Bugs: 3.2 builds them like
+PBIs, each from its Bug plan addendum (above), 3.3 runs again as a new cycle, and
+the Feature returns to `idp:qa`. The pull request into `main` is the same one.
 
 **Memory after the merge.** While the Feature is in flight, its journal and its
 Tried & Rejected are attachments on it. When the human merges into `main`,
@@ -566,7 +562,7 @@ product repository's clone so it can read them. `adr-check` is phase 3's precond
 | The planning session's state (a cache) | `~/.feature-discovery/planning/<card>/` — lost, it rebuilds from the card |
 | A session's worktree | `~/.idp/worktrees/<repo>/<card>-design/`, `<card>-planning/` |
 | A PBI's worktree, its review worktree | `~/.idp/worktrees/<repo>/<pbi>-g<N>/`, `<pbi>-review/` |
-| 3.3's worktrees, one per head | `~/.idp/worktrees/<repo>/<card>-integration-<sha>/`, `-documenter-<sha>/`, `-intake-<sha>/` |
+| 3.3's worktrees, one per head | `~/.idp/worktrees/<repo>/<card>-integration-<sha>/`, `-documenter-<sha>/` |
 | Area blueprints | `docs/blueprint/<area>.md` in the product repository, on the feature branch |
 | The pinned plan | `docs/plans/<card>.plan.json` on the feature branch, its hash in the planning comment |
 | The feature journal (working file) | `~/.idp/worktrees/<repo>/<card>-journal/journal.md`, uploaded as `01 · History` |
