@@ -857,6 +857,16 @@ lock.release()
         third.acquire()
         third.release()
 
+    def test_releasing_a_lock_marks_it_free_at_offset_zero_and_hides_it_from_known_runs(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        lock = run.agent_mode.RunLock(home, "run-1").acquire()
+        lock.release()
+        lock_file = home / "agent" / "run-1.lock"
+        self.assertEqual(lock_file.read_bytes(), b"free")
+        self.assertEqual(run.agent_mode.Presence.known_runs(home), [])
+
     def test_cmd_run_refuses_a_live_run_before_opening_the_board(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

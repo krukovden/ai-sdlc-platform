@@ -436,6 +436,7 @@ class RunLock:
             return
         try:
             os.ftruncate(self.fd, 0)
+            os.lseek(self.fd, 0, os.SEEK_SET)
             os.write(self.fd, self.FREE.encode("utf-8"))
             if fcntl is not None:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
