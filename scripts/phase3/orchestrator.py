@@ -1095,12 +1095,24 @@ class Development:
                                        findings=reviews.FINDINGS_FILE,
                                        run_py=self.runner.run_py)
         findings = None
+        context_env = {"IDP_CONTEXT_DIR": str(context)}
         for _ in range(REVIEW_RETRIES + 1):
             if findings_path.exists():
                 findings_path.unlink()
             code = self.executor.run_role("review", pbi, rwt.path, prompt,
-                                          context={"IDP_CONTEXT_DIR": str(context)},
+                                          context=context_env,
                                           author=author, choice=reviewer)
+            last = self.executor.last or {}
+            while last.get("unsettled"):
+                stop = getattr(self.runner, "stopping", lambda card: None)(self.feature)
+                if stop:
+                    confirm = getattr(self.executor, "confirm_stopped", None)
+                    if confirm is not None and confirm(pbi):
+                        self.pause_card(self.feature, stop)
+                        return None
+                self.sleep(INFRA_BACKOFF[0])
+                code = self.reconnect_session("review", pbi, rwt.path, prompt, context_env)
+                last = self.executor.last or {}
             rwt.reset_to(done["merge"])
             if code == EXIT.DONE:
                 try:
