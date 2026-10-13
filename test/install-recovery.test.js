@@ -149,6 +149,16 @@ test('the freshness reminder names --local only for a project-local installation
   assert.doesNotMatch(ctx.output.at(-1), /--local/);
 });
 
+test('update into existing version directory protects unmanaged files', async t => {
+  const ctx = fixture(t);
+  await run(['install', '--target', 'orca'], ctx);
+  sync(NEXT, ctx.root);
+  const dest = path.join(ctx.home, '.idp/platform', NEXT);
+  fs.mkdirSync(dest, {recursive: true});
+  fs.writeFileSync(path.join(dest, 'foreign.txt'), 'do not touch');
+  await assert.rejects(run(['update', '--yes'], ctx), new RegExp(`Unmanaged payload preserved: ${dest.replace(/\./g, '\\.')}`));
+});
+
 // --- recoverable update transaction -------------------------------------------------------
 
 const FAULTS = ['writeFileSync', 'mkdirSync', 'renameSync', 'symlinkSync', 'unlinkSync', 'rmSync', 'chmodSync', 'openSync', 'fsyncSync'];

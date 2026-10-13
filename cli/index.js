@@ -174,7 +174,7 @@ async function run(argv, context = {}) {
   if (args.command === 'uninstall' && !receipt.targets.every(target => targets.includes(target))) throw new Error('Uninstall removes the shared payload; use --target all');
   const activeTargets = [...new Set([...receipt.targets, ...targets])];
   const payload = path.join(state, pkg.version);
-  if (!receipt.payload && exists(payload)) throw new Error(`Unmanaged payload preserved: ${payload}`);
+  if (receipt.payload !== payload && exists(payload)) throw new Error(`Unmanaged payload preserved: ${payload}`);
   const links = {};
   if (args.command !== 'uninstall') {
     for (const target of activeTargets) {
