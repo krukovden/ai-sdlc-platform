@@ -158,9 +158,17 @@ def find_profile(start=None):
 def load_profile():
     path = find_profile()
     if not path:
-        fail(EXIT.CONFIG, f"no {PROFILE_DIR}/{PROFILE_NAME} found here or above; "
-                          f"run: {invoked_as()} init",
-             fix="run `board.py init` in the repository root, or cd into a repository that has .idp/profile.json")
+        defaults = load_sibling("profile_defaults", "idp_profile_defaults")
+        try:
+            profile = defaults.derive(os.getcwd(), command=f"{invoked_as()} setup")
+        except defaults.DerivationError as exc:
+            fail(EXIT.CONFIG, exc.message, fix=exc.fix)
+        try:
+            profile = check_profile(profile)
+        except ProfileError as exc:
+            fail(EXIT.CONFIG, exc.message, fix=exc.fix)
+        profile["_path"] = "<derived from repository defaults>"
+        return profile
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:

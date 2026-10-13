@@ -5,6 +5,7 @@ every profile and token lives in a temporary directory that is removed again.
 """
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,11 +65,17 @@ class LoadProfileTests(ScriptTestCase):
             self.assertEqual(profile["team_key"], "IDE")
             self.assertEqual(profile["_path"], str(path))
 
-    def test_exits_6_when_no_profile_is_found(self):
+    def test_exits_6_when_no_profile_and_no_linear_team_key_can_be_derived(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with chdir(Path(tmp).resolve()):
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "-C", str(root.parent), "init", "-q", str(root)],
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "git@github.com:krukovden/ai-sdlc-platform.git"],
+                           check=True, capture_output=True, text=True)
+            with chdir(root):
                 message = self.assert_exits(6, board.load_profile)
-        self.assertIn("board.py init", message)
+        self.assertIn("/idp-setup", message)
 
     def test_the_advice_names_the_installed_command_when_that_is_how_we_were_called(self):
         with mock.patch.object(board.sys, "argv", ["/home/u/.local/bin/idp", "status"]):
