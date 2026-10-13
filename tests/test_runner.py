@@ -555,6 +555,14 @@ class SessionOutcomeTests(RunnerTestCase):
         self.assertEqual(caught.exception.code, EXIT.BLOCKED)
         self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN])
 
+    def test_select_executor_passes_the_profile_timeout_to_subprocess(self):
+        executor = run.select_executor({"executors": {
+            "backend": "subprocess",
+            "timeout_seconds": 17,
+            "roles": {"design": ["claude:opus"]},
+        }})
+        self.assertEqual(executor.timeout, 17)
+
 
 class GateTests(RunnerTestCase):
 

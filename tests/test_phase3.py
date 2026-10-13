@@ -1443,6 +1443,28 @@ class StatesTests(unittest.TestCase):
         self.assertEqual(board.cards["7"]["status"], "Resolved")
         self.assertEqual(board.cards["7"]["tags"], ["idp:owner:run-2"])
 
+    def test_wrapped_create_issue_keeps_the_kind_signature(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, kind="feature", tags_=["idp:owner:run-1"])
+        fenced = lease.Fenced(board, FEATURE, "run-1")
+        created = phase3.shape.create_item(
+            fenced, "task title", "body", "7", "New", "IDE", "task")
+        self.assertEqual(board.cards[created]["kind"], "task")
+
+    def test_shape_uses_the_discovered_task_todo_state(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, kind="feature", title="Feature", description="---\n---\n")
+        plan = {"pbis": [pbi("p1")]}
+        header = {"route": "feature"}
+        phase3.shape.ensure(board, board.get_issue(FEATURE), plan,
+                            {"project_id": "IDE"}, header,
+                            todo_status={"pbi": "Committed", "task": "To Do"})
+        tasks = [card for card in board.cards.values() if card.get("kind") == "task"]
+        self.assertEqual(sorted(card["status"] for card in tasks),
+                         ["To Do", "To Do", "To Do"])
+
 
 class JournalUploadTests(unittest.TestCase):
 

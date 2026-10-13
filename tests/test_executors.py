@@ -224,6 +224,25 @@ class EnvironmentTests(ScriptTestCase):
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertNotIn("LINEAR_API_KEY", env)
 
+    def test_a_witness_gets_no_token_like_secret_by_name_or_pattern(self):
+        env = executors.environment.witness_env(
+            dict(self.SOURCE, COPILOT_GITHUB_TOKEN="copilot", GITHUB_TOKEN="github",
+                 ORG_TOKEN_VALUE="org-token"),
+            extra={"ANOTHER_PAT": "x", "SAFE_NAME": "ok"})
+        self.assertNotIn("COPILOT_GITHUB_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("ORG_TOKEN_VALUE", env)
+        self.assertNotIn("ANOTHER_PAT", env)
+        self.assertEqual(env["SAFE_NAME"], "ok")
+
+    def test_redaction_uses_the_same_secret_filter(self):
+        text = executors.environment.redact_text(
+            "AZURE_DEVOPS_EXT_PAT=ado-secret\nCOPILOT_GITHUB_TOKEN=copilot\n",
+            dict(self.SOURCE, COPILOT_GITHUB_TOKEN="copilot"))
+        self.assertNotIn("ado-secret", text)
+        self.assertNotIn("copilot", text)
+        self.assertEqual(text.count("******"), 2)
+
     def test_path_is_not_mistaken_for_a_pat(self):
         self.assertFalse(executors.environment.denied("PATH"))
 
@@ -413,6 +432,15 @@ class SubprocessBackendTests(ScriptTestCase):
         self.run_design()
         log = (self.worktree / ".idp" / "logs" / "design.log").read_text(encoding="utf-8")
         self.assertIn('"result": "done"', log)
+
+    def test_the_session_log_redacts_known_secrets(self):
+        self.script(report=EXIT.DONE, print=["ado-secret copilot"])
+        self.executor.environ["COPILOT_GITHUB_TOKEN"] = "copilot"
+        self.run_design()
+        log = (self.worktree / ".idp" / "logs" / "design.log").read_text(encoding="utf-8")
+        self.assertNotIn("ado-secret", log)
+        self.assertNotIn("copilot", log)
+        self.assertIn("****** ******", log)
 
     def test_review_under_the_rule_launches_a_different_agent(self):
         self.script(report=EXIT.DONE)

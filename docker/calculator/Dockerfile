@@ -1,7 +1,8 @@
 FROM node:20-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    AZURE_EXTENSION_DIR=/opt/azure-cli/extensions
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl gnupg python3 git ca-certificates apt-transport-https lsb-release \
@@ -18,7 +19,9 @@ RUN apt-get update \
 RUN useradd --create-home --shell /bin/bash app
 
 RUN git clone --depth 1 https://github.com/krukovden/engineering-catalog /opt/engineering-catalog \
-    && az extension add --name azure-devops --yes
+    && mkdir -p "$AZURE_EXTENSION_DIR" \
+    && az extension add --name azure-devops --yes \
+    && chmod -R a+rX "$AZURE_EXTENSION_DIR"
 
 WORKDIR /work/platform
 COPY --chown=app:app . /work/platform

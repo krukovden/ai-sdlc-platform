@@ -66,6 +66,9 @@ ADO_ITERATION_PATH = "TSS-Orion"
 ADO_APPROVER = "Denys.Kriukov@halliburton.com"
 ADO_TITLE_PREFIX = "[IDP TEST]"
 ADO_GUARD_FILE = "ado-created-items.json"
+ADO_RUN_SECONDS = 7200
+ADO_SESSION_SECONDS = 1200
+VERIFY_TIMEOUT_SECONDS = 300
 
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Calculator Harness",
@@ -1481,13 +1484,11 @@ def slug(text: str) -> str:
 
 def redaction_secrets(source=None):
     source = os.environ if source is None else source
-    values = []
-    for name in ("AZURE_DEVOPS_EXT_PAT", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
-        value = str(source.get(name) or "").strip()
-        if value:
-            values.append(value)
-            if name == "AZURE_DEVOPS_EXT_PAT":
-                values.append(base64.b64encode(f":{value}".encode("utf-8")).decode("ascii"))
+    values = list(run.executors.environment.secret_values(source))
+    if source.get("AZURE_DEVOPS_EXT_PAT"):
+        values.append(base64.b64encode(
+            f":{str(source.get('AZURE_DEVOPS_EXT_PAT')).strip()}".encode("utf-8")
+        ).decode("ascii"))
     return sorted(set(values), key=len, reverse=True)
 
 
@@ -1588,7 +1589,8 @@ class LocalAdoWorld:
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
-            env=dict(os.environ),
+            timeout=VERIFY_TIMEOUT_SECONDS,
+            env=run.executors.environment.witness_env(os.environ),
         )
         if answer.returncode != expect:
             raise AdoScenarioFailure(
@@ -1623,12 +1625,24 @@ class LocalAdoWorld:
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env=dict(os.environ),
+                timeout=VERIFY_TIMEOUT_SECONDS,
+                env=run.executors.environment.witness_env(os.environ),
             )
             if answer.returncode != 2:
                 raise AdoScenarioFailure(f"{expression!r} returned {answer.returncode}, expected 2")
             if "Traceback" in answer.stderr or "error:" not in answer.stderr:
                 raise AdoScenarioFailure(f"{expression!r} stderr was unexpected:\n{answer.stderr}")
+
+    def verify_all(self, branch, *, modulo=False):
+        failures = []
+        for check in (
+                lambda: self.verify_feature_tests(branch),
+                lambda: self.verify_calculator(branch, modulo=modulo)):
+            try:
+                check()
+            except AdoScenarioFailure as exc:
+                failures.append(str(exc))
+        return failures
 
 
 def flatten_state_map(discovered):
@@ -1664,9 +1678,8 @@ class AdoScenarioRunner:
     def __init__(self, out: Path, args):
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
+        self.archive_previous()
         self.work = self.out / "work" / "ado"
-        if self.work.exists():
-            shutil.rmtree(self.work)
         self.work.mkdir(parents=True)
         self.args = args
         self.secrets = redaction_secrets()
@@ -1686,6 +1699,21 @@ class AdoScenarioRunner:
         self.qa_pbi = None
         self.state_discovery = None
         self.results = []
+        self.started_at = stamp()
+
+    def archive_previous(self):
+        previous = [self.out / name for name in
+                    ("ado-run.log", "ado-report.md", "problems.md", ADO_GUARD_FILE)]
+        work = self.out / "work" / "ado"
+        if not any(path.exists() for path in previous + [work]):
+            return
+        archive = self.out / "archive" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archive.mkdir(parents=True, exist_ok=True)
+        for path in previous:
+            if path.exists():
+                shutil.move(str(path), str(archive / path.name))
+        if work.exists():
+            shutil.move(str(work), str(archive / "work-ado"))
 
     @staticmethod
     def require_pat():
@@ -1703,9 +1731,9 @@ class AdoScenarioRunner:
             text = text.replace("No anomalies recorded.\n", "")
         block = [f"## {stamp()} — {title}", ""]
         if isinstance(evidence, str):
-            block.append(evidence)
+            block.append(redact_text(evidence, self.secrets))
         else:
-            block.extend(str(line) for line in evidence)
+            block.extend(redact_text(str(line), self.secrets) for line in evidence)
         self.problems.write_text(text.rstrip() + "\n\n" + "\n".join(block) + "\n",
                                  encoding="utf-8")
 
@@ -1721,6 +1749,7 @@ class AdoScenarioRunner:
             "approvers": [ADO_APPROVER],
             "executors": {
                 "backend": "subprocess",
+                "timeout_seconds": ADO_SESSION_SECONDS,
                 "roles": {
                     "design": ["copilot:gemini-3.8-flash"],
                     "worker": ["copilot:gemini-3.8-flash"],
@@ -1730,6 +1759,7 @@ class AdoScenarioRunner:
                 "parallel": {"copilot": 2},
             },
             "development": {
+                "reconcile": False,
                 "feature_pr": "branch-only",
                 "integration": {
                     "test": "python3 -m unittest discover -s tests",
@@ -1737,6 +1767,17 @@ class AdoScenarioRunner:
                 },
             },
         }
+
+    def validate_target(self):
+        explicit = (str(self.args.org or "").strip(), str(self.args.project or "").strip())
+        expected = (ADO_ORG, ADO_PROJECT)
+        if explicit != expected:
+            raise AdoScenarioFailure(
+                f"live ADO mode is fixed to {ADO_ORG} / {ADO_PROJECT}; got "
+                f"{explicit[0] or '(missing)'} / {explicit[1] or '(missing)'}"
+            )
+        if getattr(self.args, "dry", False):
+            raise AdoScenarioFailure("--board ado does not support --dry")
 
     def guarded_board(self, profile):
         with temporary_environ(self.guard_env):
@@ -1919,6 +1960,7 @@ class AdoScenarioRunner:
         item = {
             "name": name,
             "detail": detail,
+            "at": stamp(),
             "runner": runner_result,
             "board_state": state,
             "models": self.model_summary(),
@@ -1932,6 +1974,7 @@ class AdoScenarioRunner:
                 if tag.startswith(tags.OWNER_PREFIX):
                     self.problem(f"{name}: owner tag left behind",
                                  [f"{row['id']} still carries {tag}."])
+        self.write_report()
 
     def create_feature(self):
         issue = self.board.create_issue(
@@ -1966,26 +2009,23 @@ class AdoScenarioRunner:
         )
 
     def verify_adr_roundtrip(self):
-        result = self.run_logged(
+        return self.run_logged(
             "Verify ADR round-trip",
             [sys.executable, str(ROOT / "scripts" / "run.py"), "adr-check", self.feature_id],
             cwd=self.world.repo,
             env=self.runner_env(),
             timeout=120,
         )
-        return result
 
-    def maybe_gap_bug(self):
-        try:
-            self.world.verify_feature_tests(self.feature_branch)
-            self.world.verify_calculator(self.feature_branch)
-        except AdoScenarioFailure as exc:
-            text = str(exc).splitlines()[0]
-            return text, text + "\n\nWitness: " + json.dumps({
+    def gap_bug(self, failures):
+        if failures:
+            title = failures[0].splitlines()[0]
+            body = title + "\n\nWitness: " + json.dumps({
                 "command": "python3 -m unittest discover -s tests",
-                "timeout": 300,
+                "timeout": VERIFY_TIMEOUT_SECONDS,
             })
-        return "modulo operator % missing", BUG_WITH_WITNESS
+            return title, body, False
+        return "modulo operator % missing", BUG_WITH_WITNESS, True
 
     def close_qa(self):
         qa = self.qa_pbi_id()
@@ -1994,21 +2034,27 @@ class AdoScenarioRunner:
         self.board.add_comment(qa, "Human accepted QA and closed the QA Testing PBI.")
 
     def write_report(self):
+        state_map = json.dumps((self.profile or {}).get("state_map"), ensure_ascii=False) \
+            if self.profile else "null"
+        work_item_types = json.dumps((self.profile or {}).get("work_item_types"),
+                                     ensure_ascii=False) if self.profile else "null"
+        script = (self.state_discovery or {}).get("script") or "not reached"
         lines = [
             "# Azure DevOps calculator live run",
             "",
+            f"- Started: `{self.started_at}`",
             f"- Target: `{self.args.org}` / `{self.args.project}`",
             f"- Area path: `{ADO_AREA_PATH}`",
             f"- Iteration path: `{ADO_ITERATION_PATH}`",
-            f"- Feature id: `{self.feature_id}`",
-            f"- Feature branch: `{self.feature_branch}`",
+            f"- Feature id: `{self.feature_id or 'not created'}`",
+            f"- Feature branch: `{self.feature_branch or 'not created'}`",
             f"- Guard file: `{self.guard_file}`",
             "",
             "## Discovered configuration",
             "",
-            f"- Catalog script: `{self.state_discovery['script']}`",
-            f"- `state_map`: `{json.dumps(self.profile['state_map'], ensure_ascii=False)}`",
-            f"- `work_item_types`: `{json.dumps(self.profile['work_item_types'], ensure_ascii=False)}`",
+            f"- Catalog script: `{script}`",
+            f"- `state_map`: `{state_map}`",
+            f"- `work_item_types`: `{work_item_types}`",
             "- `documents_item`: not required for this route because the run attaches documents only to created feature cards, not to project-level documents.",
             "",
             "## Step summary",
@@ -2022,7 +2068,8 @@ class AdoScenarioRunner:
             duration = runner.get("duration_seconds", "—")
             lines.append(f"| {item['name']} | {item['detail']} | {code} | {duration} |")
         for item in self.results:
-            lines += ["", f"## {item['name']} — {item['detail']}", ""]
+            lines += ["", f"## {item['name']} — {item['detail']}", "",
+                      f"- Recorded at: `{item['at']}`", ""]
             if item["models"]:
                 lines.append("**Models**")
                 lines.extend(f"- {entry}" for entry in item["models"])
@@ -2048,59 +2095,71 @@ class AdoScenarioRunner:
         (self.out / "ado-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def run(self):
-        self.require_pat()
-        self.world = LocalAdoWorld(self.work)
-        self.configure_az_defaults()
-        profile_path = self.write_profile()
-        self.log.write(f"profile: {profile_path}")
-        self.board = self.guarded_board(self.profile)
+        try:
+            self.validate_target()
+            self.require_pat()
+            self.world = LocalAdoWorld(self.work)
+            self.configure_az_defaults()
+            profile_path = self.write_profile()
+            self.log.write(f"profile: {profile_path}")
+            self.board = self.guarded_board(self.profile)
 
-        self.create_feature()
-        self.record_step("A", "Human created the feature and set `idp:design`.")
+            self.create_feature()
+            self.record_step("A", "Human created the feature and set `idp:design`.")
 
-        first = self.run_runner(self.feature_id, "--no-ask")
-        if first["code"] != 0:
-            raise AdoScenarioFailure(f"design run returned {first['code']}")
-        self.verify_adr_roundtrip()
-        if tags.phase_of(self.board.read_card(self.feature_id).get("tags")) != tags.DESIGN_REVIEW:
-            raise AdoScenarioFailure("feature did not reach idp:design-review after the design run")
-        self.record_step("B", "Runner attached the ADR and moved the feature to `idp:design-review`.", first)
+            first = self.run_runner(self.feature_id, "--no-ask", timeout=ADO_RUN_SECONDS)
+            if first["code"] != 0:
+                raise AdoScenarioFailure(f"design run returned {first['code']}")
+            self.verify_adr_roundtrip()
+            if tags.phase_of(self.board.read_card(self.feature_id).get("tags")) != tags.DESIGN_REVIEW:
+                raise AdoScenarioFailure("feature did not reach idp:design-review after the design run")
+            self.record_step("B", "Runner attached the ADR and moved the feature to `idp:design-review`.", first)
 
-        self.human_move_feature(tags.DEVELOPMENT,
-                                "Human approved the ADR and moved the feature to development.")
-        self.record_step("C", "Human approved the ADR and set `idp:development`.")
+            self.human_move_feature(tags.DEVELOPMENT,
+                                    "Human approved the ADR and moved the feature to development.")
+            self.record_step("C", "Human approved the ADR and set `idp:development`.")
 
-        second = self.run_runner(self.feature_id, "--no-ask")
-        if second["code"] != 0:
-            raise AdoScenarioFailure(f"development run returned {second['code']}")
-        if tags.phase_of(self.board.read_card(self.feature_id).get("tags")) != tags.QA:
-            raise AdoScenarioFailure("feature did not reach idp:qa after the development run")
-        self.record_step("D", "Runner planned, built, reviewed, integrated, documented, and handed the feature to QA.", second)
+            second = self.run_runner(self.feature_id, "--no-ask", timeout=ADO_RUN_SECONDS)
+            if second["code"] != 0:
+                raise AdoScenarioFailure(f"development run returned {second['code']}")
+            if tags.phase_of(self.board.read_card(self.feature_id).get("tags")) != tags.QA:
+                raise AdoScenarioFailure("feature did not reach idp:qa after the development run")
+            self.record_step("D", "Runner planned, built, reviewed, integrated, documented, and handed the feature to QA.", second)
 
-        self.world.verify_feature_tests(self.feature_branch)
-        self.world.verify_calculator(self.feature_branch)
-        self.record_step("E", "Independent verification passed on the local feature branch.")
+            failures = self.world.verify_all(self.feature_branch)
+            detail = "Independent verification passed on the local feature branch."
+            if failures:
+                detail = "Independent verification found a real QA gap on the local feature branch."
+                self.problem("Independent verification failed", failures)
+            self.record_step("E", detail)
 
-        gap_title, gap_body = self.maybe_gap_bug()
-        bug = self.board.create_issue(title=gap_title, body=gap_body, parent=self.feature_id, kind="bug")
-        self.human_move_feature(tags.DEVELOPMENT,
-                                f"Human rejected QA and filed bug {bug['identifier']}: {gap_title}.")
-        third = self.run_runner(self.feature_id, "--no-ask")
-        if third["code"] != 0:
-            raise AdoScenarioFailure(f"bug-fix run returned {third['code']}")
-        if tags.phase_of(self.board.read_card(self.feature_id).get("tags")) != tags.QA:
-            raise AdoScenarioFailure("feature did not return to idp:qa after the bug-fix run")
-        self.world.verify_feature_tests(self.feature_branch)
-        self.world.verify_calculator(self.feature_branch, modulo=True)
-        self.record_step("F", "Human filed a bug, returned the feature to development, and the runner brought it back to QA.", third)
+            gap_title, gap_body, expect_modulo = self.gap_bug(failures)
+            bug = self.board.create_issue(title=gap_title, body=gap_body,
+                                          parent=self.feature_id, kind="bug")
+            self.human_move_feature(tags.DEVELOPMENT,
+                                    f"Human rejected QA and filed bug {bug['identifier']}: {gap_title}.")
+            third = self.run_runner(self.feature_id, "--no-ask", timeout=ADO_RUN_SECONDS)
+            if third["code"] != 0:
+                raise AdoScenarioFailure(f"bug-fix run returned {third['code']}")
+            if tags.phase_of(self.board.read_card(self.feature_id).get("tags")) != tags.QA:
+                raise AdoScenarioFailure("feature did not return to idp:qa after the bug-fix run")
+            final_failures = self.world.verify_all(self.feature_branch, modulo=expect_modulo)
+            if final_failures:
+                self.problem("Post-fix verification failed", final_failures)
+                raise AdoScenarioFailure(final_failures[0])
+            self.record_step("F", "Human filed a bug, returned the feature to development, and the runner brought it back to QA.", third)
 
-        self.close_qa()
-        qa_done = self.profile["state_map"][self.profile["work_item_types"]["pbi"]]["done"]
-        if self.board.get_issue(self.qa_pbi_id())["status"] != qa_done:
-            raise AdoScenarioFailure("QA Testing PBI did not close in the discovered done state")
-        self.record_step("G", "Human accepted QA and closed the QA Testing PBI.")
-        self.write_report()
-        return 0
+            self.close_qa()
+            qa_done = self.profile["state_map"][self.profile["work_item_types"]["pbi"]]["done"]
+            if self.board.get_issue(self.qa_pbi_id())["status"] != qa_done:
+                raise AdoScenarioFailure("QA Testing PBI did not close in the discovered done state")
+            self.record_step("G", "Human accepted QA and closed the QA Testing PBI.")
+            self.write_report()
+            return 0
+        except Exception as exc:
+            self.problem("Run failed", [str(exc), "", redact_text(traceback.format_exc(), self.secrets)])
+            self.write_report()
+            raise
 
 
 def parse_args(argv=None):
@@ -2120,7 +2179,11 @@ def main(argv=None):
     args = parse_args(argv)
     if args.board == "ado":
         experiment_common.require_explicit(args)
-        return AdoScenarioRunner(Path(args.out), args).run()
+        try:
+            return AdoScenarioRunner(Path(args.out), args).run()
+        except AdoScenarioFailure as exc:
+            ado.fail(EXIT.INVALID, str(exc),
+                     fix="correct the live-run configuration or inspect the archived evidence")
     selected = args.scenarios or list(SCENARIOS)
     runner = ScenarioRunner(Path(args.out), dry=args.dry)
     return runner.run(selected)

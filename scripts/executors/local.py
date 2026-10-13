@@ -123,7 +123,7 @@ class SubprocessExecutor(Executor):
                     try:
                         with stream:
                             for line in stream:
-                                log.write(line)
+                                log.write(environment.redact_text(line, self.environ))
                                 state["limit"] = limit_event(line) or state["limit"]
                                 state["last"] = final_message(line) or state["last"]
                     except ValueError:

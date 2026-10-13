@@ -33,6 +33,25 @@ class CalculatorAdoTests(ScriptTestCase):
         )
         self.assertIn("--i-understand-this-writes", message)
 
+    def test_ado_mode_refuses_the_wrong_target(self):
+        message = self.assert_exits(
+            scenario.EXIT.INVALID,
+            scenario.main,
+            ["--board", "ado", "--org", "https://dev.azure.com/other",
+             "--project", "TSS-Orion", "--i-understand-this-writes", "--out", "/tmp/nowhere"],
+        )
+        self.assertIn("fixed to", message)
+
+    def test_ado_mode_refuses_dry_runs(self):
+        message = self.assert_exits(
+            scenario.EXIT.INVALID,
+            scenario.main,
+            ["--board", "ado", "--org", "https://dev.azure.com/HAL-TSS",
+             "--project", "TSS-Orion", "--i-understand-this-writes", "--dry",
+             "--out", "/tmp/nowhere"],
+        )
+        self.assertIn("does not support --dry", message)
+
     def test_the_pat_is_redacted_from_captured_output(self):
         token = "secret-pat-value"
         text = scenario.redact_text(
@@ -64,6 +83,73 @@ class CalculatorAdoTests(ScriptTestCase):
             profile["work_item_types"] = scenario.choose_work_item_types(raw)
             scenario.run.board_cli.check_profile(profile)
         self.assertEqual(profile["work_item_types"]["pbi"], "Product Backlog Item")
+        self.assertFalse(profile["development"]["reconcile"])
+        self.assertEqual(profile["executors"]["timeout_seconds"],
+                         scenario.ADO_SESSION_SECONDS)
+
+    def test_previous_evidence_is_archived_before_a_new_run_directory_is_created(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "ado-run.log").write_text("old log\n", encoding="utf-8")
+            (out / "work" / "ado").mkdir(parents=True)
+            runner = scenario.AdoScenarioRunner(
+                out,
+                argparse.Namespace(
+                    org="https://dev.azure.com/HAL-TSS",
+                    project="TSS-Orion",
+                    understood=True,
+                    out=tmp,
+                    dry=False,
+                ),
+            )
+            archived = list((out / "archive").glob("*/ado-run.log"))
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(archived[0].read_text(encoding="utf-8"), "old log\n")
+            self.assertTrue((runner.work).exists())
+
+    def test_recording_a_step_rewrites_the_report_immediately(self):
+        class Board:
+            def list_project(self, _project):
+                return []
+
+        raw = {
+            "Feature": {"todo": "New", "doing": "Active", "done": "Closed"},
+            "Product Backlog Item": {"todo": "New", "doing": "Committed", "done": "Done"},
+            "Task": {"todo": "New", "doing": "Active", "done": "Closed"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = scenario.AdoScenarioRunner(
+                Path(tmp),
+                argparse.Namespace(
+                    org="https://dev.azure.com/HAL-TSS",
+                    project="TSS-Orion",
+                    understood=True,
+                    out=tmp,
+                    dry=False,
+                ),
+            )
+            runner.board = Board()
+            runner.feature_id = "500"
+            runner.feature_branch = "feature/500"
+            runner.profile = runner.base_profile()
+            runner.profile["state_map"] = scenario.flatten_state_map(raw)
+            runner.profile["work_item_types"] = scenario.choose_work_item_types(raw)
+            runner.state_discovery = {"script": "/tmp/ado-board.js", "raw": raw}
+            runner.record_step("A", "seeded")
+            report = (Path(tmp) / "ado-report.md").read_text(encoding="utf-8")
+            self.assertIn("| A | seeded |", report)
+
+    def test_the_docker_build_context_excludes_outputs_and_git_data(self):
+        ignore = (Path(__file__).resolve().parents[1] / ".dockerignore").read_text(
+            encoding="utf-8")
+        self.assertIn(".git", ignore)
+        self.assertIn("docker/calculator/out", ignore)
+
+    def test_the_run_script_stops_the_named_container_from_the_exit_trap(self):
+        script = (Path(__file__).resolve().parents[1] / "docker" / "calculator" / "run.sh") \
+            .read_text(encoding="utf-8")
+        self.assertIn("trap cleanup EXIT INT TERM HUP", script)
+        self.assertIn("docker stop \"$container_name\"", script)
 
 
 if __name__ == "__main__":

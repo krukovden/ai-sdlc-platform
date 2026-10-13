@@ -990,6 +990,16 @@ class ReconcileTests(IntegrationTestCase):
             self.assertEqual(reconcile("development"), {"moved": []})
         self.assertEqual(calls, [["node", script.name, "reconcile", "--json"]])
 
+    def test_reconcile_can_be_disabled_by_profile(self):
+        calls = []
+        with tempfile.NamedTemporaryFile(suffix=".js") as script:
+            reconcile = phase3.states.reconciler(
+                {"board": "azure-devops", "development": {"reconcile": False}},
+                out=io.StringIO(), environ={"IDP_ADO_BOARD": script.name},
+                run=lambda argv, **kwargs: calls.append(argv))
+            self.assertIsNone(reconcile("development"))
+        self.assertEqual(calls, [])
+
     def test_a_failing_reconcile_never_fails_the_run(self):
         out = io.StringIO()
 

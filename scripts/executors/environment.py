@@ -60,10 +60,21 @@ DENIED_PATTERNS = (
     re.compile(r"^LINEAR_"),
     re.compile(r"^ADO_"),
 )
+WITNESS_DENIED_NAMES = frozenset({
+    "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+})
+WITNESS_DENIED_PATTERNS = DENIED_PATTERNS + (
+    re.compile(r"TOKEN"),
+)
 
 
 def denied(name):
     return name in DENIED_NAMES or any(p.search(name) for p in DENIED_PATTERNS)
+
+
+def denied_for_witness(name):
+    return name in WITNESS_DENIED_NAMES or denied(name) or \
+        any(p.search(name) for p in WITNESS_DENIED_PATTERNS)
 
 
 def allowed(name, agent=None):
@@ -73,6 +84,24 @@ def allowed(name, agent=None):
                   or name in AGENT_NAMES.get(agent, ())):
         return True
     return False
+
+
+def secret_values(source):
+    """Known secret values from `source`, longest first for stable redaction."""
+    values = set()
+    for name, value in (source or {}).items():
+        if denied_for_witness(name):
+            text = str(value or "")
+            if text:
+                values.add(text)
+    return sorted(values, key=len, reverse=True)
+
+
+def redact_text(text, source):
+    rendered = str(text or "")
+    for secret in secret_values(source):
+        rendered = rendered.replace(secret, "******")
+    return rendered
 
 
 def session_env(source, agent=None, extra=None):
@@ -124,4 +153,9 @@ def provider_env(source, name=None, agent=None):
 
 def witness_env(source, extra=None):
     """For a command that is not a model at all: no board token and no model key."""
-    return session_env(source, agent=None, extra=extra)
+    env = {name: value for name, value in (source or {}).items()
+           if allowed(name, None) and not denied_for_witness(name)}
+    for name, value in (extra or {}).items():
+        if not denied_for_witness(name):
+            env[name] = str(value)
+    return env

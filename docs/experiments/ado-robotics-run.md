@@ -11,6 +11,8 @@ the work items, comments and attachments created under the fixed target:
 
 Every work item created by the run is titled `[IDP TEST] ...`, and the adapter-level
 guard refuses to read, move or comment on any item the run did not create itself.
+The generated profile also sets `development.reconcile: false`, so phase-end
+`ado-board reconcile` never scans the whole project during this experiment.
 
 ## Run it
 
@@ -73,9 +75,14 @@ The run writes these files under `docker/calculator/out/`:
 | File | Meaning |
 | --- | --- |
 | `ado-run.log` | Timestamped command log, with captured output redacted for secrets. |
-| `ado-report.md` | Human-readable summary of the full run: profile discoveries, step results, board state snapshots, models used, attempts, refusals and blocks. |
+| `ado-report.md` | Human-readable summary of the full run: profile discoveries, step results, board state snapshots, models used, attempts, refusals and blocks. It is rewritten incrementally so partial runs still leave a report. |
 | `problems.md` | Time-stamped anomalies: unexpected exit codes, timeouts, stuck sessions, state mismatches, or leftover owner tags. |
 | `work/ado/` | The local bare remote, product repository, verification checkout and other scratch state from the run. |
 
 Start with `ado-report.md`. If something looks wrong, open `problems.md`, then find the
 matching timestamp in `ado-run.log`.
+
+If the container is started again, the previous `ado-run.log`, `ado-report.md`,
+`problems.md`, guard file and `work/ado/` tree are moved under
+`docker/calculator/out/archive/<timestamp>/` before the next run starts, so a
+restart never erases earlier evidence.

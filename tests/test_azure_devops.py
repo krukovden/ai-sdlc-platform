@@ -544,6 +544,18 @@ class ReadTests(ScriptTestCase):
                          "https://dev.azure.com/contoso/Contoso Platform/_workitems/edit/42")
         self.assertTrue(issue["branch"].startswith("feature/42-"))
 
+    def test_get_issue_restores_acceptance_criteria_from_the_board_field(self):
+        item = work_item()
+        item["42"]["fields"]["System.Description"] = azure.render_description("## Why\n\nBecause.\n")
+        item["42"]["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] = \
+            azure.render_acceptance_criteria(["prints 14", "errors on divide by zero"])
+        fake = FakeAz(item)
+        with stub(fake):
+            issue = azure.Board(None, PROFILE).get_issue("42")
+        self.assertIn("## Acceptance Criteria", issue["description"])
+        self.assertIn("* prints 14", issue["description"])
+        self.assertIn("* errors on divide by zero", issue["description"])
+
     def test_a_board_key_is_refused_rather_than_pushed_into_wiql(self):
         fake = FakeAz(work_item())
         with stub(fake):
@@ -1301,6 +1313,24 @@ class AttachmentTests(ScriptTestCase):
         call = fake.rest_matching("GET", "wit/attachments/att-9")[0]
         self.assertIn("download=true", call["url"])
 
+    def test_the_guard_refuses_reading_an_attachment_from_an_unowned_item(self):
+        items = work_item("10")
+        items["10"]["relations"] = [{
+            "rel": "AttachedFile",
+            "url": "https://dev.azure.com/contoso/_apis/wit/attachments/att-9",
+            "attributes": {"name": "01 · registry.md"},
+        }]
+        fake = FakeAz(items)
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = Path(tmp) / "guard.json"
+            guard.write_text(json.dumps({"ids": ["42"]}), encoding="utf-8")
+            with stub(fake), mock.patch.dict(azure.os.environ,
+                                             {azure.GUARD_FILE_ENV: str(guard)}, clear=False):
+                message = self.assert_exits(azure.EXIT.INVALID,
+                                            azure.Board("pat-secret", PROFILE).get_document,
+                                            "att-9")
+        self.assertIn("guard refused", message)
+
     def _fenced_attach(self, fake, on_patch):
         """The real `attach_document`, under `lease.Fenced`, with transport mocked.
 
@@ -1622,6 +1652,18 @@ class WriteRefusalTests(ScriptTestCase):
 
         self.assertEqual(facts["project_name"], "Contoso Platform")
         self.assertEqual(facts["team_name"], "IdeaHub")
+
+    def test_the_guard_refuses_comment_listing_for_an_unknown_item(self):
+        fake = FakeAz(work_item())
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = Path(tmp) / "guard.json"
+            guard.write_text(json.dumps({"ids": ["99"]}), encoding="utf-8")
+            with stub(fake), mock.patch.dict(azure.os.environ,
+                                             {azure.GUARD_FILE_ENV: str(guard)}, clear=False):
+                message = self.assert_exits(azure.EXIT.INVALID,
+                                            azure.Board("pat-secret", PROFILE).list_comments,
+                                            "42")
+        self.assertIn("did not create it", message)
 
 
 class StateResolverIntegrationTests(ScriptTestCase):

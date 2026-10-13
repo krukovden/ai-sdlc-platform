@@ -31,6 +31,9 @@ mkdir -p "$out_dir"
 env_file=$(mktemp "${TMPDIR:-/tmp}/copilot-docker.XXXXXX")
 cleanup() {
     rm -f "$env_file"
+    if [ "$mode" = "ado" ] && docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
+        docker stop "$container_name" >/dev/null 2>&1 || true
+    fi
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -64,7 +67,6 @@ if [ "$mode" = "ado" ]; then
             --project "TSS-Orion" \
             --i-understand-this-writes
     fi
-    docker stop "$container_name" >/dev/null 2>&1 || true
     printf 'container left in place: docker start -ai %s\n' "$container_name"
 else
     docker run --rm \

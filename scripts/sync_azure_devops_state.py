@@ -330,6 +330,16 @@ class ItemGuard:
         return "[System.Id] IN (" + ", ".join(sorted(ids, key=int)) + ")"
 
 
+def merge_acceptance_criteria(description, rendered):
+    criteria = html_to_text(rendered or "").strip()
+    body = html_to_text(description or "").strip()
+    if not criteria:
+        return body
+    lines = [line.strip() for line in criteria.splitlines() if line.strip()]
+    section = "\n".join(["## Acceptance Criteria", "", *lines])
+    return "\n\n".join(part for part in (body, section) if part).strip()
+
+
 def _sibling(name, alias):
     """A sibling script, loaded once and shared under one alias."""
     existing = sys.modules.get(alias)
@@ -1055,8 +1065,16 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         self.guard.check_title(title, work_item_id, "read")
         return data
 
+    def _guard_item(self, identifier, action, expand="all"):
+        item = self._show(identifier, expand=expand)
+        return str(item.get("id") or _as_id(identifier)), item
+
+    def _description_of(self, fields):
+        return merge_acceptance_criteria(fields.get("System.Description"),
+                                         fields.get("Microsoft.VSTS.Common.AcceptanceCriteria"))
+
     def get_issue(self, identifier):
-        item = self._show(identifier)
+        _, item = self._guard_item(identifier, "read")
         fields = item.get("fields") or {}
         title = fields.get("System.Title") or ""
         work_item_id = str(item.get("id") or _as_id(identifier))
@@ -1069,13 +1087,15 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             "title": title,
             "url": self.web_url(work_item_id, project),
             "branch": self.branch_name(work_item_id, title),
-            "description": html_to_text(fields.get("System.Description") or ""),
+            "description": self._description_of(fields),
             "acceptance_criteria": field_acceptance_criteria(
                 fields.get("Microsoft.VSTS.Common.AcceptanceCriteria")),
             "status": status,
             "status_type": self.state_type(status),
             "parent": _parent_of(item),
             "labels": _tags_of(fields),
+            "work_item_type": fields.get("System.WorkItemType"),
+            "type": fields.get("System.WorkItemType"),
             # What the board says this is. Beaten only by an explicit `type:` in
             # the artifact's own header (IDE-134).
             "kind": self.kind_of_type(fields.get("System.WorkItemType")),
@@ -1230,6 +1250,8 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         }
 
     def _link_parent(self, child, parent):
+        self.guard.ensure_known(child, "reparent")
+        self.guard.ensure_known(parent, "link to as a parent")
         self._az(["boards", "work-item", "relation", "add",
                   "--id", str(_as_id(child)),
                   "--relation-type", "parent",
@@ -1237,8 +1259,10 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                   "--org", self.organization, "-o", "json"])
 
     def update_issue(self, identifier, title=None, body=None, status=None, parent=None):
-        self.guard.ensure_known(identifier, "update")
-        work_item_id = str(_as_id(identifier))
+        if not (title or status or body or parent):
+            fail(EXIT.INVALID, "nothing to update",
+                 fix="pass at least one of --title, --status, --body or --parent")
+        work_item_id, _ = self._guard_item(identifier, "update")
         args = ["boards", "work-item", "update", "--id", work_item_id,
                 "--org", self.organization, "-o", "json"]
         fields = {}
@@ -1263,10 +1287,6 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             args.append("--fields")
             args.extend(f"{key}={value}" for key, value in fields.items())
 
-        if not (title or status or fields or parent):
-            fail(EXIT.INVALID, "nothing to update",
-                 fix="pass at least one of --title, --status, --body or --parent")
-
         updated = None
         if title or status or fields:
             updated = self._az(args)
@@ -1278,8 +1298,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         return {"identifier": work_item_id, "status": state or status}
 
     def add_comment(self, identifier, body):
-        self.guard.ensure_known(identifier, "comment on")
-        work_item_id = str(_as_id(identifier))
+        work_item_id, _ = self._guard_item(identifier, "comment on")
         self._az(["boards", "work-item", "update", "--id", work_item_id,
                   "--discussion", body,
                   "--org", self.organization, "-o", "json"])
@@ -1362,8 +1381,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                      fix=f"add '{DOCUMENTS_ITEM}' — the id of the work item that carries the "
                          "project's documents, usually its epic — to .idp/profile.json, then re-run")
 
-        self.guard.ensure_known(host, "attach a document to")
-        work_item_id = str(_as_id(host))
+        work_item_id, _ = self._guard_item(host, "attach a document to", expand="relations")
         project = self._project(project_id)
         name = attachment_name(title)
 
@@ -1457,7 +1475,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
     def list_attachments(self, identifier):
         """The documents attached to one work item: slugId, title, url."""
-        self.guard.ensure_known(identifier, "list attachments of")
+        self._guard_item(identifier, "list attachments of")
         return self._attachments_of(identifier)
 
     def _attachments_of(self, identifier):
@@ -1546,6 +1564,13 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
 
     def get_document(self, slug):
         """Download one attachment by the id in its URL."""
+        if self.guard.path is not None:
+            known = {document["slugId"] for document in self.list_documents()}
+            if str(slug) not in known:
+                fail(EXIT.INVALID,
+                     f"guard refused to read attachment {slug}: it is not attached to a "
+                     "work item this run created.",
+                     fix="read only attachments listed from this run's own work items")
         project = self._project()
         content = self._rest(f"wit/attachments/{urllib.parse.quote(str(slug))}",
                              query={"download": "true"}, project=project,
@@ -1642,12 +1667,12 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         what makes this a claim rather than a hope: if the revision moved since
         `rev` was read, the service rejects the whole patch and nothing lands.
         """
+        work_item_id, _ = self._guard_item(identifier, "retag")
         if rev is None:
             fail(EXIT.UNAVAILABLE, f"work item {identifier} came back without a revision, so "
                                    "a fenced write is impossible",
                  fix="retry; if the board keeps answering without `rev`, the az CLI is "
                      "too old — upgrade it")
-        work_item_id = str(_as_id(identifier))
         patch = [
             {"op": "test", "path": "/rev", "value": rev},
             {"op": "replace", "path": "/fields/System.Tags", "value": "; ".join(tags)},
@@ -1671,7 +1696,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         The comments API is still a preview on 7.1, so it is asked for by name.
         A lease is read from these timestamps and never from the local clock.
         """
-        work_item_id = str(_as_id(identifier))
+        work_item_id, _ = self._guard_item(identifier, "list comments of")
         found, token = [], None
         while True:
             query = {"$top": "200", "order": "asc"}

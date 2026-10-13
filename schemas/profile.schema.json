@@ -246,6 +246,11 @@
             "subprocess"
           ]
         },
+        "timeout_seconds": {
+          "description": "Per-session deadline for executor-backed model runs. Default: no extra deadline beyond the backend's own waits.",
+          "type": "integer",
+          "minimum": 1
+        },
         "roles": {
           "type": "object",
           "additionalProperties": false,
@@ -324,6 +329,10 @@
       "properties": {
         "azure_complete_unproven": {
           "description": "Let the runner complete a PBI's Azure Repos pull request although nothing pins the target branch in that call. Off by default: until experiment 8 shows the service refuses a completion onto a moved target, the runner leaves the pull request open with a comment and a FIX line. When on, the runner's post-merge parent check is what contains the race.",
+          "type": "boolean"
+        },
+        "reconcile": {
+          "description": "Whether the runner calls engineering-catalog's ado-board reconcile after each phase. Default true. Set false only for tightly-scoped live runs whose guard forbids any whole-project scan.",
           "type": "boolean"
         },
         "feature_pr": {
