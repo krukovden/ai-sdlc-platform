@@ -1336,7 +1336,7 @@ class WriteRefusalTests(ScriptTestCase):
             def __call__(self, args, **kwargs):
                 if args[:3] == ["boards", "work-item", "update"]:
                     self.calls.append(list(args))
-                    azure.fail(2, "the service is unavailable")
+                    azure.fail(azure.EXIT.UNAVAILABLE, "the service is unavailable")
                 return super().__call__(args, **kwargs)
 
         fake = HalfBroken()
