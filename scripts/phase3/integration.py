@@ -818,12 +818,18 @@ class Integration:
                 feedback=f"\nThe runner's checks refused the last attempt:\n{feedback}\n"
                          "Fix exactly that." if feedback else "")
 
+        def outside_of(paths):
+            return [p for p in paths if not p.startswith(DIRECTORY + "/")]
+
         def read():
-            changed = changed_paths(wt)
-            outside = [p for p in changed if not p.startswith(DIRECTORY + "/")]
+            changed = documenter_changed(wt, head)
+            outside = outside_of(changed)
             problems = []
             if outside:
-                problems.append("changed outside docs/blueprint/: " + ", ".join(outside))
+                problems.append(
+                    "changed outside docs/blueprint/: " + ", ".join(outside)
+                    + ". FIX: the documenter may change only docs/blueprint/**; "
+                      "commit nothing else")
             touched = sorted({p for p in feature_changed + changed
                               if p.startswith(DIRECTORY + "/") and p.endswith(".md")})
             post_change = set(blueprint.area_files(wt.path))
@@ -847,17 +853,29 @@ class Integration:
                                      prompt, context, read)
         if code != EXIT.DONE:
             return code
-        if not changed:
+        # read() already refused this. Checked again immediately before any
+        # commit or push, so a documenter commit cannot ride out on the blueprint.
+        full = documenter_changed(wt, head)
+        outside = outside_of(full)
+        if outside:
+            wt.reset_to(head)
+            return dev.block_feature(
+                "the documenter's diff includes " + ", ".join(outside)
+                + ", outside docs/blueprint/**. FIX: a documenter commit may contain "
+                  "only docs/blueprint/**; nothing else is committed or pushed")
+        if not full:
             self.record_documented(head, None)
             return EXIT.DONE
-        areas = sorted({Path(p).stem for p in changed})
+        areas = sorted({Path(p).stem for p in full})
         sha = wt.commit_all(f"docs(blueprint): {', '.join(areas)} {mention_of(self.feature)}"
                             f"\n\n{BLUEPRINT_MARK} {self.feature}@{head}\n", [DIRECTORY])
-        if sha and not self.git.push(sha, self.branch, expect=head):
+        if sha is None and wt.head() != head:
+            sha = wt.head()
+        if sha and sha != head and not self.git.push(sha, self.branch, expect=head):
             raise self.runner.error(EXIT.BLOCKED, f"{self.branch} moved while the documenter "
                                                   "was writing", "re-run; nobody else may "
                                                                  "push to the feature branch")
-        self.record_documented(head, sha)
+        self.record_documented(head, sha if sha != head else None)
         return EXIT.DONE
 
     def hand_off(self):
@@ -929,6 +947,18 @@ class Integration:
                          who=who)
         return who
 
+
+
+def documenter_changed(wt, head):
+    """Porcelain plus anything already committed on top of `head`.
+
+    A commit the documenter made itself is clean in `git status`, so porcelain
+    alone would let the runner push it. The union is what may be accepted.
+    """
+    committed = []
+    if wt.head() != head:
+        committed = wt.run("diff", "--name-only", "--no-renames", head, "HEAD").splitlines()
+    return sorted({p for p in changed_paths(wt) + committed if p and not p.startswith(".idp/")})
 
 
 def changed_paths(wt):

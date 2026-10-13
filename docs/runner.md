@@ -334,7 +334,9 @@ with `REQ-<AREA>-<NNN>` ids, AC checkboxes linking the code and the test that
 satisfy them, an architecture table; current truth only, at most 3,000 words per
 area. The model writes; `scripts/blueprint.py check` decides: the template's shape,
 every link resolves, every built AC links code and test, the word ceiling, and
-nothing changed outside `docs/blueprint/`. A refusal goes back with its problems as
+nothing changed outside `docs/blueprint/`. A documenter's own commits are part of
+that diff: any path outside `docs/blueprint/**` is refused with a FIX, and nothing
+is committed or pushed. A refusal goes back with its problems as
 an attempt. What passes is committed to the feature branch as
 `docs(blueprint): … #<card>`, marked `idp-blueprint: <card>@<head>`, so it sits in
 the same pull request into `main` as the code.

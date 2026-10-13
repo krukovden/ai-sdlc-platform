@@ -742,6 +742,25 @@ def attempts_since_handback(world, phase):
 class ReviewFixTests(IntegrationTestCase):
     """Attempt budgets renew when a human lifts the block; a cached bad answer still counts."""
 
+    def test_documenter_cannot_push_committed_code_changes(self):
+        world = self.world()
+
+        def commits_code(world, worktree):
+            (worktree / "src/a.py").write_text("VALUE = 999\n")
+            git(worktree, "add", "src/a.py")
+            git(worktree, "commit", "-q", "-m", "accidental documenter code fix")
+            return write_blueprint(world, worktree)
+
+        world.documenter = commits_code
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/a.py"), "VALUE = 1\n")
+        reason = world.events(FEATURE, lease.BLOCK)[-1]["reason"]
+        self.assertIn("FIX:", reason)
+        self.assertIn("docs/blueprint", reason)
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"))
+        log = git(world.remote, "log", "--format=%s", FEATURE_BRANCH)
+        self.assertNotIn("accidental", log)
+
     def test_cached_malformed_witness_consumes_an_attempt_on_resume(self):
         world = self.world()
         bad = {"summary": "the modules agree", "findings": [{
