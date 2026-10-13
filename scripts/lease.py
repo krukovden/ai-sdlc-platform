@@ -231,7 +231,10 @@ class Fenced:
     The state writes underneath are fenced on the revision as well (the tag
     writer's `test /rev`); a comment or an attachment has no revision to
     test on either board, so for those the owner re-read immediately before
-    the call is the fence.
+    the call is the fence. An attachment retries a revision conflict inside
+    that one call. The retry is not a new authorization: before each
+    publishing write the adapter calls `_publish_check`, and a takeover
+    aborts the old owner instead of linking against the new revision.
     """
 
     def __init__(self, board, card, run):
@@ -248,7 +251,23 @@ class Fenced:
 
         def fenced(*args, **kwargs):
             self.check()
-            return attribute(*args, **kwargs)
+            if name != "attach_document":
+                return attribute(*args, **kwargs)
+            # The retry lives inside the adapter. Hand it this fence so a
+            # conflict it answers by reading a fresh revision still asks who
+            # holds the card before it publishes.
+            previous = getattr(self.unfenced, "_publish_check", None)
+            self.unfenced._publish_check = self.check
+            try:
+                return attribute(*args, **kwargs)
+            finally:
+                if previous is None:
+                    try:
+                        del self.unfenced._publish_check
+                    except AttributeError:
+                        pass
+                else:
+                    self.unfenced._publish_check = previous
         return fenced
 
 

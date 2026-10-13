@@ -1231,6 +1231,72 @@ class AttachmentTests(ScriptTestCase):
         call = fake.rest_matching("GET", "wit/attachments/att-9")[0]
         self.assertIn("download=true", call["url"])
 
+    def _fenced_attach(self, fake, on_patch):
+        """The real `attach_document`, under `lease.Fenced`, with transport mocked.
+
+        `on_patch(item)` runs on the first relation PATCH and decides that
+        answer. Later patches go through the stub, so a retry that should not
+        have been authorized is visible as a linked file.
+        """
+        lease = load_script("lease")
+        handle, _ = make_board(PROFILE)
+        fenced = lease.Fenced(handle, "42", "run-a")
+        seen = {"patches": 0}
+
+        def rest(url, method="GET", body=None, **kwargs):
+            if method == "PATCH" and "wit/workitems" in url:
+                seen["patches"] += 1
+                if seen["patches"] == 1:
+                    answer = on_patch(fake.items["42"])
+                    fake.rest_calls.append({
+                        "url": url, "method": method, "body": body,
+                        "content_type": kwargs.get("content_type"),
+                        "authorization": kwargs.get("authorization"),
+                        "auth_hint": kwargs.get("auth_hint"),
+                        "headers": kwargs.get("extra_headers") or {},
+                    })
+                    return answer
+            return fake.rest(url, method=method, body=body, **kwargs)
+
+        with stub(fake), mock.patch.object(azure, "rest_call", rest):
+            return lease, fenced.attach_document(
+                "IDE-1 · 00 · ADR — stale", "stale from run-a\n", identifier="42")
+
+    def test_a_takeover_during_attachment_retry_does_not_link_the_old_content(self):
+        """A9: the relation PATCH conflicts because another run took the card.
+
+        The retry used to re-read that run's revision and link the old owner's
+        bytes anyway. The fence checked the owner once, on the way in, and the
+        retry never asked again.
+        """
+        def takeover(item):
+            item["fields"]["System.Tags"] = "idp:development; idp:owner:run-b"
+            item["rev"] = item.get("rev", 1) + 1
+            return azure.CONFLICT
+
+        fake = FakeAz(work_item(tags="idp:development; idp:owner:run-a"))
+        lease = load_script("lease")
+        with self.assertRaises(lease.OwnershipLost):
+            self._fenced_attach(fake, takeover)
+        linked = [r for r in fake.items["42"].get("relations") or []
+                  if r.get("rel") == "AttachedFile"]
+        self.assertEqual(linked, [])
+        self.assertEqual(len(fake.rest_matching("PATCH", "wit/workitems")), 1)
+
+    def test_a_revision_conflict_that_keeps_the_owner_still_retries_the_attachment(self):
+        """A comment bump is not a takeover. The same owner may publish on the new rev."""
+        def bump(item):
+            item["rev"] = item.get("rev", 1) + 1
+            return azure.CONFLICT
+
+        fake = FakeAz(work_item(tags="idp:development; idp:owner:run-a"))
+        _, document = self._fenced_attach(fake, bump)
+        self.assertTrue(document["changed"])
+        linked = [r for r in fake.items["42"].get("relations") or []
+                  if r.get("rel") == "AttachedFile"]
+        self.assertEqual(len(linked), 1)
+        self.assertEqual(len(fake.rest_matching("PATCH", "wit/workitems")), 2)
+
 
 class RestTransportTests(ScriptTestCase):
     """The second door, and the failure modes it has to keep answering for.
