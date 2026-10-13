@@ -217,7 +217,7 @@ class Executor:
         raise NotImplementedError
 
     def finish(self, role, card, choice, result, crashed=False, limit=None,
-               returncode=None, last_message=None):
+               returncode=None, last_message=None, launch_failed=False):
         """Record the session and turn its report into the runner's code."""
         code = EXIT.HANDOFF if result is None else result["code"]
         self.last = Session(role=role, card=card, backend=self.backend,
@@ -226,7 +226,7 @@ class Executor:
                             code=code, reason=(result or {}).get("reason") or
                             ("the session ended without a result file" if crashed else ""),
                             crashed=crashed, limit=limit, returncode=returncode,
-                            last_message=last_message)
+                            last_message=last_message, launch_failed=launch_failed)
         return code
 
 

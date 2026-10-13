@@ -14,8 +14,11 @@ code alone.
 
 import json
 import os
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 
 from . import (EXIT, Executor, agents, clear_result, environment, read_result, result_path,
                write_runner_session)
@@ -104,25 +107,57 @@ class SubprocessExecutor(Executor):
                     process = self.popen(agents.launch_argv(choice, prompt), cwd=str(worktree),
                                          env=env, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         text=True)
+                                         text=True, start_new_session=True)
                 except OSError as exc:
-                    log.write(f"could not start {choice}: {exc}\n")
-                    return self.finish(role, card, choice, None, crashed=True,
-                                       returncode=None)
-                with process.stdout:
-                    for line in process.stdout:
-                        log.write(line)
-                        limit = limit_event(line) or limit
-                        last = final_message(line) or last
-                try:
-                    returncode = process.wait(timeout=self.timeout)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+                    message = f"could not start {choice}: {exc}"
+                    log.write(message + "\n")
+                    result = {"code": EXIT.HANDOFF, "reason": message}
+                    return self.finish(role, card, choice, result, crashed=False,
+                                       returncode=None, launch_failed=True)
+                state = {"limit": None, "last": None}
+
+                def consume():
+                    stream = process.stdout
+                    if stream is None:
+                        return
+                    try:
+                        with stream:
+                            for line in stream:
+                                log.write(line)
+                                state["limit"] = limit_event(line) or state["limit"]
+                                state["last"] = final_message(line) or state["last"]
+                    except ValueError:
+                        return
+
+                reader = threading.Thread(target=consume, name=f"idp-{role}-stdout", daemon=True)
+                reader.start()
+                timed_out = False
+                deadline = None if self.timeout is None else time.monotonic() + self.timeout
+                while True:
+                    if process.poll() is not None and not reader.is_alive():
+                        break
+                    if deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        returncode = process.wait()
+                        reader.join(1)
+                        if reader.is_alive() and process.stdout is not None:
+                            process.stdout.close()
+                            reader.join(1)
+                        log.write(f"killed after {self.timeout} seconds\n")
+                        break
+                    reader.join(0.05)
+                if not timed_out:
                     returncode = process.wait()
-                    log.write(f"killed after {self.timeout} seconds\n")
 
         result = read_result(worktree)
-        return self.finish(role, card, choice, result, crashed=result is None,
-                           limit=limit if (result is None and returncode != EXIT.OK)
+        code = self.finish(role, card, choice, result, crashed=result is None,
+                           limit=state["limit"] if (result is None and returncode != EXIT.OK)
                            else None,
-                           returncode=returncode, last_message=last)
+                           returncode=returncode, last_message=state["last"])
+        if timed_out:
+            self.last["reason"] = f"the session was killed after {self.timeout} seconds"
+        return code

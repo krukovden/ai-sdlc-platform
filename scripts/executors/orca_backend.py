@@ -140,8 +140,8 @@ CLOSING = ("When you have run `run.py report`, settle your Orca dispatch as your
            "--outcome failed, and put the reason in the body.")
 
 Reply = namedtuple("Reply", "code doc")
-Outcome = namedtuple("Outcome", "kind reason body limit fix verdict",
-                     defaults=("", "", None, None, None))
+Outcome = namedtuple("Outcome", "kind reason body limit fix verdict launch_failed",
+                     defaults=("", "", None, None, None, False))
 
 
 class Unavailable(Exception):
@@ -561,11 +561,12 @@ class OrcaExecutor(Executor):
         if blocked:
             what, fix = prompt_reason(blocked.group(1))
             return dispatch, Outcome("blocked", f"{choice.agent} could not start: {what} "
-                                                f"(Orca: {last})", fix=fix)
+                                                f"(Orca: {last})", fix=fix,
+                                                launch_failed=True)
         limit = screen_limit(last)
         if limit:
             return dispatch, Outcome("limit", f"{choice.agent} hit {limit} at start: {last}",
-                                     limit=limit)
+                                     limit=limit, launch_failed=True)
         raise Unavailable(f"Orca could not start {choice.agent} (failedStage {stage}, "
                           f"lastError {last or 'none'})", scope="agent", agent=choice.agent)
 
@@ -683,13 +684,16 @@ class OrcaExecutor(Executor):
                           "reason": "the result file says done but the session told Orca it "
                                     "failed: " + (said or "no reason")}
         elif result is None:
-            if kind in ("blocked", "escalation"):
+            if outcome.launch_failed and kind == "limit":
+                result = {"code": EXIT.HANDOFF, "reason": outcome.reason}
+                limit = outcome.limit
+            elif kind in ("blocked", "escalation"):
                 result = {"code": EXIT.BLOCKED,
                           "reason": EXIT.with_fix(outcome.reason, outcome.fix)}
             else:                              # limit, exited, timeout, lost: a crash
                 crashed, limit = True, outcome.limit
         code = self.finish(role, card, choice, result, crashed=crashed, limit=limit,
-                           last_message=said or None)
+                           last_message=said or None, launch_failed=outcome.launch_failed)
         if crashed and outcome.reason:
             self.last["reason"] = outcome.reason
         self.last.update(dispatch=dispatch, task=task_id, orca=kind)

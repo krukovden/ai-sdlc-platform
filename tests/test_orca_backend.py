@@ -361,6 +361,7 @@ class StartFailureTests(ScriptTestCase):
         self.assertEqual(executor.run_role("worker", "IDE-1", harness.worktree, "p"), EXIT.BLOCKED)
         self.assertIn("trust this folder", executor.last.reason)
         self.assertIn("FIX:", executor.last.reason)
+        self.assertTrue(executor.last.launch_failed)
         self.assertEqual(executor.last.backend, "orca")
         self.assertEqual(harness.verbs().count("worker-release"), 1)   # the failed start's terminal
         self.assertNotIn("check", harness.verbs())
@@ -371,7 +372,7 @@ class StartFailureTests(ScriptTestCase):
         executor = harness.executor("codex")
         self.assertEqual(executor.run_role("worker", "IDE-1", harness.worktree, "p"), EXIT.HANDOFF)
         self.assertEqual(executor.last.limit, "rate_limit")
-        self.assertTrue(executor.last.crashed)
+        self.assertTrue(executor.last.launch_failed)
 
     def test_gemini_with_its_launcher_disabled_goes_through_subprocess(self):
         harness = Harness(self, agents={"gemini": {"start": "error:agent_unconfigured"}})

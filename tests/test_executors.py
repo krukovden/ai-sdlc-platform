@@ -14,6 +14,7 @@ import stat
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -401,6 +402,48 @@ class SubprocessBackendTests(ScriptTestCase):
         self.executor.run_role("review", "IDE-12", self.worktree, "review",
                                author="claude:opus")
         self.assertEqual(Path(self.seen("seen-argv.json")[0]).name, "codex")
+
+    def test_a_launch_oserror_is_marked_as_launch_failed_not_crashed(self):
+        failing = executors.SubprocessExecutor(
+            self.executor.resolver, environ=self.environ,
+            popen=lambda *a, **k: (_ for _ in ()).throw(OSError("vanished")))
+        self.assertEqual(failing.run_role("design", "IDE-12", self.worktree, "design IDE-12"),
+                         EXIT.HANDOFF)
+        self.assertTrue(failing.last.launch_failed)
+        self.assertFalse(failing.last.crashed)
+        self.assertIn("could not start", failing.last.reason)
+
+    def test_timeout_kills_the_whole_process_group_even_if_a_grandchild_holds_stdout(self):
+        grandchild = self.bin / "grandchild.pid"
+        script = textwrap.dedent(f"""\
+            #!{sys.executable}
+            import os, subprocess, sys, time
+            from pathlib import Path
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                stdout=sys.stdout, stderr=sys.stdout)
+            Path({str(grandchild)!r}).write_text(str(child.pid), encoding="utf-8")
+            sys.exit(0)
+        """)
+        path = self.bin / "claude"
+        path.write_text(script, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        timed = executors.SubprocessExecutor(self.executor.resolver, environ=self.environ,
+                                             timeout=1)
+        started = time.monotonic()
+        self.assertEqual(timed.run_role("design", "IDE-12", self.worktree, "design IDE-12"),
+                         EXIT.HANDOFF)
+        self.assertLess(time.monotonic() - started, 5)
+        pid = int(grandchild.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                self.fail(f"grandchild {pid} survived the timeout")
+            time.sleep(0.05)
 
 
 class ResultFileTests(ScriptTestCase):
