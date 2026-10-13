@@ -85,9 +85,14 @@ class AgentTestCase(RunnerTestCase):
             self.passes.append(self.clock.now())
             return board.list_project()
 
+        def make_executor():
+            self.made.append(self.clock.now())
+            return self.executor
+
+        self.made = []
         self.out = io.StringIO()
         return agent_mode.AgentLoop(
-            board, PROFILE, run_id, lambda: self.executor, make_runner, list_cards,
+            board, PROFILE, run_id, make_executor, make_runner, list_cards,
             self.presence, run.executors, run.Runner.run_py, serve=serve,
             sleep=self.clock.sleep, clock=self.clock.now, out=self.out,
             worktrees=self.worktrees)
@@ -124,6 +129,7 @@ class AgentLoopTests(AgentTestCase):
         self.loop(board).run(passes=6)
         self.assertNotIn(tags.DEVELOPMENT, board.cards[FEATURE]["tags"])
         self.assertEqual(len(self.executor.calls), 1)
+        self.assertEqual(len(self.made), 1)                  # one executor while it serves
 
     def test_a_call_the_session_made_alone_becomes_a_decision_comment(self):
         board = new_board()
@@ -208,6 +214,7 @@ class AgentLoopTests(AgentTestCase):
         self.assertEqual(executor.calls, [])
         self.assertEqual(self.out.getvalue().count("serves nothing"), 1)
         self.assertEqual(self.passes, [0, 900, 1800])
+        self.assertEqual(self.made, [0, 900, 1800])          # asked afresh every time
 
     def test_serve_narrows_the_phases(self):
         board = new_board(tags.DEVELOPMENT)

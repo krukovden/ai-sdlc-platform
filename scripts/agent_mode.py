@@ -508,6 +508,9 @@ class AgentLoop:
             return "stop"
         served = self.served()
         if not served:
+            # Asked again with a fresh executor next time: an agent whose usage
+            # limit has reset since is available again.
+            self.executor = None
             self.machine_down("no role a phase needs can be filled on this machine")
             return "machine"
         self.machine = None
