@@ -126,7 +126,10 @@ code is `scripts/phase3/`; `run.py` only hands the card to it.
    and a **planning comment pins its sha256** with the commit. Witnesses are read
    from that commit and nowhere else.
 5. **The board shape**, always the same: one PBI per slice with its agent brief
-   attached, one Task per brief step naming the PBI's witnesses, and a
+   attached, one Task per brief step with **its own witnesses** (step j owns the
+   j-th acceptance criterion; the last step also owns any criteria left over, and a
+   step past the last criterion owns the last one — written into the Task's
+   `idp-meta`), and a
    **QA Testing** PBI depending on every other PBI with the Tasks *Write test cases
    and Playwright* and *Run the feature's tests*. Everything is found again by the
    key in its `idp-meta` block, so a re-run creates nothing twice.
@@ -172,23 +175,59 @@ For each item:
    `pbi/…/g<N> → feature/…` is opened without auto-complete and completed only for
    the tested merge — on Azure Repos pinning `lastMergeSourceCommit` to `M`; if a
    sibling moved the feature head first, steps 2–3 of finalize run again on the new
-   head, and that is not an attempt. Then the PBI and its Tasks → done, the owner
-   tag off, a summary comment.
+   head, and that is not an attempt. Then the PBI → done, the owner tag off, a
+   summary comment.
+
+**Tasks advance one by one.** At every finalize — passed or failed — a Task whose
+own witnesses all passed goes to done, and the first Task that is not proved yet
+goes to doing. When the PBI merges, a Task is closed only if its witnesses passed;
+a step whose witness is `{manual}` or `{evidence}` is left open with a comment, for
+the human at QA. No Task is ever closed without its own witness.
+
+**The Azure Repos completion window.** `lastMergeSourceCommit` pins the source of
+the completion, not its target. The runner asks the remote for the feature head
+immediately before completing (no fetch in between), and afterwards checks that
+the squash's parent is the tested `F`. If a sibling landed in that window, the
+runner records a `merge-race` event and runs the witnesses again on the head that
+now exists: green, the merge stands; otherwise the Feature is blocked for a human,
+because the code is already on the feature branch. Whether Azure DevOps itself
+refuses such a completion is unmeasured — see *Known gaps* in `CLAUDE.md` and
+experiment 8 in `docs/experiments/README.md`. Git-level merges (Linear) have no
+window: their push is a compare-and-swap on `F`.
 
 Every failure has one outcome and one route:
 
 | Outcome | Route |
 | -- | -- |
-| `defect` — a witness fails, the scanner fails, the diff touches the plan | a fresh worker session with the output; an attempt |
+| `defect` — a witness fails, the scanner fails, the diff touches a pinned plan file, a Bug's regression test is missing or passes without the fix | a fresh worker session with the output; an attempt |
 | `infra` — the remote, the network, a runner error | retried after 5, 30, 120 s; never an attempt; then the PBI waits for the next run |
 | `witness_timeout`, `budget` | the PBI is blocked and sent back to planning: the witness is wrong, not the code |
-| `malformed` — no pinned plan entry, zero runnable witnesses | blocked at once |
+| `malformed` — no pinned plan entry, a witness that breaks the three rungs (`{evidence}`, `{command, timeout}`, `{manual}`), zero runnable witnesses | blocked at once, before anything runs |
 | `conflict` — the feature head does not merge in | a conflict-resolution session with both sides named; an attempt |
 
 `{evidence}` and `{manual}` witnesses are recorded, never run, so a PBI with no
-`{command}` witness has **zero witnesses, which is a failure**. A Bug filed by a
-human has no entry in the pinned plan and is blocked as `malformed` until
-integration and QA (build steps 4 and 9) give Bugs their own witnesses.
+`{command}` witness has **zero witnesses, which is a failure**. Every witness of
+the pinned file is checked against the plan schema's rungs again at finalize.
+
+**Bugs.** A Bug filed under the Feature (by QA, through engineering-catalog's
+`qa-ado-work-item`, or by hand) is not in the plan. Before its worker starts, the
+runner writes a **Bug plan addendum**, `docs/plans/<card>.bug-<id>.json`, commits
+it to the feature branch and pins its sha256 in a `bug-plan` comment on the Bug;
+finalize reads the Bug's witnesses from that commit, as it does a PBI's. The
+witnesses come from the Bug's own card — acceptance criteria in the planner's form,
+`- **AC-1** — …` with a `Witness: {"command": …, "timeout": …}` line — or, when the
+card states none, from the profile's regression rule:
+
+```json
+"development": {"bug_witness": {"command": "python3 -m pytest tests/regression/test_bug_{id}.py",
+                                "timeout": 300, "test": "tests/regression/test_bug_{id}.py"}}
+```
+
+With the rule, the worker writes that test **failing first** (W2): finalize
+requires the test in the diff, and runs the witness once on the feature head with
+only the test added — it must fail there. A Bug with neither source has zero
+witnesses and is blocked before any worker starts, with a FIX. The first pin wins:
+editing the card later does not move the witnesses already pinned.
 
 **Counters live on the board**: every attempt, review round and hand-off is an
 event comment, so they survive a crash, a reap and a takeover. Three attempts block

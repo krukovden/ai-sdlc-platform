@@ -10,6 +10,7 @@ The seven experiments the revision spec lists under "Before implementation" (`do
 | 5 | A script as Orca coordinator | run by T7 inside Orca | n/a | `run.py` cannot drive Orca: the `orca` backend waits and `subprocess` carries everything. |
 | 6 | Which agents Orca launches | run by T7 inside Orca | n/a | Agents Orca cannot launch go through `subprocess`; the answer is recorded per agent in the profile documentation. |
 | 7 | Work item mentions (`#id`, `Fixes #id`) | script ready, not run | `python3 scripts/experiments/e7_mentions.py --org <org> --project <project> --i-understand-this-writes --repo-path <scratch clone> [--push]` | Nothing breaks (`reconcile` parses mentions itself), but nothing may wait for a commit to link or move an item. |
+| 8 | Azure Repos completion onto a moved target (raised by the T6 review) | not written | needs a script like e2: open two PRs into one branch, complete one, then complete the other with `lastMergeSourceCommit` pinned to a merge made on the old head | The service completes onto the new head: the runner's after-check (`merge-race`, re-run witnesses) is the only guard and stays. The service refuses: record the status it returns and treat it as "the head moved" before completion. |
 
 ## Running the scripts
 
