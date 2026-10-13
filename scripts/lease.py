@@ -282,7 +282,7 @@ def claim(board, identifier, run, phase=None, profile=None, **facts):
     Without one nothing is written at all: a claim with no profile hash is
     refused before its tag write. The comment is keyed on the lease's
     generation, so a claim resumed after a crash does not post twice, while a
-    claim after a reap or a takeover is a new lease and does.
+    claim after a reap, a takeover, a pause or a release is a new lease and does.
     """
     if not profile:
         card = {"identifier": str(identifier), "tags": [], "status": None}
@@ -293,11 +293,36 @@ def claim(board, identifier, run, phase=None, profile=None, **facts):
             fix="pass profile=board.profile_hash(profile) to lease.claim")
     result = tags.claim(board, identifier, run, phase=phase)
     if result["outcome"] in ("written", "unchanged"):
-        n = generation(board, identifier)
-        post_event(board, identifier, CLAIM, f"{CLAIM}:{run}:{phase or '-'}:g{n}",
+        key, n = _claim_key(board, identifier, run, phase, result)
+        post_event(board, identifier, CLAIM, key,
                    text=f"Claimed by run `{run}`.", run=run, phase=phase,
                    generation=n, profile=profile, **facts)
     return result
+
+
+def _claim_key(board, identifier, run, phase, result):
+    """Dedupe retries of one acquisition, not the next acquisition by the same run.
+
+    The first claim of a generation keeps `claim:<run>:<phase>:g<N>`. That is
+    also the key after a reap or a takeover, because `generation` counts those
+    and nothing else. A later acquisition in the same generation — the owner
+    tag written again after a pause or a release — is a new sign of life, keyed
+    on the revision of that write. A retry (`unchanged`) reuses the latest key
+    of this hold, so a comment that moved the revision cannot mint another.
+    """
+    n = generation(board, identifier)
+    base = f"{CLAIM}:{run}:{phase or '-'}:g{n}"
+    prior = [event for event in events(board.list_comments(identifier), CLAIM)
+             if event.get("run") == run and event.get("generation") == n
+             and str(event.get("key", "")).startswith(base)]
+    if result["outcome"] == "written" and prior:
+        return f"{base}:r{result.get('rev')}", n
+    if result["outcome"] == "unchanged" and prior:
+        candidate = f"{base}:r{result.get('rev')}"
+        if any(event.get("key") == candidate for event in prior):
+            return candidate, n
+        return prior[-1]["key"], n
+    return base, n
 
 
 def generation(board, identifier):

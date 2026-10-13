@@ -367,6 +367,43 @@ class ReapTests(ScriptTestCase):
         lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
         self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
         self.assertEqual(lease.generation(board, "1"), 1)
+        self.assertEqual(lease.events(board.list_comments("1"), lease.CLAIM)[-1]["key"],
+                         f"claim:{A}:{tags.DESIGN}:g1")
+
+    def test_a_claim_after_a_pause_is_a_new_sign_of_life(self):
+        board = self.claimed()
+        self.assertEqual(lease.events(board.list_comments("1"), lease.CLAIM)[0]["key"],
+                         f"claim:{A}:{tags.DESIGN}:g0")
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        board.advance(61)
+        again = lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        self.assertEqual(again["outcome"], "written")
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
+        self.assertEqual(lease.generation(board, "1"), 0)
+        # The resumed hold is alive now; the old claim must not still be the clock.
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "unchanged")
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
+
+    def test_a_claim_after_a_release_is_a_new_sign_of_life(self):
+        board = self.claimed()
+        self.assertEqual(tags.release(board, "1", A)["outcome"], "written")
+        board.advance(61)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "written")
+        self.assertEqual(lease.reap(board, "1")[0]["outcome"], "alive")
+
+    def test_a_comment_that_bumps_rev_does_not_mint_another_claim_on_retry(self):
+        board = FakeBoard(comment_bumps_rev=True)
+        feature(board, "1", tags.DESIGN)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        tags.pause(board, "1", A)
+        board.advance(61)
+        lease.claim(board, "1", A, tags.DESIGN, profile=HASH)
+        self.assertEqual(lease.claim(board, "1", A, tags.DESIGN, profile=HASH)["outcome"],
+                         "unchanged")
+        self.assertEqual(lease.count_events(board, "1", lease.CLAIM), 2)
 
 
 class TakeoverTests(ScriptTestCase):
