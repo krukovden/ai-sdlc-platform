@@ -292,7 +292,8 @@ async function run(argv, context = {}) {
   const desired = {};
   if (args.command !== 'uninstall') {
     if (receipt.version && compare(pkg.version, receipt.version) < 0) throw new Error('Refusing downgrade; fetch the latest package');
-    for (const entry of [...catalog.payload, ...catalog.skills.map(s => s.path), ...(catalog.agents || []).map(a => a.path)]) files(root, entry, desired);
+    for (const entry of [...catalog.payload, ...catalog.skills.map(s => s.path),
+      ...(catalog.commands || []).map(c => c.path), ...(catalog.agents || []).map(a => a.path)]) files(root, entry, desired);
   }
   const kept = new Set();
   for (const file of new Set([...Object.keys(receipt.files), ...Object.keys(desired)])) {
@@ -321,6 +322,11 @@ async function run(argv, context = {}) {
     for (const target of activeTargets) {
       const prefix = target === 'copilot' && args.local ? '.github' : TARGETS[target];
       if (target === 'copilot') links[path.join(base, prefix, 'instructions/platform-freshness.instructions.md')] = path.join(payload, 'skills/platform-freshness/platform-freshness.instructions.md');
+      if (target === 'claude') {
+        for (const command of catalog.commands || []) {
+          links[path.join(base, prefix, 'commands', path.basename(command.path))] = path.join(payload, command.path);
+        }
+      }
       for (const skill of catalog.skills) links[path.join(base, prefix, 'skills', skill.name)] = path.join(payload, skill.path);
       for (const agent of catalog.agents || []) links[path.join(base, prefix, 'agents', path.basename(agent.path))] = path.join(payload, agent.path);
     }

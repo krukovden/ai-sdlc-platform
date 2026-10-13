@@ -7,6 +7,12 @@
   },
   "repository": "https://github.com/krukovden/ai-sdlc-platform",
   "skills": [
+    "./skills/idp",
+    "./skills/idp-design",
+    "./skills/idp-develop",
+    "./skills/idp-qa",
+    "./skills/idp-setup",
+    "./skills/idp-status",
     "./skills/feature-discovery",
     "./skills/design",
     "./skills/planning",
@@ -14,6 +20,14 @@
     "./skills/documenter",
     "./skills/establish-project",
     "./skills/platform-freshness"
+  ],
+  "commands": [
+    "./commands/idp.md",
+    "./commands/idp-design.md",
+    "./commands/idp-develop.md",
+    "./commands/idp-qa.md",
+    "./commands/idp-setup.md",
+    "./commands/idp-status.md"
   ],
   "hooks": "./hooks/hooks.json"
 }

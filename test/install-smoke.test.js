@@ -19,6 +19,9 @@ for (const target of ['claude', 'copilot', 'orca']) {
     const folder = {claude: '.claude', copilot: '.copilot', orca: '.agents'}[target];
     const installed = path.join(ctx.home, folder, 'skills/design/design.py');
     assert.match(execFileSync('python3', [installed, '--help'], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'}), /design.py/);
+    const explicit = path.join(ctx.home, folder, 'skills/idp');
+    assert.ok(fs.existsSync(path.join(explicit, 'SKILL.md')));
+    if (target === 'claude') assert.ok(fs.existsSync(path.join(ctx.home, '.claude/commands/idp.md')));
     assert.match(execFileSync('python3', [path.join(ctx.home, '.local/bin/idp'), '--help'], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'}), /board.py/);
     assert.match(cli('status'), new RegExp(CURRENT.replace(/\./g, '\\.')));
     const receipt = json(path.join(ctx.home, '.idp/platform/receipt.json'));
@@ -54,6 +57,7 @@ test('local all-target install protects existing files and leaves unrelated stat
   fs.rmSync(path.join(ctx.cwd, '.claude'), {recursive: true});
   await run(['install', '--local'], ctx);
   assert.ok(fs.existsSync(path.join(ctx.cwd, '.github/skills/design')));
+  assert.ok(fs.existsSync(path.join(ctx.cwd, '.claude/commands/idp.md')));
   fs.writeFileSync(path.join(ctx.cwd, '.idp/profile.json'), '{}');
   await run(['uninstall', '--local'], ctx);
   assert.deepEqual(fs.readdirSync(path.join(ctx.cwd, '.idp')), ['profile.json']);
@@ -79,8 +83,10 @@ test('version sync keeps manifests and catalog skill entries aligned', t => {
   const plugin = json(path.join(ctx.root, '.claude-plugin/plugin.json'));
   assert.equal(plugin.version, '1.2.3');
   for (const skill of plugin.skills) assert.ok(fs.existsSync(path.join(ctx.root, skill, 'SKILL.md')));
+  for (const command of plugin.commands) assert.ok(fs.existsSync(path.join(ctx.root, command)));
   const current = json(path.join(ROOT, 'package.json')).version;
   assert.equal(json(path.join(ROOT, '.claude-plugin/plugin.json')).version, current);
+  assert.ok(json(path.join(ROOT, '.claude-plugin/plugin.json')).commands.includes('./commands/idp.md'));
   for (const file of ['.claude-plugin/marketplace.json', '.github/plugin/marketplace.json']) {
     const manifest = json(path.join(ROOT, file));
     assert.equal(manifest.metadata.version, current); assert.equal(manifest.plugins[0].version, current);

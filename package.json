@@ -16,6 +16,7 @@
     "bin",
     "cli",
     "catalog.json",
+    "commands",
     "skills",
     "scripts",
     "registry",

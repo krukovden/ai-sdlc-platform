@@ -1,8 +1,22 @@
 {
   "name": "ai-sdlc-platform",
   "source": "https://github.com/krukovden/ai-sdlc-platform",
-  "payload": ["scripts", "hooks", "registry", "schemas", "templates", "lint", "cli", "bin", "package.json", "catalog.json"],
+  "payload": ["scripts", "hooks", "registry", "schemas", "templates", "lint", "cli", "bin", "commands", "package.json", "catalog.json"],
+  "commands": [
+    {"name": "idp", "path": "commands/idp.md"},
+    {"name": "idp-design", "path": "commands/idp-design.md"},
+    {"name": "idp-develop", "path": "commands/idp-develop.md"},
+    {"name": "idp-qa", "path": "commands/idp-qa.md"},
+    {"name": "idp-setup", "path": "commands/idp-setup.md"},
+    {"name": "idp-status", "path": "commands/idp-status.md"}
+  ],
   "skills": [
+    {"name": "idp", "path": "skills/idp"},
+    {"name": "idp-design", "path": "skills/idp-design"},
+    {"name": "idp-develop", "path": "skills/idp-develop"},
+    {"name": "idp-qa", "path": "skills/idp-qa"},
+    {"name": "idp-setup", "path": "skills/idp-setup"},
+    {"name": "idp-status", "path": "skills/idp-status"},
     {"name": "feature-discovery", "path": "skills/feature-discovery"},
     {"name": "design", "path": "skills/design"},
     {"name": "planning", "path": "skills/planning"},
