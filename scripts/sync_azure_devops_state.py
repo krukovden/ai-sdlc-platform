@@ -1448,7 +1448,7 @@ class Board(_tags_module().PhaseMixin):
 
     def server_now(self):
         """The service's own clock, from the `Date` header of a cheap request."""
-        _, date = self._rest("wit/workitemtypes", query={"$top": "1"}, want_date=True)
+        _, date = self._rest("wit/workitemtypes", want_date=True)
         if not date:
             fail(EXIT.UNAVAILABLE, "Azure DevOps answered without a Date header, so there is "
                                    "no server clock to measure a lease by",

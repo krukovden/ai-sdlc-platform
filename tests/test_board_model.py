@@ -244,6 +244,16 @@ class ConflictTagTests(ScriptTestCase):
                 self.assertEqual(tags.claim(board, "1", A, tags.DESIGN)["outcome"], "refused")
 
 
+class HumanPhaseTests(ScriptTestCase):
+
+    def test_qa_is_the_humans_and_cannot_be_claimed_through_start(self):
+        board = FakeBoard()
+        feature(board, "1", tags.QA)
+        message = self.assert_exits(tags.EXIT.INVALID, board.start_phase, "1", "qa")
+        self.assertIn("no 'active' position", message)
+        self.assertEqual(board.side_effects, 0)
+
+
 class PauseTests(ScriptTestCase):
 
     def test_a_paused_card_is_taken_at_once_by_any_run(self):

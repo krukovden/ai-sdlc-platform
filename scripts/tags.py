@@ -684,10 +684,12 @@ class PhaseMixin:
     def start_phase(self, identifier, phase):
         """Claim the card for a phase, or refuse and say why. One fenced write."""
         ready = self.phase_marker(phase, "ready")
+        # A phase with no `active` position is nobody's to claim: QA is the
+        # human's, through the QA Testing PBI, and this refuses with a FIX line.
+        active = self.phase_marker(phase, "active")
         if "tag" in ready:
             result = _settle(claim(self, identifier, self.run_id(), phase=ready["tag"]))
         else:
-            active = self.phase_marker(phase, "active")
             result = _settle(move_status(self, identifier, ready["status"],
                                          active["status"]))
         changed = result["outcome"] == "written"
