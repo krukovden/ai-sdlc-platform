@@ -199,7 +199,11 @@ Optional `reuse` entries name `action: extend|supersede` and `path`; every super
 must also list that path in `delete`, an explicit deletion deliverable. Extending
 an existing implementation takes precedence over recreating it beside itself.
 
-Before publication run `planning.py finalize <id> --planner-model <actual model>`.
+Before publication run `planning.py finalize <id>`. The planner model is recorded at
+`init` (registry `planner`, or `init --planner <name>`); `--planner-model` may only
+repeat it. A deterministic floor — every table body row, list item and quantifier
+line of the ADR — must be quoted by some extracted constraint, so the model can add
+constraints but never drop one.
 The independent provider extracts every load-bearing ADR constraint, including
 quantifiers, enumerations and table rows, and maps it to the PBIs. The script checks
 source quotes and computes the set difference. Missing constraints, malformed

@@ -183,6 +183,123 @@ class PlanBorrowings(unittest.TestCase):
             planning.require_coverage({"coverage_review": result}, self.payload(), source + "!")
 
 
+class CoverageHardening(PlanBorrowings):
+    SOURCE = "# ADR\n\n| a | b |\n|---|---|\n| row one | x |\n- plain item\nprose without keywords\n"
+
+    def run_floor(self, constraint_lines, planner="author"):
+        constraints = [{"id": f"C{n}", "quote": self.SOURCE.splitlines()[n - 1].strip()[:8],
+                        "line": n} for n in constraint_lines]
+        report = {"constraints": constraints,
+                  "coverage": [{"constraint": c["id"], "pbis": ["A"]} for c in constraints]}
+        return planning.check_coverage(
+            self.payload(), self.SOURCE, planner,
+            providers={"reviewer": {"primary": {"name": "critic", "command": ["fake"]}}},
+            runner=lambda spec, prompt, schema: json.dumps(report))
+
+    def test_floor_lists_table_rows_and_list_items_not_headers_or_prose(self):
+        self.assertEqual(planning.deterministic_constraints(self.SOURCE), [5, 6])
+
+    def test_model_cannot_drop_a_floor_line(self):
+        with self.assertRaisesRegex(planning.PlanError, "line 6"):
+            self.run_floor([5])
+        self.assertTrue(self.run_floor([5, 6])["plan_hash"])
+
+    def test_model_may_add_beyond_the_floor(self):
+        self.assertTrue(self.run_floor([5, 6, 7])["plan_hash"])
+
+    def test_unknown_planner_refuses_with_a_fix_line(self):
+        with self.assertRaisesRegex(planning.PlanError, "FIX"):
+            self.run_floor([5, 6], planner="unknown")
+
+    def test_no_independent_model_names_a_fix(self):
+        with self.assertRaisesRegex(planning.PlanError, "FIX"):
+            self.run_floor([5, 6], planner="critic")
+
+    def test_finalize_cannot_override_the_recorded_planner(self):
+        class Args:
+            id = "IDE-1"
+            planner_model = "somebody-else"
+        session = {"planner_model": "claude"}
+        original = (planning.load_session, planning.load_plan, planning.load_adr,
+                    planning.accept_plan, planning.enforce)
+        try:
+            planning.load_session = lambda _: session
+            planning.load_plan = lambda _: self.payload()
+            planning.load_adr = lambda _: self.SOURCE
+            planning.accept_plan = lambda *a, **k: ([], None, None)
+            planning.enforce = lambda _: None
+            with self.assertRaisesRegex(planning.PlanError, "recorded at init"):
+                planning.cmd_finalize(Args)
+        finally:
+            (planning.load_session, planning.load_plan, planning.load_adr,
+             planning.accept_plan, planning.enforce) = original
+
+    def test_planner_comes_from_the_registry_unless_overridden(self):
+        self.assertEqual(planning.planner_model("other"), "other")
+        self.assertEqual(planning.planner_model(), "claude")
+
+    def test_normalized_paths_compare_equal_for_reuse(self):
+        payload = self.payload()
+        task = payload["pbis"][0]["tasks"][0]
+        task["existing"] = ["./src/a.py"]
+        task["reuse"] = [{"action": "extend", "path": "src/a.py"}]
+        payload["pbis"][0]["paths"].append("src/a.py")
+        problems, _, _ = planning.validate_plan(payload, {}, ADR)
+        self.assertFalse(any("must be listed in existing" in p["message"] for p in problems))
+
+
+class ProviderEnvironment(unittest.TestCase):
+    def test_board_credentials_are_stripped_and_model_keys_kept(self):
+        reviewer = design.load_reviewer_module()
+        env = reviewer.provider_environment({
+            "LINEAR_API_KEY": "x", "AZURE_DEVOPS_EXT_PAT": "x", "ADO_ORG": "x",
+            "HAL_PAT": "x", "SOME_TOKEN": "x", "PATH": "/bin", "HOME": "/h",
+            "OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k"})
+        self.assertEqual(sorted(env), ["ANTHROPIC_API_KEY", "HOME", "OPENAI_API_KEY", "PATH"])
+
+    def test_run_provider_hands_the_subprocess_a_stripped_environment(self):
+        import os
+        from unittest import mock
+        reviewer = design.load_reviewer_module()
+        seen = {}
+        def fake_run(command, **kwargs):
+            seen.update(kwargs["env"])
+            class Done:
+                returncode, stdout, stderr = 0, "{}", ""
+            return Done()
+        with mock.patch.dict(os.environ, {"LINEAR_API_KEY": "secret",
+                                          "AZURE_DEVOPS_EXT_PAT": "secret"}), \
+                mock.patch.object(reviewer.subprocess, "run", fake_run):
+            reviewer.run_provider({"name": "m", "command": ["m"]}, "prompt", "reviewer.schema.json")
+        self.assertNotIn("LINEAR_API_KEY", seen)
+        self.assertNotIn("AZURE_DEVOPS_EXT_PAT", seen)
+        self.assertIn("PATH", seen)
+
+
+class DiscoveryPersistence(DiscoveryTestCase):
+    def test_init_persists_budget_defaults_it_applied(self):
+        self.run_cli("init", "--idea-file", str(self.idea), "--slug", "offline",
+                     "--mode", "assumptions")
+        # read back from disk, not from memory
+        self.assertTrue(self.state()["dismissed"])
+        self.assertTrue(self.package()["material"]["assumptions"])
+
+    def test_next_persists_what_decide_next_mutates(self):
+        self.run_cli("init", "--idea-file", str(self.idea), "--slug", "offline", "--mode", "full")
+        state = self.state()
+        state["po_questions_asked"] = state["limits"]["max_po_questions"]
+        discovery.save_state(state)
+        self.run_cli("next")
+        self.assertIn("question budget reached", self.state()["interview_gate"])
+
+
+class ProjectAdrScope(unittest.TestCase):
+    def test_project_scope_keeps_its_own_lint_and_needs_no_route(self):
+        validate = __import__("validate")
+        self.assertEqual(validate.lint_name("adr", {"scope": "project"}), "adr-project")
+        self.assertEqual(validate.lint_name("adr", {"scope": "medium"}), "adr")
+
+
 class DesignBorrowings(DesignTestCase):
     def test_scope_is_explicit_and_rendered(self):
         self.start()
@@ -195,9 +312,17 @@ class DesignBorrowings(DesignTestCase):
     def test_counterfactual_is_required_by_decision_schema(self):
         self.start()
         self.register()
-        decisions = self.state()["decisions"]
+        reviewer = design.load_reviewer_module()
+        schema = reviewer.load_schema(design.DECISION_SCHEMA) if isinstance(
+            design.DECISION_SCHEMA, str) else design.DECISION_SCHEMA
+        allowed = set(schema.get("items", schema).get("properties", {}))
+        # the state also carries derived fields; the registry schema judges only its own
+        decisions = [{k: v for k, v in d.items() if k in allowed}
+                     for d in self.state()["decisions"]]
+        self.assertEqual(reviewer.validate(decisions, design.DECISION_SCHEMA), [])
         del decisions[0]["rejected_option_breaks"]
-        self.assertTrue(design.load_reviewer_module().validate(decisions, design.DECISION_SCHEMA))
+        problems = reviewer.validate(decisions, design.DECISION_SCHEMA)
+        self.assertTrue(any("rejected_option_breaks" in p for p in problems), problems)
 
     def test_critic_rubric_is_in_prompt(self):
         self.start()

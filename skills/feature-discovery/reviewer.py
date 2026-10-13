@@ -24,6 +24,8 @@ is worth nothing.
 """
 
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -222,6 +224,24 @@ def load_providers(path=None):
     return json.loads(candidate.read_text(encoding="utf-8"))
 
 
+BOARD_CREDENTIAL = re.compile(
+    r"(^LINEAR_|^AZURE_DEVOPS_|^ADO_|_PAT$|^PAT$|^SYSTEM_ACCESSTOKEN$|"
+    r"(TOKEN|SECRET|PASSWORD)$)", re.IGNORECASE)
+# Keys a model CLI needs to answer at all; they are not board credentials.
+MODEL_KEYS = re.compile(r"^(OPENAI|ANTHROPIC|GEMINI|GOOGLE|CODEX|CLAUDE)_", re.IGNORECASE)
+
+
+def provider_environment(environ=None):
+    """The environment a model subprocess gets: ours, minus every board credential.
+
+    A reviewer sees a prompt built from artifacts; it has no business holding
+    the key that can write to the board.
+    """
+    source = os.environ if environ is None else environ
+    return {name: value for name, value in source.items()
+            if MODEL_KEYS.match(name) or not BOARD_CREDENTIAL.search(name)}
+
+
 def run_provider(spec, prompt, schema_name, timeout=300):
     """Run the configured command and hand back its stdout.
 
@@ -233,7 +253,8 @@ def run_provider(spec, prompt, schema_name, timeout=300):
                for part in spec["command"]]
     try:
         result = subprocess.run(command, input=prompt, capture_output=True,
-                                text=True, timeout=timeout)
+                                text=True, timeout=timeout,
+                                env=provider_environment())
     except FileNotFoundError:
         raise ReviewerError(f"provider '{spec.get('name')}' is not installed")
     except subprocess.TimeoutExpired:
