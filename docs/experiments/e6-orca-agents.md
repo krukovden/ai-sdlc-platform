@@ -59,7 +59,7 @@ section is complete; it does not require every agent to reach `orca`.
   positive proof of exit is inspected, then stopped with `worker-stop` (the
   experiment's own worker; the evidence is recorded first). Nothing outside the
   probe's Run is touched.
-- No more than 5 real launches in total.
+- No more than 6 launches in total: the 3 installed agents (codex, copilot, gemini) and 3 absent ones (cursor, opencode, grok) to see the failure shape. claude is E5.
 
 ## Result
 

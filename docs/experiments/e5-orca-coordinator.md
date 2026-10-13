@@ -111,7 +111,7 @@ Probe `tests/fixtures/orca/e5_probe.py`, started with
 
 | Pass rule | Observed |
 | -- | -- |
-| 1. every verb exits 0 and prints one JSON document | yes, 14 of 14 (the one non-zero exit is the deliberate negative test below) |
+| 1. every verb exits 0 and prints one JSON document | yes — every verb exits 0 except the deliberate negative test below |
 | 2. `worker_done` matched by Dispatch id with the expected outcome | A `succeeded`, B `failed`; matched on `payload.dispatchId` / `payload.outcome` |
 | 3. `--deps` honoured | `worker-start` on B before A settled → exit 1, `error.code: task_not_startable`, `data.unmetDependencies: [A]`; no worker was created |
 | 4. release, then nothing reclaimable | both `released`, `processAction: closed_agent_terminal`; `worker-list --terminal-state reclaimable` → `workers: []`, `counts: {released: 2}` |
