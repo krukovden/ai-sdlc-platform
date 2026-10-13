@@ -331,7 +331,13 @@ class Development:
         except plans.PlanError as exc:
             return self.block_feature(f"the pinned plan cannot be used: {exc}")
         self.pin = pinned
-        todo = self.mover.names().get("todo") if hasattr(self.mover, "names") else None
+        todo = None
+        if hasattr(self.mover, "names"):
+            todo = {
+                "pbi": self.mover.names(kind="pbi").get("todo"),
+                "task": self.mover.names(kind="task").get("todo"),
+                "bug": self.mover.names(kind="bug").get("todo"),
+            }
         ids, _ = shape.ensure(self.board, issue, self.plan, self.profile, header,
                               todo_status=todo)
         # What planning cut, not what integration or QA added to the plan since.

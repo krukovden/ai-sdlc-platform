@@ -990,6 +990,16 @@ class ReconcileTests(IntegrationTestCase):
             self.assertEqual(reconcile("development"), {"moved": []})
         self.assertEqual(calls, [["node", script.name, "reconcile", "--json"]])
 
+    def test_reconcile_can_be_disabled_by_profile(self):
+        calls = []
+        with tempfile.NamedTemporaryFile(suffix=".js") as script:
+            reconcile = phase3.states.reconciler(
+                {"board": "azure-devops", "development": {"reconcile": False}},
+                out=io.StringIO(), environ={"IDP_ADO_BOARD": script.name},
+                run=lambda argv, **kwargs: calls.append(argv))
+            self.assertIsNone(reconcile("development"))
+        self.assertEqual(calls, [])
+
     def test_a_failing_reconcile_never_fails_the_run(self):
         out = io.StringIO()
 
@@ -1140,6 +1150,18 @@ class ReviewFixTests(IntegrationTestCase):
         bug.verdict = VERDICT
         self.assertEqual(bug.runner().run_feature(FEATURE), EXIT.DONE)
         self.assertGreater(len(bug.sessions.get("verdict", [])), 3)
+
+class IntegrationRunAsTests(ScriptTestCase):
+    """The full build and suite run as the witnesses do — the configured session user."""
+
+    def test_integration_commands_inherit_the_witness_run_as(self):
+        import types
+        finalizer = types.SimpleNamespace(env={"PATH": "/usr/bin"}, clock=lambda: 0.0,
+                                          run_as="agent")
+        dev = types.SimpleNamespace(runner=None, git=None, profile={}, finalizer=finalizer)
+        self.assertEqual(integration.Integration(dev).commands.run_as, "agent")
+        finalizer.run_as = None
+        self.assertIsNone(integration.Integration(dev).commands.run_as)
 
 
 if __name__ == "__main__":

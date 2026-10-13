@@ -25,6 +25,9 @@ docker/calculator/run.sh /path/to/copilot.token S1 S2
 
 `run.sh` builds `docker/calculator/Dockerfile`, mounts `docker/calculator/out/`, reads the token from the file you pass as the first argument, and injects it into the container as `COPILOT_GITHUB_TOKEN` without baking it into the image.
 
+For the real Azure DevOps board path, use `docker/calculator/run.sh ado` and see
+[`docs/experiments/ado-robotics-run.md`](ado-robotics-run.md).
+
 ## What each scenario proves
 
 | Scenario | Proof |

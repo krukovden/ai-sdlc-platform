@@ -224,6 +224,69 @@ class EnvironmentTests(ScriptTestCase):
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertNotIn("LINEAR_API_KEY", env)
 
+    def test_a_witness_gets_no_token_like_secret_by_name_or_pattern(self):
+        env = executors.environment.witness_env(
+            dict(self.SOURCE, COPILOT_GITHUB_TOKEN="copilot", GITHUB_TOKEN="github",
+                 ORG_TOKEN_VALUE="org-token"),
+            extra={"ANOTHER_PAT": "x", "SAFE_NAME": "ok"})
+        self.assertNotIn("COPILOT_GITHUB_TOKEN", env)
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("ORG_TOKEN_VALUE", env)
+        self.assertNotIn("ANOTHER_PAT", env)
+        self.assertEqual(env["SAFE_NAME"], "ok")
+
+    def test_redaction_uses_the_same_secret_filter(self):
+        text = executors.environment.redact_text(
+            "AZURE_DEVOPS_EXT_PAT=ado-secret\nCOPILOT_GITHUB_TOKEN=copilot\n",
+            dict(self.SOURCE, COPILOT_GITHUB_TOKEN="copilot"))
+        self.assertNotIn("ado-secret", text)
+        self.assertNotIn("copilot", text)
+        self.assertEqual(text.count("******"), 2)
+
+    def test_command_argv_switches_user_only_when_configured(self):
+        wrapped = executors.environment.command_argv(
+            ["copilot", "-p", "hi"], run_as="agent", current="idp")
+        self.assertEqual(wrapped[:8],
+                         ["sudo", "-n", "-E", "/usr/sbin/runuser", "-u", "agent",
+                          "--preserve-environment", "--"])
+        plain = executors.environment.command_argv(
+            ["copilot", "-p", "hi"], run_as=None, current="idp")
+        self.assertEqual(plain, ["copilot", "-p", "hi"])
+
+    def test_a_probe_runs_as_the_session_user_when_configured(self):
+        seen = []
+
+        def run(argv, **kwargs):
+            seen.append(argv)
+            return mock.Mock(returncode=0)
+
+        choice = executors.roles.Choice("copilot", "gemini-3.8-flash")
+        with mock.patch.object(executors.environment, "current_user", return_value="idp"):
+            executors.probe(choice, environ={}, run=run, run_as="agent")
+            executors.default_resolver({"run_as": "agent"}, environ={}, run=run).probe(choice)
+        for argv in seen:
+            self.assertEqual(argv[:8], ["sudo", "-n", "-E", "/usr/sbin/runuser", "-u", "agent",
+                                        "--preserve-environment", "--"])
+            self.assertEqual(argv[8], "copilot")
+        self.assertEqual(len(seen), 2)
+
+    def test_select_hands_run_as_to_the_probes(self):
+        captured = {}
+        real = executors.default_resolver
+
+        def spy(executors_config=None, **kwargs):
+            captured.update(kwargs)
+            return real(executors_config, **kwargs)
+
+        with mock.patch.object(executors, "default_resolver", side_effect=spy):
+            executors.select({"backend": "subprocess"}, run_as="agent")
+        self.assertEqual(captured.get("run_as"), "agent")
+
+    def test_command_argv_skips_the_wrapper_when_already_that_user(self):
+        argv = executors.environment.command_argv(
+            ["python3", "-m", "calc"], run_as="agent", current="agent")
+        self.assertEqual(argv, ["python3", "-m", "calc"])
+
     def test_path_is_not_mistaken_for_a_pat(self):
         self.assertFalse(executors.environment.denied("PATH"))
 
@@ -413,6 +476,15 @@ class SubprocessBackendTests(ScriptTestCase):
         self.run_design()
         log = (self.worktree / ".idp" / "logs" / "design.log").read_text(encoding="utf-8")
         self.assertIn('"result": "done"', log)
+
+    def test_the_session_log_redacts_known_secrets(self):
+        self.script(report=EXIT.DONE, print=["ado-secret copilot"])
+        self.executor.environ["COPILOT_GITHUB_TOKEN"] = "copilot"
+        self.run_design()
+        log = (self.worktree / ".idp" / "logs" / "design.log").read_text(encoding="utf-8")
+        self.assertNotIn("ado-secret", log)
+        self.assertNotIn("copilot", log)
+        self.assertIn("****** ******", log)
 
     def test_review_under_the_rule_launches_a_different_agent(self):
         self.script(report=EXIT.DONE)

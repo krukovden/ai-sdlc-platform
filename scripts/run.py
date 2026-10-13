@@ -926,6 +926,13 @@ def acquire_lease(explicit):
         fail(exc.code, exc.message, fix=exc.fix)
 
 
+def select_executor(profile):
+    config = dict((profile or {}).get("executors") or {})
+    timeout = config.pop("timeout_seconds", None)
+    run_as = config.pop("run_as", None)
+    return executors.select(config, timeout=timeout, run_as=run_as)
+
+
 def cmd_run(args):
     run_id, held = acquire_lease(args.run_id)
     # A foreground run is a live process. Without a pid, `run.py stop` treats
@@ -935,7 +942,7 @@ def cmd_run(args):
     try:
         profile, _, board = board_cli.open_board()
         try:
-            executor = executors.select(profile.get("executors"))
+            executor = select_executor(profile)
         except executors.ResolutionError as exc:
             fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
         ask = None
@@ -1028,7 +1035,7 @@ def cmd_agent(args):
 
         def make_executor():
             try:
-                return executors.select(profile.get("executors"))
+                return select_executor(profile)
             except executors.ResolutionError as exc:
                 fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
 
@@ -1081,7 +1088,7 @@ def cmd_takeover(args):
         presence.announce()
         try:
             try:
-                executor = executors.select(profile.get("executors"))
+                executor = select_executor(profile)
             except executors.ResolutionError as exc:
                 fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
             runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)

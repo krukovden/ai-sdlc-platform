@@ -29,12 +29,19 @@ prove anything here, so a PBI with none of them has zero witnesses.
 """
 
 import hashlib
+import os
+import signal
 import subprocess
 import time
 
+from . import common as phase3_common
 from .common import EXIT, planning_module
 from .gitops import GitError
 from . import plan as plans
+
+runner_environment = phase3_common._sibling(
+    "environment", "idp_executors_environment",
+    phase3_common.SCRIPTS / "executors" / "environment.py")
 
 DEFECT = "defect"
 INFRA = "infra"
@@ -145,6 +152,7 @@ class Finalizer:
         self.env = env
         self.call = run
         self.clock = clock
+        self.run_as = str(settings.get("run_as") or "").strip() or None
 
     # -- steps 1 and 2 ------------------------------------------------------
 
@@ -316,10 +324,30 @@ class Finalizer:
                     "budget_limited": True, "mutation": False,
                     "budget_exhausted": True}
         baseline = baseline if baseline is not None else self.snapshot(wt, sha)
+        argv = runner_environment.command_argv(["/bin/sh", "-c", command], run_as=self.run_as)
         try:
-            answer = self.call(["/bin/sh", "-c", command], cwd=str(wt.path), env=self.env,
-                               capture_output=True, text=True, timeout=allowed,
-                               stdin=subprocess.DEVNULL)
+            if self.call is not subprocess.run:
+                answer = self.call(argv, cwd=str(wt.path), env=self.env,
+                                   capture_output=True, text=True, timeout=allowed,
+                                   stdin=subprocess.DEVNULL)
+            else:
+                process = subprocess.Popen(argv, cwd=str(wt.path), env=self.env,
+                                           stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           text=True, start_new_session=True)
+                try:
+                    stdout, stderr = process.communicate(timeout=allowed)
+                    answer = subprocess.CompletedProcess(argv, process.returncode,
+                                                         stdout or "", stderr or "")
+                except subprocess.TimeoutExpired as exc:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    stdout, stderr = process.communicate()
+                    exc.stdout = stdout
+                    exc.stderr = stderr
+                    raise
             code, output, timed_out = answer.returncode, \
                 (answer.stdout or "") + (answer.stderr or ""), False
         except subprocess.TimeoutExpired as exc:

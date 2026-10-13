@@ -174,6 +174,8 @@ silent default.
 | Key | Meaning |
 | --- | --- |
 | `executors.backend` | `auto`, `orca` or `subprocess`. |
+| `executors.timeout_seconds` | Per-session deadline for executor-backed model runs. |
+| `executors.run_as` | Optional OS user for model sessions. |
 | `executors.roles` | Ordered `agent[:model]` list per role: `design`, `worker`, `review`, `integration`. |
 | `executors.parallel` | Concurrent workers per agent. |
 | `development.witness_budget_seconds` | Budget for one PBI's runnable witnesses. |
@@ -183,6 +185,8 @@ silent default.
 | `development.integration.build` | Optional full-build command for 3.3. |
 | `development.integration.test` | Required full test-suite command for 3.3. |
 | `development.integration.timeout_seconds` | Timeout per 3.3 build or suite command. |
+| `development.reconcile` | `false` skips the phase-end `ado-board reconcile` pass; use only for runs that must not scan a whole Azure DevOps project. |
+| `development.run_as` | Optional OS user for witnesses, integration commands, scanners and similar non-model commands. |
 | `development.azure_complete_unproven` | Opt-in to Azure Repos PR completion before experiment 8 proves the target-head race away. Off by default. |
 
 ### Removed keys
@@ -370,6 +374,7 @@ Feature phases, claims and leases are this platform's job. Work-item states
 - that unit is the one merged in
   [krukovden/engineering-catalog#3](https://github.com/krukovden/engineering-catalog/pull/3);
 - `reconcile` runs at the end of each phase when that unit is present;
+- `development.reconcile: false` disables that phase-end repair pass entirely;
 - without it, and always on Linear, the runner falls back to the adapter's own
   state map and says so once.
 
@@ -473,8 +478,26 @@ The environment boundary is intentionally narrow:
   visible inside an Orca terminal and refuses Orca for the run if any denied name
   appears.
 
-This is a process boundary, not an OS boundary. A model running as the same user
-can still open files that user can read directly, including token files.
+By default this is still a process boundary, not an OS boundary. A model running
+as the same user can still open files that user can read directly, including token
+files.
+
+When the profile sets `executors.run_as` and `development.run_as`, the subprocess
+backend and witness runner wrap commands with `runuser`:
+
+- model sessions run as the configured executor user, with only that agent's own
+  sign-in variables;
+- witnesses, integration build/test, and scanners run as the configured
+  non-model user, with the witness allowlist only;
+- `runuser --preserve-environment` keeps the run-local `HOME`, so a long-lived
+  container may give each run its own home and `.idp` tree even when several
+  runs share one `agent` account;
+- if the current process already is that user, nothing is wrapped.
+
+The live ADO calculator image uses that mode with two accounts: `idp` holds the
+board credential and starts the runner, while `agent` runs model sessions and
+non-model verification commands. The platform does not require that setup in
+ordinary profiles; without these keys, behavior is unchanged.
 
 ## Where things live
 

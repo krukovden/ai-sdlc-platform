@@ -30,7 +30,9 @@ survived.
 """
 
 import email.utils
+import functools
 import html
+import inspect
 import json
 import re
 import sys
@@ -249,6 +251,9 @@ class Fenced:
         if name not in WRITES or not callable(attribute):
             return attribute
 
+        signature = inspect.signature(attribute)
+
+        @functools.wraps(attribute)
         def fenced(*args, **kwargs):
             self.check()
             if name != "attach_document":
@@ -268,6 +273,7 @@ class Fenced:
                         pass
                 else:
                     self.unfenced._publish_check = previous
+        fenced.__signature__ = signature
         return fenced
 
 

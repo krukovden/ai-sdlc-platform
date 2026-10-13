@@ -18,8 +18,11 @@ import base64
 import contextlib
 import io
 import json
+import os
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from support import REPO_ROOT, ScriptTestCase, board, load_script
@@ -29,6 +32,8 @@ azure = load_script("sync_azure_devops_state")
 state = load_script("state")
 discovery = load_script("discovery", REPO_ROOT / "skills" / "feature-discovery")
 publish_linear = load_script("publish_linear", REPO_ROOT / "skills" / "feature-discovery")
+planning_runner = load_script("planning", REPO_ROOT / "skills" / "planning")
+phase3 = load_script("run").phase3
 
 
 PROFILE = {
@@ -276,6 +281,10 @@ class FakeAz:
                         if name == "System.Tags" else operation["value"])
             elif field == "/relations/-":
                 item.setdefault("relations", []).append(operation["value"])
+                if operation["value"].get("rel") == "System.LinkTypes.Hierarchy-Reverse":
+                    parent = operation["value"].get("url", "").rstrip("/").rsplit("/", 1)[-1]
+                    if str(parent).isdigit():
+                        item["fields"]["System.Parent"] = int(parent)
             elif field.startswith("/relations/") and operation["op"] == "remove":
                 del item["relations"][int(field.rsplit("/", 1)[-1])]
         return item
@@ -541,6 +550,71 @@ class ReadTests(ScriptTestCase):
                          "https://dev.azure.com/contoso/Contoso Platform/_workitems/edit/42")
         self.assertTrue(issue["branch"].startswith("feature/42-"))
 
+    def test_get_issue_restores_acceptance_criteria_from_the_board_field(self):
+        item = work_item()
+        item["42"]["fields"]["System.Description"] = azure.render_description("## Why\n\nBecause.\n")
+        item["42"]["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] = \
+            azure.render_acceptance_criteria(["prints 14", "errors on divide by zero"])
+        fake = FakeAz(item)
+        with stub(fake):
+            issue = azure.Board(None, PROFILE).get_issue("42")
+        self.assertIn("## Acceptance Criteria", issue["description"])
+        self.assertIn("* prints 14", issue["description"])
+        self.assertIn("* errors on divide by zero", issue["description"])
+
+    def test_a_planning_card_round_trip_keeps_meta_and_witnesses(self):
+        fake = FakeAz(work_item("7", work_item_type="Feature"))
+        session = {"feature": "7", "branch": "feature/7", "route": "feature",
+                   "language": None, "notes": None}
+        pbi = {
+            "key": "calc-cli",
+            "title": "Calculator CLI",
+            "result": "calc.py exposes evaluate_expression",
+            "acceptance_criteria": [{"id": "AC-1", "text": "prints 14",
+                                      "witness": {"command": "python3 -m calc '2*(3+4)'",
+                                                   "timeout": 30}}],
+            "adr_sections": ["Storage"],
+            "paths": ["calc.py"],
+            "depends_on": [],
+            "where_to_look": ["calc.py is new"],
+            "tasks": [],
+        }
+        body = planning_runner.render_card(session, pbi)
+        with stub(fake):
+            created = azure.Board("pat-secret", PROFILE).create_issue(
+                title="[PBI] Calculator CLI", body=body, parent="7",
+                project_id="Contoso Platform", kind="pbi")
+            issue = azure.Board("pat-secret", PROFILE).get_issue(created["identifier"])
+        self.assertEqual(phase3.shape.read_meta(issue["description"]).get("key"), "calc-cli")
+        self.assertIn("Witness:", issue["description"])
+        self.assertIn("AC-1", issue["description"])
+
+    def test_shape_ensure_stays_idempotent_through_the_real_adapter_round_trip(self):
+        fake = FakeAz(work_item("7", work_item_type="Feature", description="---\n---\n"))
+        feature_issue = {"identifier": "7", "branch": "feature/7", "description": "---\n---\n"}
+        plan = {"pbis": [{
+            "key": "calc-cli",
+            "title": "Calculator CLI",
+            "result": "calc.py exposes evaluate_expression",
+            "acceptance_criteria": [{"id": "AC-1", "text": "prints 14",
+                                      "witness": {"command": "python3 -m calc '2*(3+4)'",
+                                                   "timeout": 30}}],
+            "adr_sections": ["Storage"],
+            "paths": ["calc.py"],
+            "depends_on": [],
+            "where_to_look": ["calc.py is new"],
+            "tasks": [],
+        }]}
+        with stub(fake):
+            board_handle = azure.Board("pat-secret", PROFILE)
+            first, _ = phase3.shape.ensure(
+                board_handle, feature_issue, plan, {"project_id": "Contoso Platform"},
+                {"route": "feature"})
+            second, _ = phase3.shape.ensure(
+                board_handle, feature_issue, plan, {"project_id": "Contoso Platform"},
+                {"route": "feature"})
+        self.assertEqual(first, second)
+
     def test_a_board_key_is_refused_rather_than_pushed_into_wiql(self):
         fake = FakeAz(work_item())
         with stub(fake):
@@ -698,7 +772,9 @@ class MachineHeaderTests(ScriptTestCase):
                 self.assertIsNone(azure.read_cid(absent))
 
     def test_a_card_with_no_id_is_not_tagged_with_one(self):
-        fake = FakeAz(work_item())
+        items = work_item()
+        items.update(work_item("10"))
+        fake = FakeAz(items)
         with stub(fake):
             azure.Board("pat", PROFILE).create_issue(
                 title="t", body='---\ntype: pbi\ncid: null\n---\n', parent="10",
@@ -716,7 +792,9 @@ class MachineHeaderTests(ScriptTestCase):
         starts in (IDE-144).
         """
         body = '---\ntype: pbi\nroute: small-feature\n---\n'
-        fake = FakeAz(work_item())
+        items = work_item()
+        items.update(work_item("10"))
+        fake = FakeAz(items)
         with stub(fake):
             azure.Board("pat", PROFILE).create_issue(
                 title="t", body=body, parent="10", status="New",
@@ -746,12 +824,21 @@ class MachineHeaderTests(ScriptTestCase):
 
 class CreateTests(ScriptTestCase):
 
-    def create(self, body=None, parent=None, status="New", profile=None):
-        fake = FakeAz()
-        with stub(fake):
+    def create(self, body=None, parent=None, status="New", profile=None, kind=None,
+               env=None):
+        items = {}
+        if parent:
+            items.update(work_item(str(parent)))
+        fake = FakeAz(items)
+        patches = [stub(fake)]
+        if env is not None:
+            patches.append(mock.patch.dict(os.environ, env, clear=False))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
             result = azure.Board(None, profile or PROFILE).create_issue(
                 title="[Feature] offline search", body=body, parent=parent,
-                status=status, project_id="Contoso Platform")
+                status=status, project_id="Contoso Platform", kind=kind)
         return fake, result
 
     def test_a_feature_is_created_as_a_feature_work_item(self):
@@ -830,20 +917,23 @@ class CreateTests(ScriptTestCase):
 
     def test_a_status_is_a_second_call_because_create_takes_no_state(self):
         fake, _ = self.create(status="New")
-        updates = fake.matching("boards", "work-item", "update")
-        self.assertEqual(len(updates), 1)
-        self.assertEqual(fake.flag(updates[0], "--state"), "New")
+        patches = fake.rest_matching("PATCH", "wit/workitems/500")
+        self.assertEqual(len(patches), 1)
+        body = json.loads(patches[0]["body"].decode("utf-8"))
+        self.assertIn({"op": "replace", "path": "/fields/System.State", "value": "New"}, body)
 
     def test_a_child_is_created_as_the_backlog_item_type_and_linked(self):
         # Agile's name, because Agile is what most Azure DevOps projects are
         # created with. `Product Backlog Item` exists only in Scrum (IDE-129).
         fake, _ = self.create(parent="10", status=None)
         create = fake.matching("boards", "work-item", "create")[0]
-        link = fake.matching("boards", "work-item", "relation", "add")[0]
+        link = json.loads(fake.rest_matching("PATCH", "wit/workitems/500")[0]["body"].decode("utf-8"))
 
         self.assertEqual(fake.flag(create, "--type"), "User Story")
-        self.assertEqual(fake.flag(link, "--relation-type"), "parent")
-        self.assertEqual(fake.flag(link, "--target-id"), "10")
+        self.assertIn({"op": "add", "path": "/relations/-",
+                       "value": {"rel": "System.LinkTypes.Hierarchy-Reverse",
+                                  "url": "https://dev.azure.com/contoso/_apis/wit/workItems/10"}},
+                      link)
 
     def test_a_child_is_not_tagged_as_a_feature_package(self):
         fake, _ = self.create(parent="10", status=None,
@@ -866,6 +956,48 @@ class CreateTests(ScriptTestCase):
         fake, _ = self.create(profile=profile)
         self.assertEqual(fake.flag(fake.matching("boards", "work-item", "create")[0],
                                    "--type"), "Epic")
+
+    def test_a_task_kind_is_created_as_a_task_work_item(self):
+        fake, _ = self.create(parent="10", status=None, kind="task")
+        create = fake.matching("boards", "work-item", "create")[0]
+        self.assertEqual(fake.flag(create, "--type"), "Task")
+
+    def test_the_live_guard_prefixes_titles_on_create(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, _ = self.create(
+                kind="feature",
+                env={azure.GUARD_FILE_ENV: str(Path(tmp) / "ids.json"),
+                     azure.TITLE_PREFIX_ENV: "[IDP TEST]"},
+            )
+        create = fake.matching("boards", "work-item", "create")[0]
+        self.assertEqual(fake.flag(create, "--title"), "[IDP TEST] [Feature] offline search")
+
+
+class GuardTests(ScriptTestCase):
+
+    def test_the_live_guard_refuses_to_touch_an_unknown_item(self):
+        fake = FakeAz(work_item(identifier="42", title="[IDP TEST] Feature"))
+        with tempfile.TemporaryDirectory() as tmp, \
+                stub(fake), \
+                mock.patch.dict(os.environ, {
+                    azure.GUARD_FILE_ENV: str(Path(tmp) / "ids.json"),
+                    azure.TITLE_PREFIX_ENV: "[IDP TEST]",
+                }, clear=False):
+            message = self.assert_exits(azure.EXIT.INVALID,
+                                        azure.Board("pat", PROFILE).get_issue, "42")
+        self.assertIn("did not create it", message)
+
+    def test_the_live_guard_refuses_to_touch_a_non_prefixed_item(self):
+        fake = FakeAz(work_item(identifier="42", title="Feature without prefix"))
+        with tempfile.TemporaryDirectory() as tmp, stub(fake):
+            Path(tmp, "ids.json").write_text('{"ids": ["42"]}\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {
+                azure.GUARD_FILE_ENV: str(Path(tmp) / "ids.json"),
+                azure.TITLE_PREFIX_ENV: "[IDP TEST]",
+            }, clear=False):
+                message = self.assert_exits(azure.EXIT.INVALID,
+                                            azure.Board("pat", PROFILE).get_issue, "42")
+        self.assertIn("not prefixed", message)
 
 
 class CorrelationTests(ScriptTestCase):
@@ -1250,6 +1382,24 @@ class AttachmentTests(ScriptTestCase):
         call = fake.rest_matching("GET", "wit/attachments/att-9")[0]
         self.assertIn("download=true", call["url"])
 
+    def test_the_guard_refuses_reading_an_attachment_from_an_unowned_item(self):
+        items = work_item("10")
+        items["10"]["relations"] = [{
+            "rel": "AttachedFile",
+            "url": "https://dev.azure.com/contoso/_apis/wit/attachments/att-9",
+            "attributes": {"name": "01 · registry.md"},
+        }]
+        fake = FakeAz(items)
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = Path(tmp) / "guard.json"
+            guard.write_text(json.dumps({"ids": ["42"]}), encoding="utf-8")
+            with stub(fake), mock.patch.dict(azure.os.environ,
+                                             {azure.GUARD_FILE_ENV: str(guard)}, clear=False):
+                message = self.assert_exits(azure.EXIT.INVALID,
+                                            azure.Board("pat-secret", PROFILE).get_document,
+                                            "att-9")
+        self.assertIn("guard refused", message)
+
     def _fenced_attach(self, fake, on_patch):
         """The real `attach_document`, under `lease.Fenced`, with transport mocked.
 
@@ -1550,11 +1700,10 @@ class WriteRefusalTests(ScriptTestCase):
         # Losing the id here is how a retry produces the duplicate that
         # idempotency exists to prevent.
         class HalfBroken(FakeAz):
-            def __call__(self, args, **kwargs):
-                if args[:3] == ["boards", "work-item", "update"]:
-                    self.calls.append(list(args))
+            def rest(self, url, method="GET", body=None, **kwargs):
+                if method == "PATCH" and "wit/workitems/500" in url:
                     azure.fail(azure.EXIT.UNAVAILABLE, "the service is unavailable")
-                return super().__call__(args, **kwargs)
+                return super().rest(url, method=method, body=body, **kwargs)
 
         fake = HalfBroken()
         with stub(fake):
@@ -1571,6 +1720,18 @@ class WriteRefusalTests(ScriptTestCase):
 
         self.assertEqual(facts["project_name"], "Contoso Platform")
         self.assertEqual(facts["team_name"], "IdeaHub")
+
+    def test_the_guard_refuses_comment_listing_for_an_unknown_item(self):
+        fake = FakeAz(work_item())
+        with tempfile.TemporaryDirectory() as tmp:
+            guard = Path(tmp) / "guard.json"
+            guard.write_text(json.dumps({"ids": ["99"]}), encoding="utf-8")
+            with stub(fake), mock.patch.dict(azure.os.environ,
+                                             {azure.GUARD_FILE_ENV: str(guard)}, clear=False):
+                message = self.assert_exits(azure.EXIT.INVALID,
+                                            azure.Board("pat-secret", PROFILE).list_comments,
+                                            "42")
+        self.assertIn("did not create it", message)
 
 
 class StateResolverIntegrationTests(ScriptTestCase):
@@ -1882,3 +2043,27 @@ class PullRequestTests(ScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PaceTests(unittest.TestCase):
+    """`pace_seconds` slows board writes for a human watching; reads never wait."""
+
+    def test_writes_wait_and_reads_do_not(self):
+        board = azure.Board("pat", {"board": "azure-devops", "workspace": "o",
+                                      "project_id": "p", "pace_seconds": 7})
+        with mock.patch.object(azure, "run_az", return_value={}), \
+                mock.patch.object(azure, "rest_call", return_value={}), \
+                mock.patch.object(azure.time, "sleep") as sleep:
+            board._az(["boards", "work-item", "show", "--id", "1"])
+            board._rest("wit/workitems/1")
+            self.assertEqual(sleep.call_count, 0)
+            board._az(["boards", "work-item", "update", "--id", "1"])
+            board._rest("wit/workitems/1", method="PATCH", body=[])
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [7.0, 7.0])
+
+    def test_no_pace_means_no_wait(self):
+        board = azure.Board("pat", {"board": "azure-devops", "workspace": "o", "project_id": "p"})
+        with mock.patch.object(azure, "run_az", return_value={}), \
+                mock.patch.object(azure.time, "sleep") as sleep:
+            board._az(["boards", "work-item", "update", "--id", "1"])
+        sleep.assert_not_called()

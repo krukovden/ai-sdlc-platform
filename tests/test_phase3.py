@@ -1335,6 +1335,23 @@ class PinnedWitnessSchemaTests(unittest.TestCase):
                 self.assertEqual(outcome.kind, fin.MALFORMED)
                 self.assertEqual(ran, [])
 
+    def test_witness_commands_switch_user_when_configured(self):
+        seen = []
+
+        def runner(argv, **kwargs):
+            seen.append((argv, kwargs["env"]))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.BugRepo(tmp, phase3.plan.plan_text({"pbis": [pbi("a")]}))
+            finalizer = fin.Finalizer({"run_as": "agent"}, env={"PATH": "/usr/bin"},
+                                      run=runner, clock=lambda: 0.0)
+            record = finalizer.execute(repo, "AC-1", "echo ok", 10, "M")
+        self.assertEqual(record["exit"], 0)
+        self.assertEqual(seen[0][0][:8],
+                         ["sudo", "-n", "-E", "/usr/sbin/runuser", "-u", "agent",
+                          "--preserve-environment", "--"])
+
     class BugRepo:
         def __init__(self, path, plan_text):
             self.path = Path(path)
@@ -1442,6 +1459,28 @@ class StatesTests(unittest.TestCase):
             mover.reopen(board, "7", "qa resumes", "run-1")
         self.assertEqual(board.cards["7"]["status"], "Resolved")
         self.assertEqual(board.cards["7"]["tags"], ["idp:owner:run-2"])
+
+    def test_wrapped_create_issue_keeps_the_kind_signature(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, kind="feature", tags_=["idp:owner:run-1"])
+        fenced = lease.Fenced(board, FEATURE, "run-1")
+        created = phase3.shape.create_item(
+            fenced, "task title", "body", "7", "New", "IDE", "task")
+        self.assertEqual(board.cards[created]["kind"], "task")
+
+    def test_shape_uses_the_discovered_task_todo_state(self):
+        from fakeboard import FakeBoard
+        board = FakeBoard(profile=PROFILE)
+        board.add_card(FEATURE, kind="feature", title="Feature", description="---\n---\n")
+        plan = {"pbis": [pbi("p1")]}
+        header = {"route": "feature"}
+        phase3.shape.ensure(board, board.get_issue(FEATURE), plan,
+                            {"project_id": "IDE"}, header,
+                            todo_status={"pbi": "Committed", "task": "To Do"})
+        tasks = [card for card in board.cards.values() if card.get("kind") == "task"]
+        self.assertEqual(sorted(card["status"] for card in tasks),
+                         ["To Do", "To Do", "To Do"])
 
 
 class JournalUploadTests(unittest.TestCase):

@@ -245,10 +245,15 @@ def launchable(agent, which=shutil.which):
     return which(agents.BINARIES[agent]) is not None
 
 
-def probe(choice, environ=None, run=subprocess.run, timeout=agents.PROBE_TIMEOUT):
-    """One cheap authenticated turn. Anything but a clean exit is unavailable."""
+def probe(choice, environ=None, run=subprocess.run, timeout=agents.PROBE_TIMEOUT, run_as=None):
+    """One cheap authenticated turn. Anything but a clean exit is unavailable.
+
+    It runs as the user the sessions run as, so a probe is never the one model
+    turn that sees the runner's own environment.
+    """
     try:
-        answer = run(agents.probe_argv(choice), capture_output=True, text=True,
+        answer = run(environment.command_argv(agents.probe_argv(choice), run_as=run_as),
+                     capture_output=True, text=True,
                      timeout=timeout, stdin=subprocess.DEVNULL,
                      env=environment.session_env(
                          os.environ if environ is None else environ, choice.agent))
@@ -257,10 +262,12 @@ def probe(choice, environ=None, run=subprocess.run, timeout=agents.PROBE_TIMEOUT
     return answer.returncode == EXIT.OK
 
 
-def default_resolver(executors=None, environ=None, which=shutil.which, run=subprocess.run):
+def default_resolver(executors=None, environ=None, which=shutil.which, run=subprocess.run,
+                     run_as=None):
     return Resolver(executors,
                     launchable=lambda agent: launchable(agent, which),
-                    probe=lambda choice: probe(choice, environ, run))
+                    probe=lambda choice: probe(choice, environ, run,
+                                           run_as=run_as or (executors or {}).get("run_as")))
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +319,10 @@ def backend_name(executors=None, orca_probe=orca_reachable):
 def select(executors=None, resolver=None, orca_probe=orca_reachable, **options):
     """The executor for this run, with its roles resolved against this machine."""
     name = backend_name(executors, orca_probe)
-    return BACKENDS[name](resolver or default_resolver(executors), **options)
+    # run.py pops run_as out of the executors block; the probes need it as much as
+    # the sessions do.
+    return BACKENDS[name](resolver or default_resolver(executors, run_as=options.get("run_as")),
+                          **options)
 
 
 from .local import SubprocessExecutor  # noqa: E402 - registers itself below

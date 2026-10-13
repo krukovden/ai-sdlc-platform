@@ -34,6 +34,7 @@ one more after it. A lost fence is `lease.OwnershipLost`, never a silent move.
 import json
 import os
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -87,11 +88,22 @@ class AdapterStates(StateMover):
         self.board = board
         self.profile = profile or {}
 
-    def names(self, issue=None):
+    def _type_name(self, issue=None, kind=None):
+        item = issue or {}
+        direct = item.get("work_item_type") or item.get("type")
+        if direct:
+            return direct
+        label = kind or item.get("kind")
+        if not label:
+            return None
+        mapped = self.profile.get("work_item_types") or {}
+        return mapped.get(label, label)
+
+    def names(self, issue=None, kind=None):
         mapped = self.profile.get("state_map") or {}
-        kind = (issue or {}).get("work_item_type") or (issue or {}).get("type")
-        if kind and kind in mapped:
-            return dict(mapped[kind])
+        type_name = self._type_name(issue, kind)
+        if type_name and type_name in mapped:
+            return dict(mapped[type_name])
         states = {}
         for bucket, position in POSITIONS.items():
             try:
@@ -198,6 +210,9 @@ class CatalogStates(AdapterStates):
         except ValueError:
             data = {}
         self.expect(board, identifier, run, owner)
+        seconds = float(self.profile.get("pace_seconds") or 0)
+        if seconds > 0:
+            time.sleep(seconds)
         return {"moved": True, "bucket": bucket, "catalog": data}
 
     def reopen(self, board, identifier, evidence, run, owner=None):
@@ -286,6 +301,8 @@ class Reconciler:
 
 def reconciler(profile, out=None, environ=None, run=subprocess.run, cwd=None):
     """The catalog's reconcile on Azure DevOps when it is installed; a notice otherwise."""
+    if (profile or {}).get("development", {}).get("reconcile") is False:
+        return Reconciler(out=out, reason="disabled by profile")
     if (profile or {}).get("board") != "azure-devops":
         return Reconciler(out=out, reason="engineering-catalog serves Azure DevOps only, "
                                           "and this board is "

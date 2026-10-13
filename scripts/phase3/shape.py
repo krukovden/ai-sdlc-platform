@@ -88,6 +88,12 @@ def create_item(board, title, body, parent, status, project_id, kind):
     return board.create_issue(**kwargs)["identifier"]
 
 
+def status_for(todo_status, kind):
+    if isinstance(todo_status, dict):
+        return todo_status.get(kind) or todo_status.get("pbi")
+    return todo_status
+
+
 def children_by_key(board, parent):
     found = {}
     for child in board.list_children(parent):
@@ -185,7 +191,8 @@ def ensure(board, feature_issue, plan, profile, header, todo_status=None):
     for key in order:
         pbi = by_key[key]
         ids[key] = _upsert(board, existing, key, f"[PBI] {pbi['title']}",
-                           planning.render_card(session, pbi), feature, todo_status,
+                           planning.render_card(session, pbi), feature,
+                           status_for(todo_status, "pbi"),
                            project, "pbi", made)
         board.attach_document(planning.brief_title(ids[key]),
                               planning.render_brief(session, pbi), identifier=ids[key])
@@ -195,15 +202,16 @@ def ensure(board, feature_issue, plan, profile, header, todo_status=None):
         for index, task in enumerate(pbi.get("tasks") or [], 1):
             _upsert(board, tasks, task["key"], f"[Task] {task['title']}",
                     task_body(session, key, task, criteria, index, owners[task["key"]]),
-                    ids[key], todo_status, project, "task", made)
+                    ids[key], status_for(todo_status, "task"), project, "task", made)
 
     ids[QA_KEY] = _upsert(board, existing, QA_KEY, f"[PBI] {QA_TITLE}",
-                          qa_body(session, order), feature, todo_status, project, "pbi", made)
+                          qa_body(session, order), feature, status_for(todo_status, "pbi"),
+                          project, "pbi", made)
     tasks = children_by_key(board, ids[QA_KEY])
     for index, (key, title, text) in enumerate(QA_TASKS, 1):
         _upsert(board, tasks, f"{QA_KEY}/{key}", f"[Task] {title}",
-                qa_task_body(session, key, text, index), ids[QA_KEY], todo_status, project,
-                "task", made)
+                qa_task_body(session, key, text, index), ids[QA_KEY],
+                status_for(todo_status, "task"), project, "task", made)
     return ids, made
 
 

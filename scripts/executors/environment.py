@@ -20,6 +20,9 @@ anything that says where a token file is. A variable that is both allowed and
 denied is denied.
 """
 
+import base64
+import os
+import pwd
 import re
 
 BASE = frozenset({
@@ -60,10 +63,21 @@ DENIED_PATTERNS = (
     re.compile(r"^LINEAR_"),
     re.compile(r"^ADO_"),
 )
+WITNESS_DENIED_NAMES = frozenset({
+    "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+})
+WITNESS_DENIED_PATTERNS = DENIED_PATTERNS + (
+    re.compile(r"TOKEN"),
+)
 
 
 def denied(name):
     return name in DENIED_NAMES or any(p.search(name) for p in DENIED_PATTERNS)
+
+
+def denied_for_witness(name):
+    return name in WITNESS_DENIED_NAMES or denied(name) or \
+        any(p.search(name) for p in WITNESS_DENIED_PATTERNS)
 
 
 def allowed(name, agent=None):
@@ -73,6 +87,26 @@ def allowed(name, agent=None):
                   or name in AGENT_NAMES.get(agent, ())):
         return True
     return False
+
+
+def secret_values(source):
+    """Known secret values from `source`, longest first for stable redaction."""
+    values = set()
+    for name, value in (source or {}).items():
+        if denied_for_witness(name):
+            text = str(value or "")
+            if text:
+                values.add(text)
+                if name == "AZURE_DEVOPS_EXT_PAT":
+                    values.add(base64.b64encode(f":{text}".encode("utf-8")).decode("ascii"))
+    return sorted(values, key=len, reverse=True)
+
+
+def redact_text(text, source):
+    rendered = str(text or "")
+    for secret in secret_values(source):
+        rendered = rendered.replace(secret, "******")
+    return rendered
 
 
 def session_env(source, agent=None, extra=None):
@@ -124,4 +158,37 @@ def provider_env(source, name=None, agent=None):
 
 def witness_env(source, extra=None):
     """For a command that is not a model at all: no board token and no model key."""
-    return session_env(source, agent=None, extra=extra)
+    env = {name: value for name, value in (source or {}).items()
+           if allowed(name, None) and not denied_for_witness(name)}
+    for name, value in (extra or {}).items():
+        if not denied_for_witness(name):
+            env[name] = str(value)
+    return env
+
+
+def current_user():
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return None
+
+
+def command_argv(argv, run_as=None, current=None, runuser="/usr/sbin/runuser", sudo="sudo"):
+    """`argv`, or a user-switch wrapper around it when `run_as` is configured.
+
+    The platform only switches uid when the profile asks for it. When the current
+    user already is `run_as`, nothing is wrapped. The caller passes the filtered
+    environment to the process it starts; `sudo -E` keeps exactly that (sudo would
+    otherwise reset it), so the sudoers rule needs SETENV and must name this argv:
+    `idp ALL=(root) NOPASSWD:SETENV: /usr/sbin/runuser -u agent --preserve-environment -- *`.
+    """
+    user = str(run_as or "").strip()
+    command = [str(part) for part in argv]
+    if not user:
+        return command
+    holder = current if current is not None else current_user()
+    if holder == user:
+        return command
+    prefix = [runuser, "-u", user, "--preserve-environment", "--"] if holder == "root" else \
+        [sudo, "-n", "-E", runuser, "-u", user, "--preserve-environment", "--"]
+    return prefix + command

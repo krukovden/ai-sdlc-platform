@@ -226,6 +226,12 @@
       "type": "string",
       "minLength": 1
     },
+    "pace_seconds": {
+      "description": "Observation only: seconds to wait after every board write so a human can watch the lifecycle move. Absent or 0 in a normal run.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 600
+    },
     "branch_prefix": {
       "type": "string",
       "minLength": 1
@@ -245,6 +251,16 @@
             "orca",
             "subprocess"
           ]
+        },
+        "timeout_seconds": {
+          "description": "Per-session deadline for executor-backed model runs. Default: no extra deadline beyond the backend's own waits.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_as": {
+          "description": "Optional OS user to run model sessions as. When unset, sessions run as the runner's own user.",
+          "type": "string",
+          "minLength": 1
         },
         "roles": {
           "type": "object",
@@ -325,6 +341,15 @@
         "azure_complete_unproven": {
           "description": "Let the runner complete a PBI's Azure Repos pull request although nothing pins the target branch in that call. Off by default: until experiment 8 shows the service refuses a completion onto a moved target, the runner leaves the pull request open with a comment and a FIX line. When on, the runner's post-merge parent check is what contains the race.",
           "type": "boolean"
+        },
+        "reconcile": {
+          "description": "Whether the runner calls engineering-catalog's ado-board reconcile after each phase. Default true. Set false only for tightly-scoped live runs whose guard forbids any whole-project scan.",
+          "type": "boolean"
+        },
+        "run_as": {
+          "description": "Optional OS user to run witnesses, integration build/test, scanners and similar non-model commands as. When unset, they run as the runner's own user.",
+          "type": "string",
+          "minLength": 1
         },
         "feature_pr": {
           "description": "How phase 3 hands a Feature to QA. `auto` opens a real feature pull request when the remote supports one here and blocks otherwise; `branch-only` records that there is no pull request and tells the human to merge the feature branch by hand after QA.",
