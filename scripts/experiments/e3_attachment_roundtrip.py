@@ -25,7 +25,7 @@ import experiment_common as common  # noqa: E402
 
 EXIT = common.EXIT
 DOC = common.DOCS_DIR / "e3-attachment-roundtrip.md"
-PASS, FAIL = "PASS", "FAIL"
+PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
 
 DESIGN = "design.md"
 
@@ -77,6 +77,8 @@ def replace_check(scratch, first, second):
 def verdict_of(cases, replaced):
     if not all(c["match"] for c in cases):
         return FAIL
+    if replaced["relations_before"] < 1:
+        return INCONCLUSIVE
     if replaced["relations_after"] != 1 or not replaced["old_relation_gone"] \
             or not replaced["download_match"]:
         return FAIL
@@ -93,7 +95,10 @@ def render(cases, replaced, verdict, scratch_id):
                  f"{replaced['relations_after']} after (must be 1); old relation gone: "
                  f"{replaced['old_relation_gone']}; replaced content identical: "
                  f"{replaced['download_match']}")
-    if verdict == FAIL:
+    if verdict == INCONCLUSIVE:
+        lines.append("- INCONCLUSIVE: no original relation for `design.md` was observed before "
+                     "the replacement, so the run did not prove an old relation was removed.")
+    elif verdict == FAIL:
         lines.append("- CONSEQUENCE: the card cannot carry `design.md` as it stands. Either the "
                      "bytes do not survive (wrap the file — base64 or a fenced container — or keep "
                      "the ADR in the wiki or the repository with only a hash on the card) or a "
