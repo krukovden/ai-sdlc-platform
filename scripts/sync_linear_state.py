@@ -192,10 +192,19 @@ query Fence($id: String!) {
 }
 """
 
+# One bounded page per request. Linear refuses a query above complexity 10000,
+# and a lease is wrong if any page is missing, so the page stays small and the
+# walk follows the cursor instead of asking for the whole history at once.
+COMMENT_PAGE = 50
+MAX_COMMENT_PAGES = 1000
+
 COMMENTS_QUERY = """
-query Comments($id: String!) {
+query Comments($id: String!, $after: String, $first: Int!) {
   issue(id: $id) {
-    comments(first: 100) { nodes { id body createdAt } }
+    comments(first: $first, after: $after, orderBy: createdAt) {
+      nodes { id body createdAt }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 }
 """
@@ -699,14 +708,40 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                 "status": written["state"]["name"]}
 
     def list_comments(self, identifier):
-        """Every comment on the card, oldest first, with the server's timestamps."""
-        issue = query(self.token, COMMENTS_QUERY, {"id": identifier})["issue"]
-        if not issue:
-            fail(EXIT.INVALID, f"no issue {identifier}",
-                 fix="check the identifier; `board.py list` shows what exists")
-        found = [{"id": c["id"], "body": c.get("body") or "", "created_at": c["createdAt"]}
-                 for c in issue["comments"]["nodes"]]
-        return sorted(found, key=lambda c: c["created_at"] or "")
+        """Every comment on the card, oldest first, with the server's timestamps.
+
+        Linear returns one page of the connection. A lease, a heartbeat and an
+        attempt counter are all comments, so a truncated page is a wrong lease.
+        Pages are ordered by `createdAt` and walked by cursor; the caller still
+        gets them oldest first.
+        """
+        found, seen, after = [], set(), None
+        for _ in range(MAX_COMMENT_PAGES):
+            issue = query(self.token, COMMENTS_QUERY,
+                          {"id": identifier, "after": after, "first": COMMENT_PAGE})["issue"]
+            if not issue:
+                fail(EXIT.INVALID, f"no issue {identifier}",
+                     fix="check the identifier; `board.py list` shows what exists")
+            connection = issue.get("comments") or {}
+            for comment in connection.get("nodes") or []:
+                if comment["id"] in seen:
+                    continue
+                seen.add(comment["id"])
+                found.append({"id": comment["id"], "body": comment.get("body") or "",
+                              "created_at": comment["createdAt"]})
+            page = connection.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                return sorted(found, key=lambda c: c["created_at"] or "")
+            cursor = page.get("endCursor")
+            if not cursor or cursor == after:
+                fail(EXIT.UNAVAILABLE,
+                     f"Linear did not advance the comments cursor for {identifier}",
+                     fix="retry; a lease must not be read from a partial comment history")
+            after = cursor
+        fail(EXIT.UNAVAILABLE,
+             f"{identifier} has more than {MAX_COMMENT_PAGES} pages of comments",
+             fix="the history was not truncated; retry once, and if it persists "
+                 "the comments connection is not paginating")
 
     def server_now(self):
         """The service's own clock, from the `Date` header of a cheap request."""
