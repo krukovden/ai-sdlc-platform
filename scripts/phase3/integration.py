@@ -955,7 +955,10 @@ class Integration:
                        and not p.startswith(plans.PLAN_DIR + "/")
                        and not p.startswith("docs/")
                        and not p.startswith("tests/")
-                       and not p.startswith(".idp/")]
+                       and not p.startswith(".idp/")
+                       # README, CHANGELOG and other prose are documentation, not
+                       # a product area a blueprint has to describe.
+                       and not p.endswith(".md")]
             all_blueprints = sorted(str(p.relative_to(wt.path)) for p in post_change)
             if product and not changed:
                 touched = sorted(set(touched) | set(all_blueprints))

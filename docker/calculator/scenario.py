@@ -425,8 +425,8 @@ RUN_TESTS = "#!/bin/sh\npython3 -m unittest discover -s tests\n"
 
 BLUEPRINT = """# Calculator CLI
 
-The calculator ships as a tiny `calc/` package with a pure evaluator behind the
-CLI entrypoint.
+The calculator ships as a tiny [`calc/`](../../calc/) package with a pure evaluator
+behind the CLI entrypoint.
 
 ## Requirements
 
@@ -444,6 +444,7 @@ CLI wrapper; `tests/test_calculator.py` is the executable contract.
 | -- | -- | -- |
 | REQ-CALC-001 | calc/engine.py | parser and evaluator |
 | REQ-CALC-001 | calc/__main__.py | CLI entrypoint |
+| REQ-CALC-001 | calc/ | the package |
 """
 
 BUG_WITH_WITNESS = """Modulo is missing from the calculator CLI.
@@ -663,6 +664,8 @@ class CalculatorWorld:
                 "parallel": {"copilot": 2},
             },
             "development": {
+                # The product remote is a local bare repository: no PR system.
+                "feature_pr": "branch-only",
                 "integration": {
                     "test": "python3 -m unittest discover -s tests",
                     "timeout_seconds": 600,
