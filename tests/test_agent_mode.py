@@ -394,6 +394,76 @@ class StopTests(AgentTestCase):
         self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
 
 
+class ForegroundPresenceTests(AgentTestCase):
+    """A foreground run and an executing takeover are live processes (A3).
+
+    `run.py stop` releases only a run whose process is already gone. A runner
+    that never writes its pid is treated as dead, and stop commits and pauses
+    while that process is still editing.
+    """
+
+    def _stop_during(self, board, run_id):
+        seen = {}
+
+        def run_feature(feature):
+            presence = agent_mode.Presence(self.home, run_id)
+            seen["alive"] = presence.alive()
+            before = board.side_effects
+            agent_mode.stop(board, self.home, [run_id], board.list_project,
+                            self.worktrees, out=io.StringIO())
+            seen["released"] = board.side_effects - before
+            seen["asked"] = presence.stop_requested()
+            return EXIT.DONE
+
+        class Holding:
+            def __init__(self, board, profile, executor, run_id, repo=None, ask=None):
+                self.design = run.load_design()
+                self.run_id = run_id
+
+            def run_feature(self, feature):
+                return run_feature(feature)
+
+        return seen, Holding
+
+    def test_a_foreground_run_is_not_released_while_it_still_edits(self):
+        board = new_board(tags.DESIGN, "idp:owner:run-1")
+        seen, holding = self._stop_during(board, "run-1")
+        args = mock.Mock(run_id="run-1", no_ask=True, feature=FEATURE)
+        with mock.patch.object(run.board_cli, "open_board",
+                               return_value=(PROFILE, None, board)), \
+                mock.patch.object(run.executors, "select", return_value=mock.Mock()), \
+                mock.patch.object(run, "Runner", holding), \
+                mock.patch.object(run.sys, "exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                run.cmd_run(args)
+        self.assertTrue(seen["alive"])
+        self.assertEqual(seen["released"], 0)
+        self.assertTrue(seen["asked"])
+        self.assertFalse((self.home / "agent" / "run-1.pid").exists())
+
+    def test_an_executing_takeover_is_not_released_while_it_still_edits(self):
+        board = new_board(tags.DESIGN, "idp:paused:run-9")
+        seen, holding = self._stop_during(board, "run-1")
+        args = mock.Mock(run_id="run-1", claim_only=False, card=FEATURE)
+        with mock.patch.object(run.board_cli, "open_board",
+                               return_value=(PROFILE, None, board)), \
+                mock.patch.object(run.board_cli, "profile_hash", return_value=HASH), \
+                mock.patch.object(run.sys.stdin, "isatty", return_value=True), \
+                mock.patch.dict(os.environ, {"IDP_AGENT_MODE": ""}), \
+                mock.patch.object(run, "input", return_value="yes"), \
+                mock.patch.object(run, "git", return_value=""), \
+                mock.patch.object(run.executors, "select", return_value=mock.Mock()), \
+                mock.patch.object(run, "Runner", holding), \
+                mock.patch.object(run.sys, "stdout", io.StringIO()), \
+                mock.patch.object(run.sys, "exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                run.cmd_takeover(args)
+        self.assertTrue(seen["alive"])
+        self.assertEqual(seen["released"], 0)
+        self.assertTrue(seen["asked"])
+        self.assertFalse((self.home / "agent" / "run-1.pid").exists())
+
+
 class TakeoverTests(AgentTestCase):
 
     def held(self, owner="run-9"):

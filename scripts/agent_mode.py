@@ -814,7 +814,13 @@ class AgentLoop:
 
 def stop(board, home, run_ids, list_cards, worktrees, handoff=None, mention=None,
          out=None, kill=os.kill):
-    """`run.py stop`. A live loop is asked; a run with no loop is released now."""
+    """`run.py stop`. A live process is asked; release only once it is gone.
+
+    Agent mode, a foreground `run.py <feature>` and an executing takeover all
+    announce a pid. While that process is alive, stop only writes the stop
+    file — the owner commits and pauses between sessions. Releasing here would
+    commit and push a tree that process is still editing.
+    """
     out = out or sys.stdout
     for run in run_ids:
         presence = Presence(home, run)
@@ -823,8 +829,8 @@ def stop(board, home, run_ids, list_cards, worktrees, handoff=None, mention=None
             print(f"run '{run}' stops after its task in flight: it commits, writes "
                   "handoff.md and pauses what it holds.", file=out)
             continue
-        print(f"run '{run}' has no live loop on this machine: releasing what it holds "
-              "now.", file=out)
+        print(f"run '{run}' has no live process on this machine: releasing what it "
+              "holds now.", file=out)
         release_run(board, run, list_cards(), worktrees, "run.py stop", handoff=handoff,
                     mention=mention, out=out)
         presence.leave()

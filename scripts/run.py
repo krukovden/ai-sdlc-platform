@@ -808,22 +808,28 @@ def acquire_lease(explicit):
 
 def cmd_run(args):
     run_id = acquire_lease(args.run_id)
-    profile, _, board = board_cli.open_board()
+    # A foreground run is a live process. Without a pid, `run.py stop` treats
+    # it as dead and commits, pushes and pauses while it is still editing.
+    presence = agent_mode.Presence(load_design().HOME, run_id)
+    presence.announce()
     try:
-        executor = executors.select(profile.get("executors"))
-    except executors.ResolutionError as exc:
-        fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
-    ask = None
-    if not args.no_ask and sys.stdin.isatty():
-        ask = input
-    runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=ask)
-    runner.stopping = agent_mode.stop_signal(
-        board, agent_mode.Presence(runner.design.HOME, runner.run_id))
-    try:
-        code = runner.run_feature(args.feature)
-    except RunnerError as exc:
-        fail(exc.code, exc.message, fix=exc.fix)
-    sys.exit(code)
+        profile, _, board = board_cli.open_board()
+        try:
+            executor = executors.select(profile.get("executors"))
+        except executors.ResolutionError as exc:
+            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+        ask = None
+        if not args.no_ask and sys.stdin.isatty():
+            ask = input
+        runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=ask)
+        runner.stopping = agent_mode.stop_signal(board, presence)
+        try:
+            code = runner.run_feature(args.feature)
+        except RunnerError as exc:
+            fail(exc.code, exc.message, fix=exc.fix)
+        sys.exit(code)
+    finally:
+        presence.leave()
 
 
 def cmd_report(args):
@@ -934,17 +940,21 @@ def cmd_takeover(args):
                                 else "git and the board: no PBI branch carries a handoff.md"))
     if args.claim_only:
         sys.exit(EXIT.DONE)
+    presence = agent_mode.Presence(load_design().HOME, run_id)
+    presence.announce()
     try:
-        executor = executors.select(profile.get("executors"))
-    except executors.ResolutionError as exc:
-        fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
-    runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
-    runner.stopping = agent_mode.stop_signal(board, agent_mode.Presence(runner.design.HOME,
-                                                                        run_id))
-    try:
-        sys.exit(runner.run_feature(args.card))
-    except RunnerError as exc:
-        fail(exc.code, exc.message, fix=exc.fix)
+        try:
+            executor = executors.select(profile.get("executors"))
+        except executors.ResolutionError as exc:
+            fail(EXIT.BLOCKED, exc.message, fix=exc.fix)
+        runner = Runner(board, profile, executor, run_id, repo=os.getcwd(), ask=input)
+        runner.stopping = agent_mode.stop_signal(board, presence)
+        try:
+            sys.exit(runner.run_feature(args.card))
+        except RunnerError as exc:
+            fail(exc.code, exc.message, fix=exc.fix)
+    finally:
+        presence.leave()
 
 
 def cmd_decide(args):
