@@ -1,0 +1,51 @@
+# A release is a tag. `idp-platform check` and `update` compare installed versions with the
+# repository's vX.Y.Z tags, so a version that never gets tagged is invisible to every user.
+#
+# On every push to main: run both suites, refuse if the manifests are out of step with
+# package.json, then tag the commit v<package.json version> unless that tag already exists.
+# Bumping the version is a deliberate edit: `npm run version:sync -- X.Y.Z`, committed.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: |
+          python3 -m unittest discover -s tests
+          node --test test/
+      - name: Manifests match package.json
+        run: |
+          node cli/version.js
+          git diff --exit-code -- .claude-plugin .github/plugin package.json
+      - name: Tag the release
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION already exists at $(git rev-list -n 1 "v$VERSION"); bump the version to release this commit"
+            exit 0
+          fi
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          echo "tagged v$VERSION"

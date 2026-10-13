@@ -4,6 +4,7 @@
     "name": "krukovden"
   },
   "metadata": {
+    "description": "AI SDLC Platform skills and shared Python tools",
     "version": "0.1.0"
   },
   "plugins": [

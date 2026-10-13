@@ -33,9 +33,13 @@ git clone -q --bare /tmp/release "$REMOTE"
 git config --global url."file://$REMOTE".insteadOf "$URL"
 echo "released v$V1"
 
-export HOME=/home/e2e && rm -rf "$HOME" && mkdir -p "$HOME"
+GITCONFIG="$HOME/.gitconfig"
+export HOME=/home/e2e && rm -rf "$HOME" && mkdir -p "$HOME" && cp "$GITCONFIG" "$HOME/.gitconfig"
 export PATH="$HOME/.local/bin:$PATH"
-CLI="npx --yes git+$URL"
+# npm fetches GitHub URLs as codeload tarballs, which insteadOf cannot redirect, so the
+# CLI comes from the local remote by file URL; `check` reads tags with git ls-remote on
+# the GitHub URL, which insteadOf does redirect. The public URL is tried at the end.
+CLI="npx --yes git+file://$REMOTE"
 
 step "install --target all"
 $CLI install --target all --yes
@@ -65,7 +69,10 @@ cd /tmp/release
 V2=$(node -e "const [a,b,c]=require('./package.json').version.split('.').map(Number);console.log([a,b,c+1].join('.'))")
 node cli/version.js "$V2"
 printf '\n<!-- e2e: changed in v%s -->\n' "$V2" >> skills/design/SKILL.md
-git add -A && git commit -qm "release v$V2" && git tag "v$V2" && git push -q "$REMOTE" main --tags
+git add -A
+git commit -qm "release v$V2"
+git tag "v$V2"
+git push -q "$REMOTE" main --tags
 echo "released v$V2"
 
 step "check sees it"
@@ -92,9 +99,12 @@ for path in .claude/skills/design .copilot/skills/design .agents/skills/design .
 done
 echo "clean"
 
+step "the public GitHub URL resolves (best effort: needs network)"
+if HOME=/tmp/public-home npx --yes git+$URL list 2>/dev/null | head -3; then echo "public URL: ok"; else echo "public URL: not reachable here; skipped"; fi
+
 step "host CLIs read the manifests (best effort: needs network to install them)"
 if npm install -g --silent @anthropic-ai/claude-code >/dev/null 2>&1; then
-  claude plugin validate "$SRC" && echo "claude: plugin manifest valid"
+  claude plugin validate "$SRC/.claude-plugin/plugin.json" && echo "claude: plugin manifest valid"
   claude plugin validate "$SRC/.claude-plugin/marketplace.json" && echo "claude: marketplace manifest valid"
 else
   echo "claude CLI not installable here; skipped"

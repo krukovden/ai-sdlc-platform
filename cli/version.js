@@ -14,7 +14,7 @@ function sync(version, directory = root) {
     author: {name: 'krukovden'}, repository: catalog.source, skills: catalog.skills.map(s => './' + s.path), hooks: './hooks/hooks.json'};
   write('.claude-plugin/plugin.json', plugin);
   for (const file of ['.claude-plugin/marketplace.json', '.github/plugin/marketplace.json']) {
-    write(file, {name: catalog.name, owner: {name: 'krukovden'}, metadata: {version: pkg.version},
+    write(file, {name: catalog.name, owner: {name: 'krukovden'}, metadata: {description: pkg.description, version: pkg.version},
       plugins: [{name: catalog.name, source: './', description: pkg.description, version: pkg.version}]});
   }
 }

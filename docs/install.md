@@ -64,9 +64,12 @@ The marketplace points at the repository root so skills retain access to shared 
 node --test test/
 python3 -m unittest discover -s tests
 sh docker/install-smoke.sh
-# Optional clean-container verification:
-docker build -f docker/Dockerfile.install-smoke -t idp-install-smoke .
-docker run --rm idp-install-smoke
+# Clean-container end to end: both suites, then a real npx install for every target,
+# a newer release, check, update with a locally edited file, and uninstall:
+docker build -f docker/Dockerfile.e2e -t idp-e2e .
+docker run --rm idp-e2e
 ```
+
+A release is a tag. `.github/workflows/release.yml` runs both suites on every push to `main`, refuses manifests that disagree with `package.json`, and tags the commit `v<version>` unless that tag exists. To release, bump the version with `node cli/version.js X.Y.Z`, commit, push.
 
 The smoke tests build their source tree from `npm pack` output, so a file missing from the published package is missing from the tests too. They create temporary homes, simulates a version bump and uses a local git release remote. It never accesses a live tracker, real tokens or the network. Docker is not required to run the same smoke sequence locally.
