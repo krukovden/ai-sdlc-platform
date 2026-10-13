@@ -134,7 +134,9 @@ class SubprocessExecutor(Executor):
                 timed_out = False
                 deadline = None if self.timeout is None else time.monotonic() + self.timeout
                 while True:
-                    if process.poll() is not None and not reader.is_alive():
+                    finished = process.poll() is not None if hasattr(process, "poll") \
+                        else not reader.is_alive()
+                    if finished and not reader.is_alive():
                         break
                     if deadline is not None and time.monotonic() >= deadline:
                         timed_out = True
