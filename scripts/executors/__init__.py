@@ -220,7 +220,7 @@ class Executor:
                returncode=None, last_message=None, launch_failed=False,
                unsettled=False):
         """Record the session and turn its report into the runner's code."""
-        code = EXIT.HANDOFF if result is None else result["code"]
+        code = EXIT.HANDOFF if result is None or unsettled else result["code"]
         if crashed:
             why = "the session ended without a result file"
         elif unsettled:

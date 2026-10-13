@@ -725,7 +725,13 @@ class OrcaExecutor(Executor):
     def conclude(self, role, card, choice, worktree, outcome, dispatch, task_id):
         result, crashed, limit, unsettled = read_result(worktree), False, None, False
         kind, said = outcome.kind, outcome.body
-        if kind == "done":
+        if kind == "lost":
+            # The inbox vanished before termination was established. A result
+            # file may already exist, but it is not yet safe to act on it:
+            # phase 3 must reconnect or stop the worker before it releases the
+            # claim, finalizes, or blocks on that report.
+            unsettled = True
+        elif kind == "done":
             reported_ok = outcome.verdict == "succeeded"
             if result is None:
                 if reported_ok:
@@ -746,9 +752,6 @@ class OrcaExecutor(Executor):
             elif kind in ("blocked", "escalation"):
                 result = {"code": EXIT.BLOCKED,
                           "reason": EXIT.with_fix(outcome.reason, outcome.fix)}
-            elif kind == "lost":
-                # Unknown liveness is not a crash: a crash is retried on this worktree.
-                unsettled = True
             else:                              # limit, exited, timeout: a crash
                 crashed, limit = True, outcome.limit
         code = self.finish(role, card, choice, result, crashed=crashed, limit=limit,

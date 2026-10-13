@@ -15,6 +15,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -346,6 +347,37 @@ class LivenessTests(ScriptTestCase):
         self.assertEqual(harness.verbs().count("worker-start"), 1)
         self.assertTrue(executor.last.unsettled)
         self.assertIsNone(executor._fallback)
+
+    def test_losing_the_inbox_with_any_result_file_keeps_the_worker_unsettled(self):
+        cases = [
+            ({"code": 0, "reason": "done"}, EXIT.HANDOFF),
+            ({"code": 4, "reason": "handoff"}, EXIT.HANDOFF),
+            ({"code": 2, "reason": "blocked"}, EXIT.HANDOFF),
+            ({"code": 9}, EXIT.HANDOFF),
+        ]
+        for result, code in cases:
+            with self.subTest(result=result):
+                harness = Harness(self, agents={"claude": {"then": "silent"}}, check_fails=True)
+                target = harness.worktree / ".idp" / "result.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+                def write_result():
+                    time.sleep(0.01)
+                    target.write_text(json.dumps(result), encoding="utf-8")
+
+                writer = threading.Thread(target=write_result)
+                writer.start()
+                executor = harness.executor()
+                try:
+                    self.assertEqual(executor.run_role("worker", "IDE-1", harness.worktree, "p"),
+                                     code)
+                finally:
+                    writer.join(timeout=1)
+                self.assertTrue(executor.last.unsettled)
+                self.assertFalse(executor.last.crashed)
+                self.assertEqual(executor.last.orca, "lost")
+                self.assertNotIn("worker-stop", harness.verbs())
+                self.assertNotIn("worker-release", harness.verbs())
 
     def test_a_timeout_stops_what_it_started(self):
         ticks = iter(range(0, 10000, 100))
