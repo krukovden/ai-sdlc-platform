@@ -36,6 +36,15 @@ event comments, and every step a crash can interrupt is recognised on the
 next run from the board and git alone: a claim, a finalize, a review verdict, a
 pull request, a merge. So a crash after any side effect, then a resume, reaches
 the same board as a run that never crashed, and a second run changes nothing.
+
+**Every write is fenced** (checklist item 3). Once the Feature is claimed, the
+run's board is a `lease.Fenced` one: each comment, attachment, state move, PR
+call and tag write first re-reads the Feature and stops with
+`lease.OwnershipLost` when another run holds it; state moves are the tag
+writer's `test /rev` write besides, and a PBI's move names the exact worker tag
+it was claimed under. Every git push runs the same check first, and refuses a
+protected target — `main`, the default branch, the profile's
+`protected_branches` — whatever the board said the feature branch is.
 """
 
 import json
@@ -47,7 +56,7 @@ import threading
 import time
 from pathlib import Path
 
-from .common import EXIT, event_text, flat, handoff_module, lease, memory, \
+from .common import EXIT, INFRA_BACKOFF, event_text, flat, handoff_module, lease, memory, \
     planning_module, tags
 from . import finalize as fin
 from . import plan as plans
@@ -62,7 +71,6 @@ from .journal import Journal
 MAX_ATTEMPTS = 3
 MAX_RETESTS = 5
 MAX_LOOPS = 10000
-INFRA_BACKOFF = (5, 30, 120)
 REVIEW_RETRIES = 1
 
 ATTEMPT = "attempt"
@@ -78,6 +86,7 @@ REFUSAL = "refusal"
 INFRA = "infra"
 PATHS = "paths"
 RACE = "merge-race"
+UNMERGED = "merge-refused"
 
 PLANNING_PROMPT = """You are the planning session for {feature}, started by run.py (IDE-147).
 Follow the planning skill exactly: {skill}
@@ -201,6 +210,8 @@ class Development:
         self.halt = None
         self.route_name = None
         self.header = {}
+        self.launches = {}
+        self.infra = set()
         self.integration = Integration(self)
 
     def say(self, text):
@@ -209,6 +220,17 @@ class Development:
     # -- the phase ------------------------------------------------------------
 
     def run(self, feature):
+        try:
+            return self._run(feature)
+        except lease.OwnershipLost as exc:
+            # A zombie owner: it stopped before the write, and writes nothing more.
+            self.say(f"{feature}: {exc.message}\nFIX: {exc.fix}")
+            return EXIT.REFUSED
+        except merges.MergeRefused as exc:
+            self.say(f"{feature}: {exc.message}\nFIX: {exc.fix}")
+            return EXIT.REFUSED
+
+    def _run(self, feature):
         self.feature = feature
         issue = self.board.get_issue(feature)
         header = self.runner_state().parse_machine_header(issue.get("description"))
@@ -227,6 +249,10 @@ class Development:
             self.say(f"{feature} has no branch name on the board.\nFIX: give the Feature a "
                      "branch name; the feature branch is taken from the board verbatim")
             return EXIT.REFUSED
+        # The board's branch is data. `main`, the default branch or a protected one
+        # is refused here, before the planning push, any worker or any merge.
+        self.feature_branch = merges.writable_target(
+            self.feature_branch, self.git, self.profile.get("protected_branches"))
 
         self.preflight()
         self.git.fetch()
@@ -236,6 +262,9 @@ class Development:
         if claimed["outcome"] in ("refused", "conflict"):
             self.say(f"{feature}: {claimed['message']}\nFIX: {claimed['fix']}")
             return EXIT.REFUSED
+        # From here every write re-reads that this run still holds the Feature.
+        self.board = lease.Fenced(lease.unfenced(self.board), feature, self.run_id)
+        self.git.before_push = self.before_push
         base = self.runner.claim_fact(feature, "base") or base
         self.journal = Journal(self.board, feature,
                                self.home / f"{feature}-journal" / "journal.md")
@@ -251,6 +280,11 @@ class Development:
 
     def runner_state(self):
         return self.runner.state
+
+    def before_push(self, branch):
+        """Every push: this run still holds the Feature, and the target is no protected branch."""
+        lease.fence(self.board)
+        merges.writable_target(branch, self.git, self.profile.get("protected_branches"))
 
     def default_sha(self):
         name = self.git.default_branch() or "main"
@@ -350,7 +384,8 @@ class Development:
         if text is not None and not problems:
             return EXIT.DONE, text
         feedback = "; ".join(problems) if problems else None
-        for _ in range(MAX_ATTEMPTS * 2):
+        launches = 0
+        for _ in range(MAX_ATTEMPTS * 2 + len(INFRA_BACKOFF) + 1):
             attempts = len(lease.events(self.board.list_comments(feature), ATTEMPT,
                                         phase="planning"))
             if attempts >= MAX_ATTEMPTS:
@@ -369,6 +404,12 @@ class Development:
                                 {"IDP_CONTEXT_DIR": str(context),
                                  "PLANNING_HOME": str(self.planning_home)})
             last = self.executor.last or {}
+            if last.get("launch_failed", False):
+                launches += 1
+                if launches <= len(INFRA_BACKOFF):
+                    self.sleep(INFRA_BACKOFF[launches - 1])
+                    continue
+                return self.launch_paused(feature, "planning", last), None
             if code == EXIT.DONE:
                 text, problems = self.plan_candidate(feature, adr_text)
                 if text is not None and not problems:
@@ -547,11 +588,11 @@ class Development:
                 profile=self.runner.profile_hash)
             last = self.claim_of(pbi)
         self.mover.move(self.board, pbi, "doing",
-                        f"claimed by `{mine}` on `{last['branch']}`")
+                        f"claimed by `{mine}` on `{last['branch']}`", self.run_id, owner=mine)
         tasks = shape.tasks_of(self.board, pbi)
         if tasks:
             self.mover.move(self.board, tasks[0][0], "doing",
-                            f"the first step of {pbi}, on `{last['branch']}`")
+                            f"the first step of {pbi}, on `{last['branch']}`", self.run_id)
         return dict(last, worker=worker, choice=choice)
 
     def worktree(self, claim, pbi):
@@ -688,6 +729,8 @@ class Development:
         code, last = answer
         last = last or {}
         item, claim, wt = job["item"], job["claim"], job["wt"]
+        if last.get("launch_failed", False):
+            return self.launch_failed(item, claim, wt, last)
         if last.get("crashed") and last.get("limit"):
             return self.layer3(item, claim, wt, last)
         if last.get("crashed"):
@@ -702,6 +745,30 @@ class Development:
         return self.after_session(item, claim, wt)
 
     # -- outcomes ---------------------------------------------------------------
+
+    def launch_failed(self, item, claim, wt, last):
+        """The agent never started: infrastructure, not the work. Never an attempt.
+
+        Retried with backoff a bounded number of times; past the bound the PBI
+        is released and waits uncounted, and a loop with nothing else to run
+        pauses the Feature for any run — another machine may launch it — rather
+        than blocking it for a human.
+        """
+        pbi = item["id"]
+        n = self.launches.get(pbi, 0)
+        self.launches[pbi] = n + 1
+        reason = flat(last.get("reason") or f"the {last.get('agent')} session could not "
+                                            "be launched")
+        if n < len(INFRA_BACKOFF):
+            self.sleep(INFRA_BACKOFF[n])
+            return self.start_worker(item, claim, wt, self.feedback(pbi))
+        self.skip[pbi] = f"the worker could not be launched ({n + 1} tries): {reason}"
+        self.infra.add(pbi)
+        tags.release(self.board, pbi, self.run_id)
+        lease.post_event(self.board, pbi, INFRA, f"{INFRA}:{pbi}:launch:{_key(reason)}",
+                         text=f"The worker could not be launched {n + 1} times, and this is "
+                              f"not counted as an attempt: {reason}. The PBI waits for the "
+                              "next run.", reason=reason)
 
     def attempts(self, pbi, since_block=True):
         """Counted attempts, from the board. A human lifting a block grants three more."""
@@ -748,6 +815,7 @@ class Development:
         """Handoff layer 3: the runner, with no model, leaves the branch continuable."""
         pbi = item["id"]
         reason = f"the {last.get('agent')} session hit {last.get('limit')}"
+        lease.fence(self.board)                 # the handoff pushes; a zombie must not
         try:
             done = handoff_module().handoff(wt.path, reason, pbi, mention=mention_of(pbi),
                                             last_message=last.get("last_message"),
@@ -908,13 +976,14 @@ class Development:
                 # Also when it is done already: a move that crashed between its
                 # two writes still gets the comment naming its witnesses.
                 self.mover.move(self.board, task, "done",
-                                f"its witnesses {', '.join(owned)} passed at `{sha[:12]}`")
+                                f"its witnesses {', '.join(owned)} passed at `{sha[:12]}`",
+                                self.run_id)
                 continue
             if self.mover.bucket(full) == "done":
                 continue
             self.mover.move(self.board, task, "doing",
                             f"the next step of {pbi}; its witnesses "
-                            f"{', '.join(owned) or '(none)'} have not passed yet")
+                            f"{', '.join(owned) or '(none)'} have not passed yet", self.run_id)
             return
 
     def review_and_merge(self, item, claim, wt, done):
@@ -1033,8 +1102,14 @@ class Development:
         pr = dict(pr, id=pr.get("id"))
         feature_sha, merged = done["feature"], done["merge"]
         for _ in range(MAX_RETESTS):
-            head = merger.complete(pr, claim["branch"], self.feature_branch, feature_sha,
-                                   merged, title, mention_of(pbi))
+            lease.fence(self.board)              # an injected merger may hold a plain board
+            try:
+                head = merger.complete(pr, claim["branch"], self.feature_branch, feature_sha,
+                                       merged, title, mention_of(pbi))
+            except merges.MergeRefused as exc:
+                if exc.kind != merges.UNPROVEN_KIND:
+                    raise
+                return self.left_open(item, claim, pr, done, exc)
             if head:
                 break
             # The feature head moved — a sibling merged first. Re-run steps 2–3 on the
@@ -1064,6 +1139,25 @@ class Development:
             review = self.review_text(pbi, verdict.get("merge"))
             merger.comment(self.board, pr, pbi, review, f"review-comments:{pbi}:{merged}")
         self.after_merge(item, claim, head)
+
+    def left_open(self, item, claim, pr, done, refusal):
+        """The completion was refused: the PR stays open, said once on it and on the PBI.
+
+        Nothing merges, nothing is counted. The PBI waits — named, with its FIX,
+        when the loop has nothing left to run — for a human to complete the pull
+        request or to opt the profile in.
+        """
+        pbi = item["id"]
+        text = f"{refusal.message}.\n\nFIX: {refusal.fix}"
+        key = f"{UNMERGED}:{claim['branch']}:{done['merge']}"
+        if self.event(pbi, UNMERGED, merge=done["merge"]) is None:
+            self.merger_for().comment(self.board, pr, pbi, text, key)
+            lease.post_event(self.board, pbi, UNMERGED, key, text=text,
+                             branch=claim["branch"], merge=done["merge"],
+                             experiment=8, opt_in=merges.OPT_IN)
+        self.skip[pbi] = f"{refusal.message}. FIX: {refusal.fix}"
+        self.say(f"{pbi}: the pull request stays open — {refusal.message}.\n"
+                 f"FIX: {refusal.fix}")
 
     def landed_on_tested(self, item, claim, wt, done, head):
         """The squash's parent must be the tested F. If it is not, prove the new head.
@@ -1142,12 +1236,12 @@ class Development:
                                   f"{', '.join(owned) or '(none)'} are not ones finalize ran "
                                   "and passed, so the runner does not close it.",
                              witnesses=",".join(owned))
-        self.mover.move(self.board, pbi, "done", evidence)
+        self.mover.move(self.board, pbi, "done", evidence, self.run_id)
+        # Only this run's own tag comes off. Another run's tag is never released by
+        # a completion: the move above already refused to write past it.
         owner = tags.owner_of(self.board.read_card(pbi).get("tags"))
         if owner and tags.run_of(owner) == self.run_id:
             tags.release(self.board, pbi, self.run_id)
-        elif owner:
-            tags.release_stale(self.board, pbi, owner)
         lease.post_event(
             self.board, pbi, SUMMARY, f"{SUMMARY}:{pbi}",
             text=(f"Done: {evidence}. Tested merge `{(merged or {}).get('merge', '')[:12]}`; "
@@ -1196,6 +1290,10 @@ class Development:
                     changed = True
         reason = ("nothing can run: " + "; ".join(f"{i} ({why})" for i, why in stuck)
                   + (". Waiting on them: " + ", ".join(waiting) if waiting else ""))
+        if stuck and all(i in self.infra for i, _ in stuck):
+            # Only infrastructure stands in the way: no human is needed, another
+            # run may take the Feature at once.
+            return self.pause_card(feature, reason)
         return self.block_feature(reason)
 
     def built(self, feature, work):
@@ -1249,6 +1347,7 @@ class Development:
             claim = self.claim_of(pbi)
             path = self.home / f"{pbi}-g{claim['generation']}" if claim else None
             note = "no worktree to hand off"
+            lease.fence(self.board)
             if path is not None and path.exists():
                 try:
                     done = handoff_module().handoff(path, f"stopped: {reason}", pbi,
@@ -1266,6 +1365,13 @@ class Development:
             self.journal.add(f"Stopped: {reason}.")
             self.journal.upload()
         return self.pause_card(feature, f"stopped: {reason}")
+
+    def launch_paused(self, card, phase, last):
+        """A session that never started, past its retries: paused, never an attempt."""
+        reason = last.get("reason") or "the agent could not be launched"
+        return self.pause_card(card, f"the {last.get('agent')} {phase} session could not "
+                                     f"be launched after {len(INFRA_BACKOFF) + 1} tries "
+                                     f"(infrastructure, not counted): {reason}")
 
     def pause_card(self, card, reason):
         tags.pause(self.board, card, self.run_id)

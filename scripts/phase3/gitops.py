@@ -41,10 +41,11 @@ def mention(identifier):
 class Git:
     """One repository: a clone of the product repo, or a worktree of it."""
 
-    def __init__(self, path, remote="origin", env=None):
+    def __init__(self, path, remote="origin", env=None, before_push=None):
         self.path = Path(path)
         self.remote = remote
         self.env = env
+        self.before_push = before_push
 
     def run(self, *args, check=True, input_text=None):
         answer = subprocess.run(["git", "-C", str(self.path), *args], capture_output=True,
@@ -85,17 +86,33 @@ class Git:
         return answer.stdout.strip() or None
 
     def default_branch(self):
+        """The remote's default branch: `origin/HEAD` as the clone recorded it, else asked.
+
+        `refs/heads/` comes off whole, so a default named `release/2026` stays
+        that and is not cut to `2026`.
+        """
+        local = self.run("symbolic-ref", "-q", f"refs/remotes/{self.remote}/HEAD",
+                         check=False)
+        prefix = f"refs/remotes/{self.remote}/"
+        if local.returncode == EXIT.OK and local.stdout.strip().startswith(prefix):
+            return local.stdout.strip()[len(prefix):]
         out = self.run("ls-remote", "--symref", self.remote, "HEAD")
         for line in out.splitlines():
             if line.startswith("ref:"):
-                return line.split()[1].rsplit("/", 1)[-1]
+                ref = line.split()[1]
+                return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
         return None
 
     def push(self, sha, branch, expect=None):
         """Point the remote branch at `sha`. With `expect`, only if it is still there.
 
         Returns False when the lease lost — the branch moved since it was read.
+        `before_push(branch)`, when the runner set one, runs first and raises to
+        stop the push: it is where a run that lost its lease, or a target that
+        is protected, is refused before anything leaves this machine.
         """
+        if self.before_push is not None:
+            self.before_push(branch)
         args = ["push", self.remote, f"{sha}:refs/heads/{branch}"]
         if expect is not None:
             # An empty `expect` is "the branch must not exist yet": create, never move.
@@ -146,9 +163,9 @@ class Git:
             try:
                 here = Git(target).run("rev-parse", "--abbrev-ref", "HEAD")
                 if branch and here == branch:
-                    return Git(target, self.remote, self.env)
+                    return Git(target, self.remote, self.env, self.before_push)
                 if not branch and Git(target).run("rev-parse", "HEAD") == sha:
-                    return Git(target, self.remote, self.env)
+                    return Git(target, self.remote, self.env, self.before_push)
             except GitError:
                 pass
             self.run("worktree", "remove", "--force", str(target), check=False)
@@ -159,7 +176,7 @@ class Git:
             self.run("worktree", "add", "-B", branch, str(target), sha)
         else:
             self.run("worktree", "add", "--detach", str(target), sha)
-        return Git(target, self.remote, self.env)
+        return Git(target, self.remote, self.env, self.before_push)
 
     def reset_to(self, sha):
         """Make the working tree exactly `sha`; ignored files (the `.idp/` dir) survive."""
