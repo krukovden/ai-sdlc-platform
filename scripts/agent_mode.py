@@ -706,8 +706,11 @@ class AgentLoop:
     def reap(self, cards):
         """Release the project's stale leases. How many were released."""
         reaped = 0
-        for item in cards:
-            if not tags.owners(item.get("labels") or []):
+        deferred = set()
+        ordered = sorted(cards, key=lambda item: (item.get("parent") is not None,
+                                                  natural(item["identifier"])))
+        for item in ordered:
+            if item["identifier"] in deferred or not tags.owners(item.get("labels") or []):
                 continue
             try:
                 for entry in lease.reap(self.board, item["identifier"],
@@ -716,6 +719,8 @@ class AgentLoop:
                         reaped += 1
                         self.say(f"{entry['identifier']}: reaped `{entry['owner']}`, last "
                                  f"seen {entry.get('last_seen') or 'never'}")
+                    elif entry["outcome"] == "waiting":
+                        deferred.add(entry["identifier"])
             except Exception as exc:                    # noqa: BLE001 - reap is best effort
                 self.say(f"{item['identifier']}: reap failed: {exc}")
         return reaped

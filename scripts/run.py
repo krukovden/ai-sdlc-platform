@@ -911,10 +911,17 @@ def cmd_reap(args):
         project = board_cli.project_id_from(profile, None)
         cards = [n["identifier"] for n in board.list_project(project)
                  if tags.owners(n.get("labels") or [])]
+    cards = sorted(cards, key=lambda card: (board.get_issue(card).get("parent") is not None,
+                                            agent_mode.natural(card)))
+    deferred = set()
     for card in cards:
+        if card in deferred:
+            continue
         for entry in lease.reap(board, card, lease_minutes=args.lease_minutes):
             print(f"{entry['identifier']:<10} {entry['outcome']:<8} "
                   f"{entry.get('owner') or '—'}  last seen {entry.get('last_seen') or 'never'}")
+            if entry["outcome"] == "waiting":
+                deferred.add(entry["identifier"])
     # A hook that handed off with no board credential asked on the branch for the
     # pause it could not make; that is honoured now, not when the lease runs out.
     held = [board.get_issue(card) for card in cards]

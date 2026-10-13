@@ -133,6 +133,28 @@ class AgentLoopTests(AgentTestCase):
         self.assertEqual(len(self.executor.calls), 1)
         self.assertEqual(len(self.made), 1)                  # one executor while it serves
 
+    def test_reap_skips_a_child_deferred_by_the_features_reap_for_the_whole_pass(self):
+        board = FakeBoard(profile=dict(PROFILE, project_id="project-1"), comment_bumps_rev=True)
+        board.add_card(FEATURE, tags_=[tags.DEVELOPMENT], kind="feature",
+                       title="Feature: offline search", description=FEATURE_BODY)
+        lease.claim(board, FEATURE, "run-1", tags.DEVELOPMENT, profile=HASH)
+        board.add_card("2", (), kind="pbi", parent=FEATURE)
+        tags.claim_pbi(board, "2", "run-1", 1, feature=FEATURE)
+        board.advance(61)
+        real = lease.post_event
+
+        def delayed(board_, identifier, kind, key, *args, **kwargs):
+            posted = real(board_, identifier, kind, key, *args, **kwargs)
+            if kind == lease.REAP and str(identifier) == FEATURE:
+                lease.heartbeat(board_, FEATURE, "run-1", 9)
+            return posted
+
+        loop = self.loop(board)
+        with mock.patch.object(lease, "post_event", side_effect=delayed):
+            reaped = loop.reap(board.list_project())
+        self.assertEqual(reaped, 1)
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-1/w1"])
+
     def test_a_call_the_session_made_alone_becomes_a_decision_comment(self):
         board = new_board()
         session = self.session()

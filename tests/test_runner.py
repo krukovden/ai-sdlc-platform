@@ -592,6 +592,35 @@ class CommandLineTests(RunnerTestCase):
         self.assertTrue(json.loads(output))
 
 
+    def test_cmd_reap_does_not_reap_a_child_deferred_by_the_features_reap(self):
+        board = FakeBoard(profile=dict(PROFILE, project_id="project-1"), comment_bumps_rev=True)
+        board.add_card(FEATURE, tags_=[tags.DEVELOPMENT], kind="feature",
+                       title="Feature: offline search", description=FEATURE_BODY)
+        lease.claim(board, FEATURE, "run-1", tags.DEVELOPMENT,
+                    profile=run.board_cli.profile_hash(PROFILE))
+        board.add_card("2", (), kind="pbi", parent=FEATURE)
+        tags.claim_pbi(board, "2", "run-1", 1, feature=FEATURE)
+        board.advance(61)
+        real = lease.post_event
+
+        def delayed(board_, identifier, kind, key, *args, **kwargs):
+            posted = real(board_, identifier, kind, key, *args, **kwargs)
+            if kind == lease.REAP and str(identifier) == FEATURE:
+                lease.heartbeat(board_, FEATURE, "run-1", 9)
+            return posted
+
+        args = mock.Mock(cards=[FEATURE, "2"], lease_minutes=60)
+        with mock.patch.object(run.board_cli, "open_board",
+                               return_value=(dict(PROFILE, project_id="project-1"), None, board)), \
+                mock.patch.object(lease, "post_event", side_effect=delayed), \
+                mock.patch.object(run.agent_mode, "branch_reader", return_value=lambda *_: (None, False)), \
+                mock.patch.object(run.sys, "stdout", io.StringIO()), \
+                mock.patch.object(run.sys, "exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                run.cmd_reap(args)
+        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-1/w1"])
+
+
 class LaunchFails(ScriptedExecutor):
     """A scripted executor whose agent cannot be started for the first `fails[role]` calls.
 
