@@ -8,17 +8,7 @@ const {execFileSync, spawnSync} = require('node:child_process');
 const {run, ROOT} = require('../cli');
 const {sync} = require('../cli/version');
 const {check} = require('../skills/platform-freshness/check');
-const json = file => JSON.parse(fs.readFileSync(file));
-function fixture(t) {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'idp-install-'));
-  t.after(() => fs.rmSync(temp, {recursive: true, force: true}));
-  const root = path.join(temp, 'source'), home = path.join(temp, 'home'), cwd = path.join(temp, 'project');
-  fs.mkdirSync(root); fs.mkdirSync(home); fs.mkdirSync(cwd);
-  const catalog = json(path.join(ROOT, 'catalog.json'));
-  for (const entry of [...catalog.payload, 'skills', '.claude-plugin', '.github/plugin']) fs.cpSync(path.join(ROOT, entry), path.join(root, entry), {recursive: true, filter: p => !p.includes('__pycache__')});
-  const output = [];
-  return {temp, root, home, cwd, output, out: line => output.push(line)};
-}
+const {fixture, json} = require('./fixture');
 for (const target of ['claude', 'copilot', 'orca']) {
   test(`${target}: install, status, simulated update, check and clean uninstall`, async t => {
     const ctx = fixture(t);
