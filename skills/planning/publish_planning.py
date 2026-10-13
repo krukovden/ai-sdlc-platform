@@ -293,14 +293,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     planning = load_planning()
-    board_module = planning.load_board()
-    profile, _, board = board_module.open_board()
-
+    # The local refusal comes first: a plan that is not validated cannot be
+    # published, and saying so must not depend on having a board credential.
     session = planning.load_session(args.id)
     if session["state"] not in ("VALIDATED", "BRANCHED", "PUBLISHED"):
         fail(EXIT.CONFLICT, f"the session for {args.id} is in {session['state']}; publication "
                 "needs a validated plan. Run: planning.py validate")
     plan = planning.load_plan(session)
+
+    board_module = planning.load_board()
+    profile, _, board = board_module.open_board()
 
     result = publish(board, profile, session, plan, planning,
                      remote=args.remote, base=args.base, dry_run=args.dry_run)
