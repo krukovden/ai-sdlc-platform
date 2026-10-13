@@ -151,7 +151,7 @@ class CatalogStates(AdapterStates):
         if BUCKETS.index(current) >= BUCKETS.index(bucket):
             return {"moved": False, "bucket": current}
         card = self.expect(board, identifier, run, owner)
-        if any(str(tag).startswith(lease.tags.TAG_PREFIX) for tag in card.get("tags") or []):
+        if any(_fold(tag).startswith(lease.tags.TAG_PREFIX) for tag in card.get("tags") or []):
             return AdapterStates.move(self, board, identifier, bucket, evidence, run,
                                       owner=owner)
         # The catalog writes through its own process, past the fenced board, and

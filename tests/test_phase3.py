@@ -1302,9 +1302,16 @@ class FencingTests(Phase3TestCase):
         self.assertEqual(calls, [])
 
     def test_an_idp_tagged_card_uses_the_fenced_adapter_path_not_the_catalog(self):
+        # Azure DevOps keeps a tag's casing, and the owner parser folds it, so an
+        # IDP:owner tag is an owner tag too and must keep the card off the catalog.
+        for owner_tag in ("idp:owner:run-1/w1", "IDP:owner:run-1/w1"):
+            with self.subTest(owner_tag=owner_tag):
+                self.catalog_race(owner_tag)
+
+    def catalog_race(self, owner_tag):
         from fakeboard import FakeBoard
         board = FakeBoard(profile=PROFILE)
-        board.add_card("5", tags_=["idp:owner:run-1/w1"], kind="pbi")
+        board.add_card("5", tags_=[owner_tag], kind="pbi")
         calls = []
 
         def replacement_owner(_card):
