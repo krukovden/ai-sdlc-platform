@@ -1,7 +1,7 @@
 {
   "name": "ai-sdlc-platform",
   "description": "AI SDLC Platform skills and shared Python tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "krukovden"
   },
