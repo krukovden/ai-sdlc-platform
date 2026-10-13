@@ -360,6 +360,41 @@ class SessionOutcomeTests(RunnerTestCase):
         attempts = lease.events(board.list_comments(FEATURE), run.ATTEMPT)
         self.assertEqual([a["cause"] for a in attempts], ["crash"])
 
+    def test_a_design_limit_exhausts_that_choice_before_the_card_is_paused(self):
+        board = new_board()
+        profile = {"roles": {"design": ["claude:opus", "codex:gpt-5"],
+                             "worker": ["codex:gpt-5"],
+                             "review": ["copilot:gpt-4.1"]}}
+        executor = ScriptedExecutor(lambda *a: {"limit": "rate_limit"},
+                                    executors_profile=profile)
+        code = self.runner(board, executor=executor).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.HANDOFF)
+        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertFalse(executor.resolver.available(run.executors.Choice("claude", "opus")))
+        self.assertEqual(str(executor.resolve("design")), "codex:gpt-5")
+        self.assertEqual(self.slept, [])
+
+    def test_a_design_limit_with_nothing_left_waits_before_pausing(self):
+        board = new_board()
+
+        class Spent(ScriptedExecutor):
+            def exhaust(self, choice):
+                super().exhaust(choice)
+                self._spent = True
+
+            def resolve(self, role, author=None, busy=None):
+                if getattr(self, "_spent", False):
+                    raise run.executors.ResolutionError(
+                        "no agent can fill the role 'design'", "wait for a limit to reset")
+                return super().resolve(role, author=author, busy=busy)
+
+        executor = Spent(lambda *a: {"limit": "rate_limit"})
+        code = self.runner(board, executor=executor).run_feature(FEATURE)
+        self.assertEqual(code, EXIT.HANDOFF)
+        self.assertEqual(self.slept, list(run.INFRA_BACKOFF))
+        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertFalse(lease.events(board.list_comments(FEATURE), run.ATTEMPT))
+
     def test_a_rate_limit_pauses_the_card_for_any_run_to_take(self):
         board = new_board()
         code = self.runner(board, lambda *a: {"limit": "rate_limit"}).run_feature(FEATURE)

@@ -508,6 +508,7 @@ class Runner:
                     return EXIT.REFUSED
                 # HANDOFF: a crash, a cliff, or context running out.
                 if last.get("crashed") and last.get("limit"):
+                    self.exhaust_design(last)
                     return self.pause(feature, f"the {last.get('agent')} session hit "
                                                f"{last.get('limit')}")
                 if last.get("crashed") or not self.design_progressed(feature, round_):
@@ -582,6 +583,23 @@ class Runner:
                               "a fresh session continues from its state.",
                          phase="design", round=round_, digest=digest, run=self.run_id)
         return True
+
+    def exhaust_design(self, last):
+        """The choice that hit a usage limit is done for this run.
+
+        The next resolution takes the next entry, which is how agent mode moves
+        from Claude to Codex instead of claiming the same paused card again.
+        When nothing remains, wait out the infrastructure backoff before the
+        pause: a fresh probe in the same breath would launch the limited agent
+        again and starve every other card.
+        """
+        if last.get("agent"):
+            self.executor.exhaust(executors.Choice(last.get("agent"), last.get("model")))
+        try:
+            self.executor.resolve("design")
+        except executors.ResolutionError:
+            for delay in INFRA_BACKOFF:
+                self.sleep(delay)
 
     def _supervision_released(self, feature):
         """True when stop may pause: no worker is unaccounted for, or it has exited."""
