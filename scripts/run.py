@@ -460,6 +460,34 @@ class Runner:
             reviewed = {r.get("sha256") for r in reviews}
             round_ = len(reviews)
             attempts = len(lease.events(comments, ATTEMPT, phase="design", round=round_))
+            if (self.executor.last or {}).get("unsettled"):
+                stop = self.stopping(feature)
+                if stop and self._supervision_released(feature):
+                    return self.pause(feature, stop)
+                code = self.reconnect_design(feature, base, feedback)
+                last = self.executor.last or {}
+                if last.get("unsettled"):
+                    self.sleep(INFRA_BACKOFF[0])
+                    continue
+                if code == EXIT.DONE:
+                    feedback = None
+                    continue
+                if code == EXIT.BLOCKED:
+                    return self.block(feature, last.get("reason") or "the design session "
+                                               "asked for a human")
+                if code == EXIT.REFUSED:
+                    tags.release(self.board, feature, self.run_id)
+                    self.say(f"{feature}: the design session refused: {last.get('reason')}")
+                    return EXIT.REFUSED
+                if last.get("crashed") and last.get("limit"):
+                    self.exhaust_design(last)
+                    return self.pause(feature, f"the {last.get('agent')} session hit "
+                                               f"{last.get('limit')}")
+                if last.get("crashed") or not self.design_progressed(feature, round_):
+                    cause = "crash" if last.get("crashed") else "handoff-without-progress"
+                    self.attempt(feature, round_, attempts + 1, cause,
+                                 last.get("reason") or cause)
+                continue
 
             candidate = None if feedback else self.design_candidate(feature, reviewed)
             if candidate is None:
@@ -470,10 +498,7 @@ class Runner:
                 stop = self.stopping(feature)
                 if stop and self._supervision_released(feature):
                     return self.pause(feature, stop)
-                if (self.executor.last or {}).get("unsettled"):
-                    code = self.reconnect_design(feature, base, feedback)
-                else:
-                    code = self.design_session(feature, base, feedback)
+                code = self.design_session(feature, base, feedback)
                 last = self.executor.last or {}
                 if last.get("unsettled"):
                     # The worker may still be editing. Not an attempt, and not a pause:
