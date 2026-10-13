@@ -46,6 +46,7 @@ twice changes nothing the second time.
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 
@@ -936,6 +937,8 @@ class Integration:
             post_change = set(blueprint.area_files(wt.path))
             product = [p for p in feature_changed if not p.startswith(DIRECTORY + "/")
                        and not p.startswith(plans.PLAN_DIR + "/")
+                       and not p.startswith("docs/")
+                       and not p.startswith("tests/")
                        and not p.startswith(".idp/")]
             all_blueprints = sorted(str(p.relative_to(wt.path)) for p in post_change)
             if product and not changed:
@@ -957,7 +960,7 @@ class Integration:
             files = [wt.path / p for p in all_blueprints]
             for name, found in blueprint.check(files, wt.path).items():
                 problems += found
-            if product and not changed:
+            if product:
                 covered = {path: False for path in product}
                 for path in all_blueprints:
                     text = (wt.path / path).read_text(encoding="utf-8")
@@ -1165,12 +1168,31 @@ def blueprint_module():
 
 
 def covers_blueprint(text, product_path):
-    current = Path(product_path)
-    markers = [product_path]
-    while True:
-        parent = current.parent.as_posix()
-        if not parent or parent == ".":
-            break
-        markers.append(parent.rstrip("/") + "/")
-        current = current.parent
-    return any(marker in text for marker in markers)
+    def normalize(target):
+        cleaned = target.split("#", 1)[0].split("?", 1)[0].strip()
+        while cleaned.startswith("../"):
+            cleaned = cleaned[3:]
+        while cleaned.startswith("./"):
+            cleaned = cleaned[2:]
+        return cleaned
+
+    def covers(ref):
+        ref = normalize(ref)
+        if not ref:
+            return False
+        if ref.endswith("/"):
+            return product_path.startswith(ref)
+        return ref == product_path
+
+    refs = []
+    for label, target in re.findall(r"\[([^\]]+)\]\(([^)\s]+)\)", text):
+        if label.strip().casefold() == "code":
+            refs.append(target)
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) >= 3 and cells[1] not in ("Code", "--"):
+            refs.append(cells[1])
+    return any(covers(ref) for ref in refs)

@@ -720,6 +720,29 @@ class BugTests(Phase3TestCase):
         self.assertFalse(world.events(BUG, lease.BLOCK))
         self.assertEqual(world.remote_file(FEATURE_BRANCH, "tests/bug_900.sh"), test)
 
+    def test_red_witness_cannot_rewrite_the_already_modified_regression_test(self):
+        world = self.world_with_bug(description="VALUE is missing from src/900.py.",
+                                    rule=BUG_RULE)
+        target = world.repo / "tests" / "bug_900.sh"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("true\n", encoding="utf-8")
+        git(world.repo, "add", "-A")
+        git(world.repo, "commit", "-q", "-m", "seed an old regression test")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        test = (
+            "if grep -q 'VALUE = 1' src/900.py; then\n"
+            "  exit 0\n"
+            "fi\n"
+            "printf 'exit 1\\n' > tests/bug_900.sh\n"
+            "exit 1\n"
+        )
+        world.behaviors[BUG] = [ok(extra={"tests/bug_900.sh": test})]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertNotEqual(world.board.cards[BUG]["status"], "Resolved")
+        reason = world.events(BUG, lease.BLOCK)[-1]["reason"]
+        self.assertIn("changed tracked files", reason)
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "src/900.py"))
+
     def test_no_diff_may_touch_a_pinned_plan_file(self):
         self.assertEqual(fin.protected_stem("docs/plans/IDE-88.bug-900.json"),
                          "docs/plans/IDE-88.")
@@ -1380,6 +1403,32 @@ class JournalUploadTests(unittest.TestCase):
             self.assertIn("Second paragraph contains the decision.", content)
             self.assertIn("Second paragraph contains the decision.", path.read_text(
                 encoding="utf-8"))
+
+    def test_stale_machine_merge_does_not_duplicate_unchanged_entries(self):
+        from fakeboard import FakeBoard
+        with tempfile.TemporaryDirectory() as tmp:
+            board = FakeBoard(profile=PROFILE)
+            title = run.memory.feature_file(FEATURE, "history")
+            seed = f"# {FEATURE} — feature journal\n\n## Development\n\n- first\n"
+            board.attach_document(title, seed, identifier=FEATURE)
+
+            path_a = Path(tmp) / "a.md"
+            path_a.write_text(seed, encoding="utf-8")
+            journal_a = phase3.journal.Journal(board, FEATURE, path_a)
+            journal_a.add("second")
+            journal_a.upload()
+
+            path_b = Path(tmp) / "b.md"
+            path_b.write_text(seed, encoding="utf-8")
+            journal_b = phase3.journal.Journal(board, FEATURE, path_b)
+            journal_b.add("third")
+            journal_b.upload()
+
+            content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
+            self.assertEqual(content.count("- first"), 1)
+            self.assertIn("- second", content)
+            self.assertIn("- third", content)
+            self.assertEqual(path_b.read_text(encoding="utf-8").count("- first"), 1)
 
 
 class RecoveryTests(unittest.TestCase):

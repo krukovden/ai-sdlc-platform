@@ -48,13 +48,13 @@ class Journal:
         for line in str(text or "").splitlines():
             if line.startswith("- "):
                 if current:
-                    found.append("\n".join(current))
+                    found.append("\n".join(current).rstrip())
                 current = [line]
                 continue
             if current:
                 current.append(line)
         if current:
-            found.append("\n".join(current))
+            found.append("\n".join(current).rstrip())
         return found
 
     def _merged(self, remote, local):

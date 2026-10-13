@@ -595,6 +595,41 @@ class DocumenterTests(IntegrationTestCase):
         self.assertIn("src/a.py", attempts[0]["text"])
         self.assertIn("no area blueprint covers", attempts[0]["text"])
 
+    def test_editing_a_valid_unrelated_blueprint_still_requires_area_coverage(self):
+        world = self.world()
+        other_text = """# Other area
+
+This area documents the repository docs rather than the product code under src/.
+
+## Requirements
+
+### REQ-DOCS-001 Documentation stays present
+Readers can open the top-level documents without generating them.
+- [x] AC-1: the repository keeps its docs — [code](../../README.md) [test](../../README.md)
+
+## Architecture
+
+The docs live outside src/ and are not the product modules.
+
+| Requirement | Code | Role |
+| -- | -- | -- |
+| REQ-DOCS-001 | docs/ | documentation |
+"""
+        other = world.repo / "docs" / "blueprint" / "other.md"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text(other_text, encoding="utf-8")
+        git(world.repo, "add", "-A")
+        git(world.repo, "commit", "-q", "-m", "docs: unrelated area")
+        git(world.repo, "push", "-q", "origin", "HEAD:main")
+        world.documenter = lambda world, worktree: write_blueprint(
+            world, worktree, text=other_text.replace("Other area", "Other area updated"),
+            name="other.md")
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        attempts = [e for e in with_text(world, "attempt")
+                    if e["phase"].startswith("documenter-")]
+        self.assertIn("src/a.py", attempts[0]["text"])
+        self.assertIn("no area blueprint covers", attempts[0]["text"])
+
 
 def seed_blueprint_on_main(world):
     """An area already documented before the feature: its blueprint on main."""

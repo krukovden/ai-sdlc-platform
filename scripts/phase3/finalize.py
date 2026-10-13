@@ -28,6 +28,7 @@ observation, the second a human's judgement for QA. Only `{command}` witnesses
 prove anything here, so a PBI with none of them has zero witnesses.
 """
 
+import hashlib
 import subprocess
 import time
 
@@ -119,6 +120,19 @@ def _remaining(deadline, now, timeout):
     if left <= 0:
         return 0, True
     return min(timeout, left), left < timeout
+
+
+def _status_paths(raw):
+    paths, entries = [], iter(str(raw or "").split("\0"))
+    for item in entries:
+        if len(item) < 4:
+            continue
+        paths.append(item[3:])
+        if item[0] in "RC":
+            source = next(entries, None)
+            if item[0] == "R" and source:
+                paths.append(source)
+    return [p for p in paths if p]
 
 
 class Finalizer:
@@ -264,7 +278,7 @@ class Finalizer:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content or "", encoding="utf-8")
             probe = type(wt)(target)
-            baseline = self.snapshot(probe, feature_sha)
+            baseline = self.snapshot(probe, feature_sha, [test])
             for ac, _, witness in commands:
                 record = self.execute(probe, ac, witness["command"], int(witness["timeout"]),
                                       feature_sha, deadline=deadline, baseline=baseline)
@@ -369,7 +383,7 @@ class Finalizer:
                            records=[record])
         return None
 
-    def snapshot(self, wt, sha):
+    def snapshot(self, wt, sha, include_paths=None):
         head = sha
         reader = getattr(wt, "head", None)
         if callable(reader):
@@ -379,17 +393,35 @@ class Finalizer:
                 head = None
         runner = getattr(wt, "run", None)
         text = ""
+        names = []
+        indexed = ""
+        files = {}
         if callable(runner):
             try:
                 status = wt.run("status", "--porcelain", "--untracked-files=no", check=False)
             except GitError:
                 text = None
             else:
-                text = (status.stdout if hasattr(status, "stdout") else status).strip()
-        return {"head": head, "status": text}
+                raw = status.stdout if hasattr(status, "stdout") else status
+                text = str(raw or "")
+                names = sorted(set(_status_paths(text)) | set(include_paths or []))
+                if names:
+                    listing = wt.run("ls-files", "-s", "--", *names, check=False)
+                    indexed = listing.stdout if hasattr(listing, "stdout") else listing
+                for rel in names:
+                    target = wt.path / rel
+                    if not target.exists():
+                        files[rel] = None
+                        continue
+                    if target.is_dir():
+                        files[rel] = "dir"
+                        continue
+                    files[rel] = hashlib.sha256(target.read_bytes()).hexdigest()
+        return {"head": head, "status": text, "index": str(indexed or "").strip(),
+                "files": files}
 
     def mutated(self, wt, baseline):
-        return self.snapshot(wt, baseline.get("head")) != baseline
+        return self.snapshot(wt, baseline.get("head"), baseline.get("files", {}).keys()) != baseline
 
     # -- the whole of it ----------------------------------------------------
 
