@@ -6,6 +6,7 @@ Here every one of those is a configuration failure that names the fix.
 """
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,6 +177,17 @@ class ThisRepositoryTests(ScriptTestCase):
         raw = json.loads((REPO_ROOT / ".idp" / "profile.json").read_text(encoding="utf-8"))
         self.assertEqual(raw.get("schema_version"), board.PROFILE_VERSION)
         board.check_profile(raw)
+
+    def test_the_runner_example_profile_validates_against_the_live_schema(self):
+        text = (REPO_ROOT / "docs" / "runner.md").read_text(encoding="utf-8")
+        match = re.search(
+            r"<!-- runner:example-profile:start -->\s*```json\n(.*?)\n```\s*"
+            r"<!-- runner:example-profile:end -->",
+            text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, "docs/runner.md must carry the marked example profile")
+        board.check_profile(json.loads(match.group(1)))
 
     def test_the_schema_is_closed_everywhere(self):
         schema = json.loads(board.PROFILE_SCHEMA.read_text(encoding="utf-8"))

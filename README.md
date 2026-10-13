@@ -19,15 +19,20 @@ npx git+https://github.com/krukovden/ai-sdlc-platform install --target all --glo
 
 Use `--target claude|copilot|orca` for one host, or `--local` for this project. The same command supports `update`, `check`, `status`, `uninstall` and `list`. Updates show changes and ask before overwriting local edits; `--keep-local` preserves them and `--overwrite` explicitly replaces them. `--yes` alone never discards edits.
 
-Alternatively, add the marketplace with `/plugin marketplace add https://github.com/krukovden/ai-sdlc-platform` in Claude Code or `copilot plugin marketplace add https://github.com/krukovden/ai-sdlc-platform`, then install `ai-sdlc-platform@ai-sdlc-platform` through that plugin manager.
+Marketplace install and update commands for Claude Code and GitHub Copilot CLI are
+listed in [docs/install.md](docs/install.md).
 
 [Installation guide](docs/install.md) covers payloads, receipts, release checks, plugin updates, removal, and the separate `python3 scripts/install.py` development-checkout launcher.
 
 ## The chain
 
-**Feature → ADR → PBI.** The Product Owner creates the feature; the architect turns it into an ADR; the human approves it and the ADR is attached to the feature as a file; the planner breaks the approved ADR into PBIs; agents implement them in parallel, coordinating through the board and never with each other.
+**Feature -> ADR -> PBI.** The Product Owner creates the Feature during task
+formation; the architect turns it into an ADR; the human approves it on the card;
+the planner breaks it into PBIs; one `run.py` owner carries the Feature through
+planning, building, integration, the documenter and the hand-off to QA.
 
-Three gates, in three different places: the feature is approved locally, the ADR on the card, the global pull request in git.
+There are two human gates in the revision: design approval at `idp:design-review`,
+and QA acceptance together with the merge into `main`.
 
 ## What works today
 
@@ -41,7 +46,7 @@ python3 scripts/board.py memory check                     # closed cards with no
 python3 scripts/blueprint.py check --root <product repo>  # area blueprints against the template
 python3 scripts/board.py sync                             # regenerate the offline mirror
 python3 scripts/install.py --dry-run                      # what installing would do
-python3 -m unittest discover tests                        # 276 tests, none touch the network
+python3 -m unittest discover -s tests                    # full Python suite, none touch the network
 ```
 
 The development installer links `idp` to this checkout; `git pull` updates that launcher. The packaged installer above uses a versioned payload and tracked updates. Each product keeps its own `.idp/profile.json`.
@@ -49,6 +54,25 @@ The development installer links `idp` to this checkout; `git pull` updates that 
 `board.py` is the front door and knows no tracker by name; `sync_linear_state.py` is the Linear adapter. A profile that says `"board": "azure-devops"` looks for `scripts/sync_azure_devops_state.py` and refuses with a clear reason if it is missing. Adding a tracker means writing one adapter.
 
 The profile lives in `.idp/profile.json` and is committed. Secrets are not: it records the *path* to a token, never the token.
+
+## Run the pipeline
+
+The runner is `scripts/run.py`. It claims a Feature, starts one model session per
+unit of work through executor roles, validates the result itself, and hands the
+card to the next phase or the human gate.
+
+```bash
+python3 scripts/run.py IDE-88
+python3 scripts/run.py --agent
+python3 scripts/run.py stop
+python3 scripts/run.py takeover IDE-88
+python3 scripts/run.py reap
+```
+
+Use `run.py <feature>` for one card, `--agent` for unattended work, `stop` to end
+cleanly after the task in flight, `takeover` to claim a dead run's card without
+waiting out the lease, and `reap` to release stale leases. The executor roles,
+phase flow, profile keys and exit codes are documented in [docs/runner.md](docs/runner.md).
 
 ## What is not built yet
 
