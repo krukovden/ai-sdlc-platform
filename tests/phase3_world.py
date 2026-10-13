@@ -175,6 +175,7 @@ class World:
         self.plan = plan or default_plan()
         self.route = route
         self.skip_finalize = False
+        self.profile = dict(PROFILE)
         self.behaviors = {}
         self.findings = {}
         self.sessions = {}
@@ -226,7 +227,8 @@ class World:
     def context(self, context):
         directory = Path(context["IDP_CONTEXT_DIR"])
         card = json.loads((directory / "card.json").read_text(encoding="utf-8"))
-        key = shape.read_meta(card["pbi"].get("description")).get("key")
+        key = shape.read_meta(card["pbi"].get("description")).get("key") or \
+            str(card["pbi"]["identifier"])
         return directory, card, key
 
     def worker_session(self, card, worktree, context):
@@ -241,7 +243,7 @@ class World:
     def review_session(self, card, worktree, context):
         directory = Path(context["IDP_CONTEXT_DIR"])
         key = shape.read_meta(
-            (directory / "pbi.md").read_text(encoding="utf-8")).get("key")
+            (directory / "pbi.md").read_text(encoding="utf-8")).get("key") or card
         script = self.findings.get(key)
         found = []
         if script:
@@ -277,7 +279,7 @@ class World:
             path.mkdir(parents=True, exist_ok=True)
             return path
 
-        return run.Runner(self.board, PROFILE, self.executor_, run_id, repo=self.repo,
+        return run.Runner(self.board, self.profile, self.executor_, run_id, repo=self.repo,
                           worktree_for=worktree_for, base_sha=lambda: "unused",
                           design=design, heartbeat_minutes=0, out=out or io.StringIO(),
                           development=development)

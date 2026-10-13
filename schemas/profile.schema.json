@@ -315,6 +315,30 @@
           "description": "A command run at finalize in the PBI's worktree, with the witnesses' allowlisted environment; a non-zero exit is a defect.",
           "type": "string",
           "minLength": 1
+        },
+        "bug_witness": {
+          "description": "How a Bug filed under a Feature gets its witness when its card states none: the regression test the worker must add failing first. `{id}` and `{slug}` are the Bug's id.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "timeout"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "test": {
+              "description": "The test file the worker adds; finalize requires it in the diff and failing without the fix.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     }

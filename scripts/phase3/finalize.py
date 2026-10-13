@@ -79,6 +79,12 @@ class Outcome:
         return f"Outcome({self.kind or 'pass'}, {self.detail!r})"
 
 
+def protected_stem(path):
+    """`docs/plans/IDE-88.` for `docs/plans/IDE-88.plan.json` or `….bug-7.json`."""
+    head, _, name = str(path).rpartition("/")
+    return f"{head}/{name.split('.', 1)[0]}." if head else f"{name.split('.', 1)[0]}."
+
+
 def witness_problem(ac, witness):
     """What is wrong with one witness against plan.schema's three rungs, or None."""
     if not isinstance(ac, str) or not ac.strip():
@@ -164,9 +170,11 @@ class Finalizer:
             plan = plans.read_pinned(wt, pinned)
         except plans.PlanError as exc:
             return Outcome(MALFORMED, f"the pinned plan cannot be read: {exc}"), []
-        if pinned["path"] in self.changed(wt, feature_sha, merged):
-            return Outcome(DEFECT, f"the PBI's diff touches {pinned['path']}, the plan "
-                                   "finalize reads its witnesses from; revert that change"), []
+        stem = protected_stem(pinned["path"])
+        touched = [p for p in self.changed(wt, feature_sha, merged) if p.startswith(stem)]
+        if touched:
+            return Outcome(DEFECT, f"the diff touches {', '.join(touched)}: the pinned plan "
+                                   "files finalize reads witnesses from; revert that change"), []
         entry = plans.entry(plan, key)
         if entry is None:
             return Outcome(MALFORMED, f"the pinned plan has no PBI with key '{key}', so it "
@@ -184,6 +192,11 @@ class Finalizer:
             return Outcome(MALFORMED, f"PBI '{key}' has zero runnable witnesses; zero "
                                       "witnesses is a failure, not a pass"), \
                 [self.record_static(c, merged) for c in criteria]
+        regression = entry.get("regression_test")
+        if regression and regression not in self.changed(wt, feature_sha, merged):
+            return Outcome(DEFECT, f"the regression test {regression} is not in the diff: a "
+                                   "Bug is fixed failing test first (W2) — add the test that "
+                                   "reproduces it"), []
         worst = sum(int(c[2].get("timeout") or 0) for c in commands)
         if self.scanner:
             worst += SCANNER_TIMEOUT
@@ -192,6 +205,10 @@ class Finalizer:
                                    f"budget is {self.budget} s; the plan's witnesses are "
                                    "wrong, not the code"), []
 
+        if regression:
+            red = self.red(wt, feature_sha, merged, regression, commands)
+            if red is not None:
+                return red, []
         records, failure = [], None
         for criterion in criteria:
             witness = criterion[2]
@@ -209,6 +226,37 @@ class Finalizer:
                 failure = Outcome(DEFECT, f"{record['ac']} failed: `{record['command']}` "
                                           f"exited {record['exit']}\n{record['tail']}")
         return failure, records
+
+    def red(self, wt, feature_sha, merged, test, commands):
+        """W2, proved: the Bug's witness fails on the feature head with only its test added.
+
+        A regression test that passes without the fix does not reproduce the Bug.
+        Returns an outcome when it is not red, None when it is.
+        """
+        target = wt.path.parent / f"{wt.path.name}-red"
+        wt.run("worktree", "remove", "--force", str(target), check=False)
+        wt.run("worktree", "add", "--detach", str(target), feature_sha)
+        try:
+            content = wt.show(merged, test)
+            path = target / test
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content or "", encoding="utf-8")
+            probe = type(wt)(target)
+            for ac, _, witness in commands:
+                record = self.execute(probe, ac, witness["command"], int(witness["timeout"]),
+                                      feature_sha)
+                if record["timed_out"]:
+                    return Outcome(WITNESS_TIMEOUT, f"{ac} did not finish in "
+                                                    f"{witness['timeout']} s on the feature "
+                                                    "head without the fix")
+                if record["exit"] == EXIT.OK:
+                    return Outcome(DEFECT, f"the regression test {test} passes on the feature "
+                                           f"head without the fix ({ac}: `{record['command']}` "
+                                           "exited 0): it does not reproduce the Bug. Make it "
+                                           "fail first")
+            return None
+        finally:
+            wt.run("worktree", "remove", "--force", str(target), check=False)
 
     def execute(self, wt, ac, command, timeout, sha):
         started = self.clock()
@@ -242,6 +290,8 @@ class Finalizer:
         return self._changed[1]
 
     def outside(self, wt, feature_sha, merged, declared):
+        if not declared:
+            return []                    # an unplanned item declared nothing to leave
         planning = planning_module()
         changed = self.changed(wt, feature_sha, merged)
         return [path for path in changed

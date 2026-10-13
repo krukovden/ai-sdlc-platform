@@ -48,7 +48,7 @@ from .common import EXIT, event_text, flat, handoff_module, lease, memory, \
 from . import finalize as fin
 from . import plan as plans
 from . import review as reviews
-from . import shape, states
+from . import bugs, shape, states
 from . import merge as merges
 from .gitops import Git, GitError, local_excludes, mention as mention_of, \
     repository_name, slug
@@ -113,6 +113,13 @@ Finish with exactly one of:
     python3 {run_py} report --code 3 --reason "<why>"                this PBI is not yours to build
     python3 {run_py} report --code 4 --reason "<where you stopped>"  context running out; handoff.md pushed
 {feedback}"""
+
+
+BUG_NOTE = """
+This is a Bug. Fix it failing test first: write {test} so that it reproduces the Bug,
+run it and see it fail for the right reason, commit and push it, then fix the code until
+it and every command in witnesses.json pass. Finalize runs the witness once on the feature
+branch without your fix, and a test that passes there does not reproduce the Bug."""
 
 
 class ThreadPool:
@@ -377,7 +384,12 @@ class Development:
 
     def commit_plan(self, feature, text, base):
         """The plan on the feature branch, one commit; the commit that carries it."""
-        path = plans.plan_path(feature)
+        return self.commit_file(plans.plan_path(feature), text,
+                                f"{mention_of(feature)}: pin the plan for {feature}", base,
+                                f"{feature}-plan")
+
+    def commit_file(self, path, text, message, base, scratch):
+        """One runner-owned file on the feature branch; the commit that carries it."""
         for _ in range(MAX_RETESTS):
             self.git.fetch()
             tip = self.git.tracking(self.feature_branch)
@@ -387,14 +399,14 @@ class Development:
                 continue
             if self.git.show(tip, path) == text:
                 return tip
-            wt = self.git.worktree(self.home / f"{feature}-plan", sha=tip)
+            wt = self.git.worktree(self.home / scratch, sha=tip)
             target = wt.path / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
-            sha = wt.commit_all(f"{mention_of(feature)}: pin the plan for {feature}", [path])
+            sha = wt.commit_all(message, [path])
             if sha and self.git.push(sha, self.feature_branch, expect=tip):
                 return sha
-        raise self.runner.error(EXIT.BLOCKED, f"the plan could not be committed to "
+        raise self.runner.error(EXIT.BLOCKED, f"{path} could not be committed to "
                                               f"{self.feature_branch}: it kept moving",
                                 "re-run once nobody else is pushing to the feature branch")
 
@@ -540,6 +552,8 @@ class Development:
         claim = self.claim(item)
         if claim is None:
             return
+        if not self.ensure_bug_plan(item):
+            return
         pbi = item["id"]
         wt = self.worktree(claim, pbi)
         pr = self.event(pbi, PULL_REQUEST, branch=claim["branch"])
@@ -577,7 +591,8 @@ class Development:
         context.mkdir(parents=True, exist_ok=True)
         feature = self.board.get_issue(self.feature)
         issue = self.board.get_issue(pbi)
-        entry = plans.entry(self.plan, item["key"])
+        pinned, key = self.witness_source(item)
+        entry = plans.entry(plans.read_pinned(self.git, pinned), key) if pinned else None
         (context / "card.json").write_text(json.dumps(
             {"pbi": issue, "feature": feature, "branch": claim["branch"],
              "feature_branch": self.feature_branch,
@@ -614,9 +629,13 @@ class Development:
             pbi=pbi, feature=self.feature, skill=self.runner.repo_root / "skills" /
             "development" / "SKILL.md", context=context, branch=claim["branch"],
             feature_branch=self.feature_branch, mention=mention_of(pbi),
-            plan_path=plans.plan_path(self.feature), run_py=self.runner.run_py,
-            feedback=(f"\nThe runner sent this PBI back. Read {context}/feedback.md "
-                      "first and fix exactly that.") if feedback else "")
+            plan_path=bugs.protected_prefix(self.feature) + "*", run_py=self.runner.run_py,
+            feedback=((f"\nThe runner sent this PBI back. Read {context}/feedback.md "
+                       "first and fix exactly that.") if feedback else "")
+            + (BUG_NOTE.format(test=(plans.entry(plans.read_pinned(
+                self.git, self.witness_source(item)[0]), pbi) or {}).get("regression_test")
+                or "a test of your own")
+               if item.get("planned") is None else ""))
         choice = claim["choice"]
         self.busy[choice.agent] = self.busy.get(choice.agent, 0) + 1
         self.running[pbi] = {"item": item, "claim": claim, "wt": wt, "choice": choice,
@@ -739,6 +758,8 @@ class Development:
                          text=f"The worker refused this PBI: {reason}", reason=flat(reason))
 
     def block_pbi(self, pbi, reason):
+        # The reason rides in the event marker, which cannot carry a brace.
+        reason = flat(reason)
         lease.block(self.board, pbi, self.run_id, reason)
         tags.release(self.board, pbi, self.run_id)
         self.journal.add(f"{pbi} blocked: {reason.splitlines()[0]}")
@@ -747,7 +768,33 @@ class Development:
     # -- finalize, review, merge -------------------------------------------------
 
     def declared(self, item):
-        return (item.get("planned") or {}).get("paths") or []
+        return (item.get("planned") or {}).get("paths") or None
+
+    def witness_source(self, item):
+        """(pinned record, key): the plan for a planned PBI, the addendum for a Bug."""
+        if item.get("planned") is not None:
+            return self.pin, item["key"]
+        return bugs.pinned(self.board, item["id"]), item["id"]
+
+    def ensure_bug_plan(self, item):
+        """A Bug's witnesses, committed and pinned before its worker starts. False: blocked."""
+        if item.get("planned") is not None or bugs.pinned(self.board, item["id"]):
+            return True
+        bug = item["id"]
+        entry, problem = bugs.entry(self.board.get_issue(bug),
+                                    self.profile.get("development") or {})
+        if entry is None:
+            self.block_pbi(bug, problem)
+            return False
+        text = bugs.addendum_text(entry)
+        path = bugs.addendum_path(self.feature, bug)
+        base = self.git.tracking(self.feature_branch)
+        commit = self.commit_file(path, text, f"{mention_of(bug)}: pin the witnesses of "
+                                              f"Bug {bug}", base, f"{bug}-bug-plan")
+        bugs.pin(self.board, bug, text, commit, path, self.feature_branch, self.run_id)
+        self.journal.add(f"Bug {bug} {item['title']}: its witnesses are pinned at "
+                         f"`{commit[:12]}` ({path}).")
+        return True
 
     def finalize(self, item, claim, wt, retest_feature=None, pbi_sha=None):
         """Finalize with infrastructure retried, never counted. The outcome."""
@@ -755,13 +802,14 @@ class Development:
         for wait in (0,) + INFRA_BACKOFF:
             if wait:
                 self.sleep(wait)
+            pinned, key = self.witness_source(item)
             if retest_feature is None:
                 outcome = self.finalizer.finalize(
-                    wt, claim["branch"], self.feature_branch, self.pin, item["key"],
+                    wt, claim["branch"], self.feature_branch, pinned, key,
                     self.declared(item), mention_of(pbi))
             else:
                 outcome = self.finalizer.test(
-                    wt, claim["branch"], self.feature_branch, self.pin, item["key"],
+                    wt, claim["branch"], self.feature_branch, pinned, key,
                     self.declared(item), mention_of(pbi), pbi_sha,
                     feature_sha=retest_feature)
             if outcome.kind != fin.INFRA:
@@ -1120,6 +1168,7 @@ class Development:
                          phase=phase, n=n, cause=cause, run=self.run_id)
 
     def block_feature(self, reason):
+        reason = flat(reason)
         lease.block(self.board, self.feature, self.run_id, reason)
         if self.journal is not None:
             self.journal.add(f"Blocked: {reason}")

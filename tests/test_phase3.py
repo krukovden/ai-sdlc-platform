@@ -608,6 +608,97 @@ class TaskLifecycleTests(Phase3TestCase):
         self.assertEqual(world.events(second, "task-open")[0]["witnesses"], "AC-2")
 
 
+BUG = "900"
+BUG_WITH_WITNESS = """Reported by QA: src/900.py is missing, so VALUE cannot be read.
+
+- **AC-1** — src/900.py exposes VALUE = 1
+  Witness: {"command": "grep -q 'VALUE = 1' src/900.py", "timeout": 30}
+"""
+BUG_RULE = {"command": "sh tests/bug_{id}.sh", "timeout": 30, "test": "tests/bug_{id}.sh"}
+
+
+class BugTests(Phase3TestCase):
+    """Bugs filed under the Feature are built, from a pinned addendum, failing test first."""
+
+    def world_with_bug(self, description=BUG_WITH_WITNESS, rule=None):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.board.add_card(BUG, kind="bug", parent=FEATURE, title="[Bug] VALUE missing",
+                             description=description)
+        if rule:
+            world.profile = dict(world.profile, development={"bug_witness": rule})
+        return world
+
+    def test_a_bug_with_a_stated_witness_is_pinned_then_built_and_merged(self):
+        world = self.world_with_bug()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.board.cards[BUG]["status"], "Resolved")
+        pin = phase3.bugs.pinned(world.board, BUG)
+        self.assertEqual(pin["path"], f"docs/plans/{FEATURE}.bug-{BUG}.json")
+        text = git(world.remote, "show", f"{pin['commit']}:{pin['path']}") + "\n"
+        self.assertEqual(phase3.plan.digest(text), pin["sha256"])
+        witness = json.loads(text)["pbis"][0]["acceptance_criteria"][0]["witness"]
+        self.assertEqual(witness["command"], "grep -q 'VALUE = 1' src/900.py")
+        # The pin came before the worker: the claim, then the pin, then a session.
+        record = [d for d in world.board.attachments[BUG] if "Witness record" in d["title"]]
+        self.assertIn("grep -q 'VALUE = 1' src/900.py", record[0]["content"])
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "src/900.py"), "VALUE = 1\n")
+        before = world.board.snapshot()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.board.snapshot(), before)               # run twice: no change
+
+    def test_a_bug_with_no_witness_anywhere_is_blocked_before_any_worker(self):
+        world = self.world_with_bug(description="It is broken. Please fix.")
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
+        self.assertNotIn(BUG, world.sessions["worker"])
+        self.assertIn(tags.BLOCKED, world.board.cards[BUG]["tags"])
+        reason = world.events(BUG, lease.BLOCK)[-1]["reason"]
+        self.assertIn("zero witnesses", reason)
+        self.assertIn("FIX:", reason)
+        self.assertIsNone(phase3.bugs.pinned(world.board, BUG))
+        self.assertEqual(self.status(world, "a"), "Resolved")       # the rest still built
+
+    def test_the_regression_rule_demands_the_test_and_that_it_fails_without_the_fix(self):
+        world = self.world_with_bug(description="VALUE is missing from src/900.py.",
+                                    rule=BUG_RULE)
+        test = "grep -q 'VALUE = 1' src/900.py\n"
+        world.behaviors[BUG] = [
+            ok(),                                                   # a fix, no test
+            ok(extra={"tests/bug_900.sh": "true\n"}),               # a test that is never red
+            ok(extra={"tests/bug_900.sh": test})]                   # red without, green with
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        attempts = [e["text"] for e in phase3.common.events_with_text(world.board, BUG, orchestrator.ATTEMPT)]
+        self.assertEqual(len(attempts), 2)
+        self.assertIn("not in the diff", attempts[0])
+        self.assertIn("passes on the feature head without the fix", attempts[1])
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, "tests/bug_900.sh"), test)
+        prompt = [c["prompt"] for c in world.executor_.calls if c["card"] == BUG][0]
+        self.assertIn("failing test first", prompt)
+        self.assertIn("tests/bug_900.sh", prompt)
+
+    def test_no_diff_may_touch_a_pinned_plan_file(self):
+        self.assertEqual(fin.protected_stem("docs/plans/IDE-88.bug-900.json"),
+                         "docs/plans/IDE-88.")
+        self.assertEqual(fin.protected_stem("docs/plans/IDE-88.plan.json"), "docs/plans/IDE-88.")
+        world = self.world_with_bug()
+        plan_file = f"docs/plans/{FEATURE}.plan.json"
+
+        def reverts(w, worktree, key, branch, card):
+            git(worktree, "fetch", "-q", "origin")
+            git(worktree, "checkout", f"origin/{FEATURE_BRANCH}", "--", plan_file)
+            git(worktree, "commit", "-qam", f"revert the plan #{card}")
+            return ok()(w, worktree, key, branch, card)
+
+        world.behaviors[BUG] = [ok(extra={plan_file: "{}\n"}), reverts]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertIn("pinned plan files", phase3.common.events_with_text(world.board, BUG, orchestrator.ATTEMPT)[0]["text"])
+
+    def test_card_criteria_read_the_planners_own_form(self):
+        found = phase3.bugs.card_criteria(BUG_WITH_WITNESS)
+        self.assertEqual(found, [("AC-1", "src/900.py exposes VALUE = 1",
+                                  {"command": "grep -q 'VALUE = 1' src/900.py",
+                                   "timeout": 30})])
+
+
 class MergeTests(Phase3TestCase):
 
     def test_a_sibling_moving_the_head_is_retested_not_charged(self):
