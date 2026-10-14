@@ -66,7 +66,7 @@ from . import merge as merges
 from .gitops import Git, GitError, local_excludes, mention as mention_of, \
     repository_name, slug
 from .integration import Integration, amended_keys
-from .journal import Journal
+from .journal import Journal, journal_format
 
 MAX_ATTEMPTS = 3
 MAX_RETESTS = 5
@@ -284,8 +284,8 @@ class Development:
         self.board = lease.Fenced(lease.unfenced(self.board), feature, self.run_id)
         self.git.before_push = self.before_push
         base = self.runner.claim_fact(feature, "base") or base
-        self.journal = Journal(self.board, feature,
-                               self.home / f"{feature}-journal" / "journal.md")
+        self.journal = Journal(self.git, feature, issue.get("title"),
+                               self.home / f"{feature}-journal", self.feature_branch)
         with self.runner.heartbeat(feature):
             if self.runner_state().route_gate(route) == "verdict":
                 code = self.integration.verdict(base)
@@ -341,6 +341,7 @@ class Development:
                 code, text = self.plan_session(feature, route, base)
                 if code != EXIT.DONE:
                     return code
+            self.journal_design(feature, route, text)
             commit = self.commit_plan(feature, text, base)
             plans.pin(self.board, feature, text, commit, path, self.feature_branch,
                       self.run_id)
@@ -359,10 +360,31 @@ class Development:
                          + ", ".join(f"{k} → {ids[k]}" for k in cut)
                          + f"; the plan is pinned at `{first['commit'][:12]}` "
                            f"({first['sha256']}).")
-        if self.plan.get("notes"):
-            self.journal.add(f"Why this cut: {self.plan['notes']}")
-        self.journal.upload()
         return EXIT.DONE
+
+    def journal_design(self, feature, route, text):
+        """What the journal starts with, committed with the plan (IDE-155).
+
+        The approved bytes go to git with the code they designed, and the ADR's
+        lasting calls — its hard-to-reverse decisions and the critic objections
+        the architect overruled — become decision entries; so does the plan's cut.
+        """
+        today = time.strftime("%Y-%m-%d")
+        if route != "small-feature":
+            adr = self.adr_text(feature, route)
+            if adr:
+                self.journal.set_adr(adr)
+                for entry in journal_format.design_decisions(feature, adr, today):
+                    self.journal.decide(entry)
+        plan = json.loads(text)
+        if plan.get("notes"):
+            keys = [p["key"] for p in plan.get("pbis") or []]
+            self.journal.decide(journal_format.decision(
+                summary=f"The work is cut into {len(keys)} PBIs",
+                context="Planning: how to slice the Feature into backlog items",
+                decision_=", ".join(keys) or "no PBIs", rationale=plan["notes"],
+                alternative="not recorded by the planner", load_bearing=False,
+                source="planning", on=today))
 
     def todo_states(self):
         """The board's to-do state per work item kind, or None where the mover has none.
@@ -638,13 +660,24 @@ class Development:
             self.journal.add(text)
 
     def commit_plan(self, feature, text, base):
-        """The plan on the feature branch, one commit; the commit that carries it."""
-        return self.commit_file(plans.plan_path(feature), text,
-                                f"{mention_of(feature)}: pin the plan for {feature}", base,
-                                f"{feature}-plan")
+        """The plan on the feature branch, with the journal so far; the commit that carries it."""
+        def files(tip):
+            found = dict(self.journal.files(tip)) if self.journal is not None else {}
+            found[plans.plan_path(feature)] = text
+            return found
+        return self.commit_files(files, f"{mention_of(feature)}: pin the plan for {feature}",
+                                 base, f"{feature}-plan")
 
     def commit_file(self, path, text, message, base, scratch):
         """One runner-owned file on the feature branch; the commit that carries it."""
+        return self.commit_files(lambda tip: {path: text}, message, base, scratch)
+
+    def commit_files(self, make, message, base, scratch):
+        """Runner-owned files on the feature branch, one commit; the commit that carries them.
+
+        `make(tip)` answers what the files should hold on top of that tip, so a
+        retry after the branch moved merges with what moved it.
+        """
         for _ in range(MAX_RETESTS):
             self.git.fetch()
             tip = self.git.tracking(self.feature_branch)
@@ -652,17 +685,19 @@ class Development:
                 tip = base
             if tip is None:
                 continue
-            if self.git.show(tip, path) == text:
+            files = make(tip)
+            if all(self.git.show(tip, path) == text for path, text in files.items()):
                 return tip
             wt = self.git.worktree(self.home / scratch, sha=tip)
-            target = wt.path / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
-            sha = wt.commit_all(message, [path])
+            for path, text in files.items():
+                target = wt.path / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+            sha = wt.commit_all(message, list(files))
             if sha and self.git.push(sha, self.feature_branch, expect=tip):
                 return sha
-        raise self.runner.error(EXIT.BLOCKED, f"{path} could not be committed to "
-                                              f"{self.feature_branch}: it kept moving",
+        raise self.runner.error(EXIT.BLOCKED, f"the runner's files could not be committed "
+                                              f"to {self.feature_branch}: it kept moving",
                                 "re-run once nobody else is pushing to the feature branch")
 
     # -- 3.2 building ---------------------------------------------------------
@@ -1643,7 +1678,6 @@ class Development:
         for item in work:
             self.journal_merged(item)
         self.journal.add(f"Building done: {', '.join(done) or 'nothing'} merged.")
-        self.journal.upload()
         lease.post_event(self.board, feature, BUILT, f"{BUILT}:{feature}:{','.join(done)}",
                          text=f"Building (3.2) is done: {len(done)} item(s) merged into "
                               f"`{self.feature_branch}`. Integration (3.3) runs next.",
@@ -1669,7 +1703,6 @@ class Development:
         lease.block(self.board, self.feature, self.run_id, reason)
         if self.journal is not None:
             self.journal.add(f"Blocked: {reason}")
-            self.journal.upload()
         tags.release(self.board, self.feature, self.run_id)
         self.say(f"{self.feature}: blocked — {reason}")
         return EXIT.BLOCKED
@@ -1705,7 +1738,6 @@ class Development:
                              run=self.run_id, reason=flat(reason))
         if self.journal is not None:
             self.journal.add(f"Stopped: {reason}.")
-            self.journal.upload()
         return self.pause_card(feature, f"stopped: {reason}")
 
     def launch_paused(self, card, phase, last):

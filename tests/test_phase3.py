@@ -111,15 +111,19 @@ class DefaultRunTests(ScriptTestCase):
         self.assertEqual(json.loads(text), world.plan)
         self.assertEqual(pin["branch"], FEATURE_BRANCH)
 
-    def test_the_feature_journal_is_one_replaced_attachment(self):
+    def test_the_feature_journal_is_in_git_on_the_feature_branch(self):
+        """IDE-155: no History attachment; the runner commits the journal to the branch."""
         world = self.shared
-        title = run.memory.feature_file(FEATURE, "history")
-        journals = [d for d in world.board.attachments[FEATURE] if d["title"] == title]
-        self.assertEqual(len(journals), 1)
-        content = journals[0]["content"]
-        self.assertIn("## Development", content)
-        self.assertIn("Planning cut 3 PBIs", content)
-        self.assertIn("Building done", content)
+        title = run.memory.feature_file(FEATURE, "adr")
+        self.assertEqual({d["title"] for d in world.board.attachments[FEATURE]}, {title})
+        listed = git(world.remote, "ls-tree", "--name-only", f"{FEATURE_BRANCH}:docs/features")
+        self.assertEqual(listed.split(), [f"{FEATURE}-feature-modules"])
+        folder = f"docs/features/{FEATURE}-feature-modules"
+        history = world.remote_file(FEATURE_BRANCH, f"{folder}/history.md")
+        self.assertIn("Planning cut 3 PBIs", history)
+        self.assertIn("Building done", history)
+        self.assertEqual(world.remote_file(FEATURE_BRANCH, f"{folder}/adr.md"),
+                         world.board.attachments[FEATURE][0]["content"])
 
     def test_every_pbi_merges_and_the_qa_testing_pbi_is_never_worked(self):
         world = self.shared
@@ -1489,81 +1493,6 @@ class StatesTests(unittest.TestCase):
         tasks = [card for card in board.cards.values() if card.get("kind") == "task"]
         self.assertEqual(sorted(card["status"] for card in tasks),
                          ["To Do", "To Do", "To Do"])
-
-
-class JournalUploadTests(unittest.TestCase):
-
-    def test_upload_refreshes_from_the_board_before_replacing_history(self):
-        from fakeboard import FakeBoard
-        with tempfile.TemporaryDirectory() as tmp:
-            board = FakeBoard(profile=PROFILE)
-            title = run.memory.feature_file(FEATURE, "history")
-            board.attach_document(title, f"# {FEATURE} — feature journal\n\n## Development\n\n- from board\n",
-                                  identifier=FEATURE)
-            original = board.list_attachments
-            seen = []
-
-            def list_attachments(identifier):
-                seen.append(identifier)
-                return original(identifier)
-
-            board.list_attachments = list_attachments
-            path = Path(tmp) / "history.md"
-            path.write_text(
-                f"# {FEATURE} — feature journal\n\n## Development\n\n- from local\n",
-                encoding="utf-8")
-            journal = phase3.journal.Journal(board, FEATURE, path)
-            journal.upload()
-            self.assertEqual(seen, [FEATURE])
-            content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
-            self.assertIn("- from board", content)
-            self.assertIn("- from local", content)
-
-    def test_upload_preserves_multiline_entries(self):
-        from fakeboard import FakeBoard
-        with tempfile.TemporaryDirectory() as tmp:
-            board = FakeBoard(profile=PROFILE)
-            title = run.memory.feature_file(FEATURE, "history")
-            board.attach_document(title, f"# {FEATURE} — feature journal\n\n## Development\n\n- from board\n",
-                                  identifier=FEATURE)
-            path = Path(tmp) / "history.md"
-            path.write_text(
-                f"# {FEATURE} — feature journal\n\n## Development\n\n"
-                "- Why this cut: first paragraph\n"
-                "  Second paragraph contains the decision.\n",
-                encoding="utf-8")
-            journal = phase3.journal.Journal(board, FEATURE, path)
-            journal.upload()
-            content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
-            self.assertIn("Second paragraph contains the decision.", content)
-            self.assertIn("Second paragraph contains the decision.", path.read_text(
-                encoding="utf-8"))
-
-    def test_stale_machine_merge_does_not_duplicate_unchanged_entries(self):
-        from fakeboard import FakeBoard
-        with tempfile.TemporaryDirectory() as tmp:
-            board = FakeBoard(profile=PROFILE)
-            title = run.memory.feature_file(FEATURE, "history")
-            seed = f"# {FEATURE} — feature journal\n\n## Development\n\n- first\n"
-            board.attach_document(title, seed, identifier=FEATURE)
-
-            path_a = Path(tmp) / "a.md"
-            path_a.write_text(seed, encoding="utf-8")
-            journal_a = phase3.journal.Journal(board, FEATURE, path_a)
-            journal_a.add("second")
-            journal_a.upload()
-
-            path_b = Path(tmp) / "b.md"
-            path_b.write_text(seed, encoding="utf-8")
-            journal_b = phase3.journal.Journal(board, FEATURE, path_b)
-            journal_b.add("third")
-            journal_b.upload()
-
-            content = [d for d in board.attachments[FEATURE] if d["title"] == title][0]["content"]
-            self.assertEqual(content.count("- first"), 1)
-            self.assertIn("- second", content)
-            self.assertIn("- third", content)
-            self.assertEqual(path_b.read_text(encoding="utf-8").count("- first"), 1)
 
 
 class RecoveryTests(unittest.TestCase):

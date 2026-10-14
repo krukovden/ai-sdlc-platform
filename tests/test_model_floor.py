@@ -191,9 +191,10 @@ class OverrideOnTheCardTests(RunnerTestCase):
                 run.lease.read_event(c["body"]).get("kind") == run.REVIEW]
         self.assertTrue(reviews(board))
         self.assertIn("below the model floor", gate[-1]["body"])
-        history = [d for d in board.attachments.get(FEATURE, [])
-                   if d["title"] == run.memory.feature_file(FEATURE, "history")]
-        self.assertIn("model_floor_override", history[-1]["content"])
+        # The design journal is the session's local record (IDE-155); the card
+        # carries the override in its comment, which the gate shows.
+        journal = runner.design.session_dir(FEATURE) / "journal.jsonl"
+        self.assertIn("model_floor_override", journal.read_text(encoding="utf-8"))
 
     def test_a_new_reason_on_a_later_run_is_recorded_and_the_gate_shows_only_it(self):
         board = new_board()

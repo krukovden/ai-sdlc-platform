@@ -21,6 +21,7 @@ from unittest import mock
 
 from support import ScriptTestCase, load_script
 from fakeboard import Crash, crash_and_resume
+import phase3_world
 from phase3_world import (BLUEPRINT, EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, VERDICT,
                           World, commit_push, design, git, integration_finding, lease, pbi,
                           phase3, run, shape, tags, write_blueprint)
@@ -130,20 +131,22 @@ class HandOffTests(ScriptTestCase):
                          BLUEPRINT)
         documented = world.events(FEATURE, integration.DOCUMENTED)
         self.assertEqual(len(documented), 1)
-        message = git(world.remote, "log", "-1", "--format=%B", FEATURE_BRANCH)
+        message = git(world.remote, "log", "-1", "--format=%B", documented[0]["commit"])
         self.assertIn(f"{integration.BLUEPRINT_MARK} {FEATURE}@{documented[0]['head']}",
                       message)
 
-    def test_the_journal_carries_the_summary_and_is_uploaded(self):
+    def test_the_journal_carries_the_summary_and_is_frozen_on_the_branch(self):
         world = self.shared
-        title = run.memory.feature_file(FEATURE, "history")
-        journal = [d for d in world.board.attachments[FEATURE] if d["title"] == title]
-        self.assertEqual(len(journal), 1)
-        text = journal[0]["content"]
+        text = world.remote_file(FEATURE_BRANCH,
+                                 f"docs/features/{FEATURE}-feature-modules/history.md")
         self.assertIn("Integration round 1", text)
         self.assertIn("the modules agree with each other", text)
         self.assertIn("Documenter at", text)
-        self.assertIn("Handed to QA", text)
+        self.assertIn("Ready for QA", text)
+        self.assertIn("No project memory in this repository", text)
+        self.assertIn(phase3.journal.journal_format.FROZEN_MARK, text)
+        message = git(world.remote, "log", "-1", "--format=%B", FEATURE_BRANCH)
+        self.assertIn(f"{integration.LIFT_MARK} {FEATURE}@", message)
 
     def test_running_twice_changes_nothing_the_second_time(self):
         world = self.shared
@@ -239,6 +242,102 @@ class FeaturePullRequestTests(IntegrationTestCase):
         self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
         heads = [argv[argv.index("--head") + 1] for argv in calls if "--head" in argv]
         self.assertEqual(sorted(set(heads)), [FEATURE_BRANCH])
+
+
+# ---------------------------------------------------------------------------
+# Finalize: the journal and project memory, on the feature branch (IDE-155)
+# ---------------------------------------------------------------------------
+
+class RecordingMerger(phase3_world.TestMerger):
+    """The feature PR's description, as the runner wrote it."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.opened = []
+
+    def open(self, branch, target, title, description, work_item):
+        self.opened.append(description)
+        return super().open(branch, target, title, description, work_item)
+
+
+class MemoryLiftTests(IntegrationTestCase):
+
+    ADR = phase3_world.ADR + """
+## Decision registry
+
+| id | decision | reversibility | why it is classified this way |
+| -- | -- | -- | -- |
+| D-1 | One module per value | hard-to-reverse | every caller imports by path; a shared module would merge the values |
+
+## Tried and rejected
+
+* One shared constants module — rejected: two values would share a release cycle
+"""
+
+    def world_with_memory(self):
+        world = self.world(memory=True, approve=False)
+        world.approve(self.ADR)
+        return world
+
+    def test_the_load_bearing_decisions_reach_memory_in_the_feature_pr(self):
+        world = self.world_with_memory()
+        merger = RecordingMerger(phase3.gitops.Git(world.repo))
+        self.assertEqual(world.runner(merger=merger).run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(world.sessions.get("memory-writer"), [FEATURE])
+        unit = world.remote_file(FEATURE_BRANCH, "memory/units/modules.md")
+        folder = f"{FEATURE}-feature-modules"
+        self.assertIn(f"source: {folder}#ADR {FEATURE} · D-1: One module per value", unit)
+        self.assertIn(f"source: {folder}#ADR {FEATURE} · critic objection 1", unit)
+        index = world.remote_file(FEATURE_BRANCH, "memory/index.md")
+        self.assertIn("| [[modules]] | Every value in its own module |", index)
+        decisions = world.remote_file(FEATURE_BRANCH, f"docs/features/{folder}/decisions.md")
+        self.assertIn("- **Alternative**: One shared constants module", decisions)
+        # One finalize commit carries both; the PR and the Feature name the entries.
+        changed = git(world.remote, "show", "--name-only", "--format=", FEATURE_BRANCH)
+        self.assertIn("memory/units/modules.md", changed)
+        self.assertIn(f"docs/features/{folder}/history.md", changed)
+        self.assertIn("## Decisions needing confirmation", merger.opened[-1])
+        self.assertIn("memory/units/modules.md", merger.opened[-1])
+        lifted = world.events(FEATURE, integration.LIFTED)
+        self.assertEqual(len(lifted), 1)
+        self.assertEqual(len(lifted[0]["entries"].split(",")), 2)
+
+    def test_a_second_run_lifts_nothing_twice(self):
+        world = self.world_with_memory()
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        world.board.cards[FEATURE]["tags"] = [tags.DEVELOPMENT]
+        world.runner().run_feature(FEATURE)
+        self.assertEqual(world.sessions.get("memory-writer"), [FEATURE])
+        unit = world.remote_file(FEATURE_BRANCH, "memory/units/modules.md")
+        self.assertEqual(unit.count("### e-"), 2)
+        self.assertEqual(len(world.events(FEATURE, integration.LIFTED)), 1)
+
+    def test_a_lift_that_writes_outside_memory_is_refused_and_retried(self):
+        world = self.world_with_memory()
+        attempts = []
+
+        def sloppy(world_, worktree, prompt):
+            attempts.append(1)
+            if len(attempts) == 1:
+                (worktree / "src" / "oops.py").write_text("x = 1\n", encoding="utf-8")
+            return phase3_world.lift_all(world_, worktree, prompt)
+
+        world.memory_writer = sloppy
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(len(attempts), 2)
+        self.assertIsNone(world.remote_file(FEATURE_BRANCH, "src/oops.py"))
+        self.assertIsNotNone(world.remote_file(FEATURE_BRANCH, "memory/units/modules.md"))
+
+    def test_a_pbi_that_edits_the_journal_is_refused_at_finalize(self):
+        world = self.world(plan={"pbis": [pbi("a")]})
+        world.behaviors["a"] = [phase3_world.ok(extra={
+            f"docs/features/{FEATURE}-feature-modules/history.md": "- mine\n"})]
+        world.runner().run_feature(FEATURE)
+        said = " ".join(c["body"] for card in world.board.comments.values() for c in card)
+        self.assertIn("the feature journal has one writer", said)
+        history = world.remote_file(FEATURE_BRANCH,
+                                    f"docs/features/{FEATURE}-feature-modules/history.md")
+        self.assertNotIn("- mine", history or "")
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +842,13 @@ def push_concurrently(world, root, path="src/a.py", text="VALUE = 999\n"):
 class TestedHeadTests(IntegrationTestCase):
     """T8 findings 1 and 2: only the owner hands off, and only the head 3.3 validated."""
 
+    def assert_handed_on(self, world, handed, integrated):
+        """QA gets the integrated head plus, at most, the finalize commit (IDE-155):
+        the runner's records — journal and memory — on top of it, nothing else."""
+        git(world.remote, "merge-base", "--is-ancestor", integrated, handed)
+        changed = git(world.remote, "diff", "--name-only", integrated, handed).split()
+        self.assertTrue(all(p.startswith(integration.RECORD_PATHS) for p in changed), changed)
+
     def green_heads(self, world):
         return {r["head"] for r in world.events(FEATURE, integration.ROUND)
                 if r["verdict"] == integration.GREEN}
@@ -785,7 +891,7 @@ class TestedHeadTests(IntegrationTestCase):
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
         handed = world.events(FEATURE, integration.HANDED)
         self.assertEqual(len(handed), 1, "the stale candidate was never handed off")
-        self.assertEqual(handed[0]["head"], moved[0])
+        self.assert_handed_on(world, handed[0]["head"], moved[0])
         self.assertIn(moved[0], self.green_heads(world),
                       "the head QA got is one integration ran on")
         self.assertEqual(self.feature_tags(world), [tags.QA])
@@ -806,7 +912,7 @@ class TestedHeadTests(IntegrationTestCase):
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
         handed = world.events(FEATURE, integration.HANDED)
         self.assertEqual(len(handed), 1)
-        self.assertEqual(handed[0]["head"], moved[0])
+        self.assert_handed_on(world, handed[0]["head"], moved[0])
         self.assertIn(moved[0], self.green_heads(world))
         self.assertEqual(world.remote_file(FEATURE_BRANCH, "docs/blueprint/modules.md"),
                          BLUEPRINT)

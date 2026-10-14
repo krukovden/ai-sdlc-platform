@@ -1,91 +1,114 @@
-"""The feature journal: why the feature was cut this way, and what changed during the build.
+"""The feature journal, as the runner keeps it: local working copies, committed to the branch.
 
-A working file in the run's feature worktree, uploaded as the Feature's
-`01 · History` attachment at the end of every sub-phase — replaced, never
-appended — so a phase that moves to another machine, or dies, loses nothing
-(IDE-147, 3.1). A machine without the working file starts it from the
-attachment, which already carries the design journal, so nothing written in an
-earlier phase is lost either.
+IDE-155 moved the journal off the board and into `docs/features/<id>-<slug>/` on
+the feature branch (`scripts/feature_journal.py` has the formats). The runner is
+the only writer: lines and decisions collect in this run's working files, and
+ride in the runner's own commits to the feature branch — the plan, each plan
+amendment, and the finalize commit before the hand-off — never in a commit of
+their own. A journal commit at any other point would move the branch under a
+cached session answer, or make a resumed run's commits differ from a clean one's.
 
-Entries are lines, and a line already in the journal is not written twice: the
-journal of a run that crashed and resumed is the journal of a run that did not.
+What is committed is always the union of the branch's file and the working
+copy, so a run that crashed and resumed, or one that resumed on another machine
+from the branch alone, writes the same journal as one that never stopped.
 """
 
 from pathlib import Path
 
-from .common import memory
+from .common import _sibling
 
-HEADING = "## Development"
+journal_format = _sibling("feature_journal", "idp_feature_journal")
 
 
 class Journal:
 
-    def __init__(self, board, feature, path):
-        self.board = board
+    def __init__(self, git, feature, title, home, branch):
+        self.git = git
         self.feature = feature
-        self.path = Path(path)
-        self.title = memory.feature_file(feature, "history")
+        self.title = title or feature
+        self.home = Path(home)
+        self.branch = branch
+        self.directory = None
+        self.adr = None
+        self.frozen = False
 
-    def _normalize(self, seed):
-        if not str(seed or "").strip():
-            seed = f"# {self.feature} — feature journal\n"
-        if HEADING not in seed:
-            seed = str(seed).rstrip("\n") + f"\n\n{HEADING}\n\n"
-        return str(seed)
+    # -- the working copies --------------------------------------------------
 
-    def _seed(self):
-        seed = ""
-        for document in self.board.list_attachments(self.feature):
-            if document.get("title") == self.title:
-                seed = document.get("content")
-                if seed is None:
-                    seed = self.board.get_document(document["slugId"]).get("content") or ""
-        return self._normalize(seed)
+    @property
+    def _history(self):
+        return self.home / journal_format.HISTORY
 
-    @staticmethod
-    def _entries(text):
-        found, current = [], []
-        for line in str(text or "").splitlines():
-            if line.startswith("- "):
-                if current:
-                    found.append("\n".join(current).rstrip())
-                current = [line]
-                continue
-            if current:
-                current.append(line)
-        if current:
-            found.append("\n".join(current).rstrip())
-        return found
+    @property
+    def _decisions(self):
+        return self.home / journal_format.DECISIONS
 
-    def _merged(self, remote, local):
-        merged = remote
-        existing = set(self._entries(remote))
-        extra = [entry for entry in self._entries(local) if entry not in existing]
-        if extra:
-            merged = merged.rstrip("\n") + "\n\n" + "\n\n".join(extra) + "\n"
-        return merged
-
-    def text(self):
-        if self.path.exists():
-            return self._normalize(self.path.read_text(encoding="utf-8"))
-        seed = self._seed()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(seed, encoding="utf-8")
-        return seed
+    def _read(self, path):
+        return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def add(self, line):
-        text = self.text()
-        entry = f"- {line.strip()}"
-        if entry in text.splitlines():
+        """A progress line. Returns False when the working copy already has it."""
+        current = self._read(self._history)
+        text = journal_format.history_text(self.feature, current, [line])
+        if text == current:
             return False
-        self.path.write_text(text.rstrip("\n") + "\n" + entry + "\n", encoding="utf-8")
+        self.home.mkdir(parents=True, exist_ok=True)
+        self._history.write_text(text, encoding="utf-8")
         return True
 
-    def upload(self):
-        """Replace the attachment. Identical bytes are no write at all."""
-        local = self.text()
-        remote = self._seed()
-        merged = self._merged(remote, local)
-        if merged != local:
-            self.path.write_text(merged, encoding="utf-8")
-        return self.board.attach_document(self.title, merged, identifier=self.feature)
+    def decide(self, entry):
+        """A structured decision (`feature_journal.decision`)."""
+        current = self._read(self._decisions)
+        text = journal_format.decisions_text(self.feature, current, [entry])
+        if text == current:
+            return False
+        self.home.mkdir(parents=True, exist_ok=True)
+        self._decisions.write_text(text, encoding="utf-8")
+        return True
+
+    def set_adr(self, text):
+        self.adr = text or None
+
+    # -- what the branch carries ---------------------------------------------
+
+    def tip(self):
+        return self.git.tracking(self.branch)
+
+    def path(self, tip=None):
+        if self.directory is None:
+            names = []
+            tip = tip or self.tip()
+            if tip:
+                listed = self.git.run("ls-tree", "--name-only", f"{tip}:"
+                                      f"{journal_format.DIRECTORY}", check=False)
+                if getattr(listed, "returncode", 1) == 0:
+                    names = [n for n in listed.stdout.split() if n]
+            self.directory = journal_format.locate(names, self.feature, self.title)
+        return self.directory
+
+    def files(self, tip, freeze=False):
+        """{path: text} the branch should carry: the branch's files plus the working copies."""
+        directory = self.path(tip)
+        show = (lambda p: self.git.show(tip, p) or "") if tip else (lambda p: "")
+        history = journal_format.merge_history(
+            self.feature, show(f"{directory}/{journal_format.HISTORY}"),
+            self._read(self._history))
+        if freeze or self.frozen:
+            history = journal_format.freeze(history)
+        files = {f"{directory}/{journal_format.HISTORY}": history}
+        decisions = journal_format.merge_decisions(
+            self.feature, show(f"{directory}/{journal_format.DECISIONS}"),
+            self._read(self._decisions))
+        if journal_format.parse_decisions(decisions):
+            files[f"{directory}/{journal_format.DECISIONS}"] = decisions
+        if self.adr:
+            files[f"{directory}/{journal_format.ADR}"] = self.adr
+        return files
+
+    def text(self, tip=None):
+        """The history so far, for a session's context."""
+        tip = tip or self.tip()
+        return self.files(tip)[f"{self.path(tip)}/{journal_format.HISTORY}"]
+
+    def decisions(self, tip=None):
+        tip = tip or self.tip()
+        return self.files(tip).get(f"{self.path(tip)}/{journal_format.DECISIONS}", "")
