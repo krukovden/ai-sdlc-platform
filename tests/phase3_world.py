@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -154,6 +155,9 @@ def git(path, *args, check=True):
     return answer.stdout.strip()
 
 
+PLANNING_ENV = threading.Lock()
+
+
 def coverage(plan, adr_text, planner_model, **_):
     return {"report": {"constraints": []}, "mode": "test", "planner_model": planner_model,
             "adr_hash": planning.content_hash(adr_text),
@@ -257,7 +261,9 @@ class World:
         plan_file.write_text(json.dumps(self.plan), encoding="utf-8")
         env = {"IDP_CONTEXT_DIR": context["IDP_CONTEXT_DIR"],
                "PLANNING_HOME": context["PLANNING_HOME"]}
-        with mock.patch.dict(os.environ, env), \
+        # os.environ is the process's: crash points run in threads, and two
+        # planning sessions must never see each other's PLANNING_HOME.
+        with PLANNING_ENV, mock.patch.dict(os.environ, env), \
                 mock.patch.object(planning, "check_coverage", coverage), \
                 contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):

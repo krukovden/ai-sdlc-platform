@@ -350,7 +350,11 @@ deterministic shell:
    that cannot be trusted is retried once, then the Feature is blocked with the
    plan unpinned. The session's own `finalize` only checks the plan locally, and
    a coverage record in the planning cache is never trusted — the session can
-   write it;
+   write it. What counts is the runner's own `coverage` event on the Feature,
+   bound to the plan's bytes and the ADR's; the runner also records who cut each
+   plan (`plan-cut`), and a cached or branch plan with no such record is cut
+   again rather than its author guessed. Event markers in any text a session
+   wrote are defused, and the last marker in a comment is its event;
 4. the plan is committed to the feature branch and pinned by sha256 in a planning
    comment;
 5. the board shape is created idempotently: PBIs, Tasks and the QA Testing PBI;
@@ -542,7 +546,9 @@ after every session. A session that changed it blocks the Feature and stops the
 run (IDE-153): on 2026-10-14 a planning session wrote its own coverage reviewer
 and re-pointed `registry/providers.json` at it. Run the platform from a copy the
 agent's user cannot write; a Docker Desktop bind mount ignores permissions, so
-copy it into the container rather than mounting it.
+copy it into the container rather than mounting it. The runner also loads bytecode only from
+its own `$IDP_HOME/pycache`, so a planted `.pyc` beside the hashed sources is
+never read.
 
 By default this is still a process boundary, not an OS boundary. A model running
 as the same user can still open files that user can read directly, including token

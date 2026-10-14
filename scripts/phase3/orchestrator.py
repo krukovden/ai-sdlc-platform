@@ -88,6 +88,7 @@ PATHS = "paths"
 RACE = "merge-race"
 UNMERGED = "merge-refused"
 COVERED = "coverage"
+PLAN_CUT = "plan-cut"
 
 PLANNING_PROMPT = """You are the planning session for {feature}, started by run.py (IDE-147).
 Follow the planning skill exactly: {skill}
@@ -333,7 +334,10 @@ class Development:
             path = plans.plan_path(feature)
             tip = self.git.tracking(self.feature_branch)
             text = self.git.show(tip, path) if tip else None
-            if text is None:
+            # A plan already on the branch is pinned only when this Feature
+            # carries the runner's own coverage record for exactly those bytes
+            # against the approved ADR (IDE-153); its being there proves nothing.
+            if text is None or not self.covered(feature, text, self.adr_text(feature, route)):
                 code, text = self.plan_session(feature, route, base)
                 if code != EXIT.DONE:
                     return code
@@ -405,13 +409,19 @@ class Development:
         adr_text = self.adr_text(feature, route)
         text, problems = self.plan_candidate(feature, adr_text)
         if text is not None and not problems:
-            # A plan cut by an earlier run: its planner is not known here, so the
-            # reviewer is held apart from whoever the design role resolves to.
-            problems = self.coverage(feature, text, adr_text, base, None)
-            if problems is None:
-                return EXIT.BLOCKED, None
-            if not problems:
-                return EXIT.DONE, text
+            # A plan an earlier run cut: reviewed against the planner the runner
+            # recorded for it, never against whoever resolves now. With no such
+            # record it is cut again rather than its author guessed (IDE-153).
+            planner = self.planner_of(feature, text)
+            if planner is None:
+                problems = ["the plan in the planning cache has no runner record of who "
+                            "cut it; cut it again"]
+            else:
+                problems = self.coverage(feature, text, adr_text, base, planner)
+                if problems is None:
+                    return EXIT.BLOCKED, None
+                if not problems:
+                    return EXIT.DONE, text
         feedback = "; ".join(problems) if problems else None
         launches = 0
         for _ in range(MAX_ATTEMPTS * 2 + len(INFRA_BACKOFF) + 1):
@@ -459,6 +469,7 @@ class Development:
                 if text is not None and not problems:
                     ran = runner_executors().Choice(last.get("agent"), last.get("model") or None) \
                         if last.get("agent") else planner
+                    self.record_planner(feature, text, ran)
                     problems = self.coverage(feature, text, adr_text, base, ran)
                     if problems is None:
                         return EXIT.BLOCKED, None
@@ -492,6 +503,27 @@ class Development:
             tags.release(self.board, self.feature, self.run_id)
             raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
 
+    def record_planner(self, feature, text, planner):
+        """Who cut these plan bytes, on the board, written by the runner (IDE-153)."""
+        digest = plans.digest(text)
+        lease.post_event(self.board, feature, PLAN_CUT, f"{PLAN_CUT}:{feature}:{digest}",
+                         text=f"The plan `{digest[:19]}` was cut by `{planner}`.",
+                         plan=digest, planner=str(planner))
+
+    def planner_of(self, feature, text):
+        """The executor the runner recorded for these plan bytes, or None."""
+        found = lease.events(self.board.list_comments(feature), PLAN_CUT,
+                             plan=plans.digest(text))
+        if not found or not found[-1].get("planner"):
+            return None
+        return runner_executors().roles.as_choice(found[-1]["planner"])
+
+    def covered(self, feature, text, adr_text):
+        """The runner's coverage record for these plan bytes and this ADR, or None."""
+        found = lease.events(self.board.list_comments(feature), COVERED,
+                             plan=plans.digest(text), adr=plans.digest(adr_text))
+        return found[-1] if found else None
+
     def coverage(self, feature, text, adr_text, base, planner):
         """The independent coverage review of a plan, run by the runner (IDE-153).
 
@@ -500,30 +532,23 @@ class Development:
         passed its own plan. Here the reviewer is the profile's `review` role,
         resolved with the planner as the author, and its answer goes through the
         planning skill's own checks. The planning cache cannot vouch for a
-        review — the session could write it — so only this one counts.
+        review — the session could write it — so only the runner's record on
+        the board counts, bound to the plan's bytes and the ADR's.
 
         Returns the gaps the planner must close ([] when every constraint is
         covered), or None when the review could not be run and the Feature is
         blocked rather than its plan pinned unreviewed.
         """
         plan = json.loads(text)
-        digest = plans.digest(text)
-        done = lease.events(self.board.list_comments(feature), COVERED, plan=digest)
+        digest, adr_digest = plans.digest(text), plans.digest(adr_text)
+        done = self.covered(feature, text, adr_text)
         if done:
-            self.journal_line(f"Coverage reviewed by `{done[-1].get('reviewer')}`: "
-                              f"{done[-1].get('constraints')} ADR constraints, every one "
+            self.journal_line(f"Coverage reviewed by `{done.get('reviewer')}`: "
+                              f"{done.get('constraints')} ADR constraints, every one "
                               "delivered by a PBI.")
             return []
         executors = runner_executors()
-        # A plan an earlier run cut names no planner here; the design role's
-        # executor is who cuts plans on this profile, so the reviewer is held
-        # apart from it.
         author = planner
-        if author is None:
-            try:
-                author = self.executor.resolve("design")
-            except executors.ResolutionError:
-                author = None
         try:
             reviewer = self.executor.resolve("review", author=author)
         except executors.ResolutionError as exc:
@@ -536,16 +561,16 @@ class Development:
         context.mkdir(parents=True, exist_ok=True)
         (context / "request.md").write_text(self.planning.coverage_prompt(plan, adr_text),
                                             encoding="utf-8")
-        output = wt.path / ".idp" / "coverage.json"
         reviewer_module = self.planning.load_reviewer()
         schema = reviewer_module.SCHEMAS / "plan-coverage.schema.json"
-        prompt = COVERAGE_PROMPT.format(feature=feature, context=context, schema=schema,
-                                        output=output, run_py=self.runner.run_py)
         env = {"IDP_CONTEXT_DIR": str(context)}
         problem = "the review did not run"
         for _ in range(REVIEW_RETRIES + 1):
-            if output.exists():
-                output.unlink()
+            # A name no repository can have committed in advance, read before the
+            # worktree is reset: what is judged is what this reviewer wrote.
+            output = wt.path / ".idp" / f"coverage-{os.urandom(8).hex()}.json"
+            prompt = COVERAGE_PROMPT.format(feature=feature, context=context, schema=schema,
+                                            output=output, run_py=self.runner.run_py)
             try:
                 code = self.executor.run_role("review", feature, wt.path, prompt, context=env,
                                               author=author, choice=reviewer)
@@ -565,17 +590,19 @@ class Development:
                 self.sleep(INFRA_BACKOFF[0])
                 code = self.reconnect_session("review", feature, wt.path, prompt, env)
                 last = self.executor.last or {}
+            answer = None
+            if code == EXIT.DONE and output.is_file() and not output.is_symlink():
+                answer = output.read_text(encoding="utf-8")
             wt.reset_to(base)
             if code != EXIT.DONE:
                 problem = last.get("reason") or f"the review ended {code}"
                 continue
-            try:
-                report = reviewer_module.parse_and_validate(
-                    output.read_text(encoding="utf-8"), "plan-coverage.schema.json")
-                self.planning.verify_coverage(report, plan, adr_text)
-            except OSError as exc:
-                problem = f"the reviewer wrote no {output.name}: {exc}"
+            if answer is None:
+                problem = f"the reviewer wrote no {output.name}"
                 continue
+            try:
+                report = reviewer_module.parse_and_validate(answer, "plan-coverage.schema.json")
+                self.planning.verify_coverage(report, plan, adr_text)
             except reviewer_module.ReviewerError as exc:
                 problem = str(exc)
                 continue
@@ -588,11 +615,11 @@ class Development:
                 continue
             n = len(report["constraints"])
             lease.post_event(
-                self.board, feature, COVERED, f"{COVERED}:{feature}:{digest}",
+                self.board, feature, COVERED, f"{COVERED}:{feature}:{digest}:{adr_digest}",
                 text=(f"Coverage review by `{reviewer}`, independent of the planner "
                       f"`{author}`: all {n} load-bearing ADR constraints are delivered "
                       f"by some PBI."),
-                plan=digest, reviewer=str(reviewer), planner=str(author or ""),
+                plan=digest, adr=adr_digest, reviewer=str(reviewer), planner=str(author),
                 constraints=n)
             self.journal_line(f"Coverage reviewed by `{reviewer}`: {n} ADR constraints, "
                               "every one delivered by a PBI.")

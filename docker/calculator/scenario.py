@@ -848,6 +848,18 @@ class CalculatorWorld:
         git(clone, "push", "-q", "origin", f"HEAD:refs/heads/{branch}", env=self.git_env)
         shutil.rmtree(clone)
         git(self.repo, "fetch", "-q", "origin", env=self.git_env)
+        # A plan on the branch is pinned only with the runner's coverage record
+        # for those bytes and the approved ADR (IDE-153); the seed carries one,
+        # as attach_approved_adr carries the design review.
+        digest, adr = phase3.plan.digest(text), phase3.plan.digest(SEEDED_ADR)
+        self.board.comments[self.feature].append({
+            "id": f"c{len(self.board.comments[self.feature]) + 1}",
+            "created_at": self.board.stamp(),
+            "body": lease.render_event(
+                phase3.orchestrator.COVERED,
+                f"{phase3.orchestrator.COVERED}:{self.feature}:{digest}:{adr}",
+                plan=digest, adr=adr, reviewer="seed", planner="seed", constraints=0),
+        })
 
     def add_bug(self, bug_id: str, description: str):
         self.board.add_card(

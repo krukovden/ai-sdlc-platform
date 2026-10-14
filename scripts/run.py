@@ -1272,6 +1272,18 @@ def build_parser():
     return parser
 
 
+def private_bytecode():
+    """Bytecode this process loads comes from its own cache, never the platform's (IDE-153).
+
+    platform_digest skips `__pycache__`, and Python would load a timestamp-valid
+    `.pyc` an agent planted there in place of the source the digest checked.
+    With a prefix the in-tree caches are never read; the prefix lives in the
+    runner's own home.
+    """
+    home = Path(os.environ.get("IDP_HOME", Path.home() / ".idp"))
+    sys.pycache_prefix = str(home / "pycache")
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--agent":
@@ -1283,4 +1295,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    private_bytecode()
     main()

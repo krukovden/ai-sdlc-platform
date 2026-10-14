@@ -1228,9 +1228,8 @@ class CrashResumeTests(Phase3TestCase):
     def test_a_crash_after_every_side_effect_resumes_to_the_same_board(self):
         # The clean run plans; every crash point after it starts from the cache
         # that planning session left, which is what a resume on the same machine
-        # finds too. The model writes nothing to the board, so no crash point is
-        # lost by not replaying it — and with no session patching the process,
-        # the points can run side by side.
+        # finds too, except that the cache's author is not on this board, so it
+        # is cut once more rather than guessed (IDE-153).
         worlds, lock, made = {}, threading.Lock(), itertools.count(1)
         template = []
 
@@ -1253,8 +1252,10 @@ class CrashResumeTests(Phase3TestCase):
         exercised = crash_and_resume(make_board, scenario,
                                      workers=min(8, os.cpu_count() or 1))
         self.assertGreaterEqual(exercised, 20)
-        self.assertTrue(all(w.sessions.get("design") is None for n, w in worlds.items()
-                            if w.planning_home != template[0]))
+        # Each crash world's board is fresh, so the cache it inherits carries no
+        # author there and is cut once — and only once, whatever the crash point.
+        resumed = [w for w in worlds.values() if w.planning_home != template[0]]
+        self.assertTrue(all(len(w.sessions.get("design") or []) <= 1 for w in resumed))
 
 
 # ---------------------------------------------------------------------------

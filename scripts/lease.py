@@ -103,22 +103,44 @@ def render_event(kind, key, text="", **payload):
     data["kind"] = kind
     data["key"] = key
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    text = defuse(text)
     lines = [text.strip()] if text and text.strip() else []
     lines += [f"<!-- {EVENT_MARK} {encoded} -->", f"`{EVENT_MARK} {encoded}`"]
     return "\n\n".join(lines)
 
 
+def defuse(text):
+    """Human text with no event marker in it, so it can never be read as one (IDE-153).
+
+    The text of an event often carries what a session said — a reason, a
+    question — and a session that wrote `idp:event {...}` into its reason would
+    otherwise have the runner post a forged event for it. The marker is matched
+    after HTML unescaping, the way read_event matches it.
+    """
+    if not text or EVENT_MARK not in html.unescape(str(text)):
+        return text
+    text = html.unescape(str(text))
+    while EVENT_MARK in text:
+        text = text.replace(EVENT_MARK, "idp-event")
+    return text
+
+
 def read_event(body):
-    """The event a comment carries, or None. Either rendering of the marker counts."""
+    """The event a comment carries, or None. Either rendering of the marker counts.
+
+    The last marker wins: render_event writes the runner's own after the human
+    text, so nothing earlier in a comment can stand in for it (IDE-153).
+    """
     text = html.unescape(body or "")
+    found = None
     for match in EVENT.finditer(text):
         try:
             data = json.loads(match.group(1))
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict) and data.get("kind"):
-            return data
-    return None
+            found = data
+    return found
 
 
 def events(comments, kind=None, **match):
