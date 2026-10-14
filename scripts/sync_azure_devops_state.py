@@ -542,6 +542,24 @@ def rest_call(url, method="GET", body=None, content_type=None, authorization=Non
              fix="retry; if it persists, the endpoint or its API version changed")
 
 
+READ_RETRIES = 2
+READ_VERBS = ("show", "list", "query")
+
+
+def is_read(args):
+    """Whether an az command only reads: its subcommand path ends in a read verb.
+
+    `devops invoke` is never a read here — its method is a flag, and a POST
+    looks the same up to it.
+    """
+    words = []
+    for arg in args:
+        if str(arg).startswith("-"):
+            break
+        words.append(str(arg))
+    return bool(words) and words[-1] in READ_VERBS
+
+
 def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=False,
            auth_hint=None):
     """Run one `az` command as an argument list and return its parsed output.
@@ -571,15 +589,26 @@ def run_az(args, parse_json=True, token=None, timeout=DEFAULT_TIMEOUT, soft=Fals
     if token:
         env["AZURE_DEVOPS_EXT_PAT"] = token
 
-    try:
-        proc = subprocess.run(["az", *args], capture_output=True, text=True,
-                              timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        # Mirrors the Linear adapter's timeout clause, and for the same reason:
-        # a write that timed out may still have been applied.
-        fail(EXIT.UNAVAILABLE, f"az did not answer within {timeout}s. The request may or may not "
-                               "have been applied; check the work item before retrying a write.",
-             fix="look at the work item on the board; retry the write only if it did not land")
+    tries = 1 + (READ_RETRIES if is_read(args) else 0)
+    for attempt in range(1, tries + 1):
+        try:
+            proc = subprocess.run(["az", *args], capture_output=True, text=True,
+                                  timeout=timeout, env=env)
+            break
+        except subprocess.TimeoutExpired:
+            if attempt < tries:
+                # A read changes nothing, so asking again is safe; on the live
+                # runs of 2026-10-14 a plain `work-item show` hung three times
+                # behind Docker Desktop networking (IDE-154).
+                continue
+            # Mirrors the Linear adapter's timeout clause, and for the same
+            # reason: a write that timed out may still have been applied.
+            fail(EXIT.UNAVAILABLE, f"az did not answer within {timeout}s"
+                                   + (f", {tries} times" if tries > 1 else "")
+                                   + ". The request may or may not have been applied; check "
+                                   "the work item before retrying a write.",
+                 fix="look at the work item on the board; retry the write only if it did "
+                     "not land")
 
     if proc.returncode != 0:
         return _classify_failure(args, proc, soft=soft, auth_hint=auth_hint)

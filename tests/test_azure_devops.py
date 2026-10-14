@@ -511,6 +511,38 @@ class ExpiredLoginTests(ScriptTestCase):
         message = self.run_az_with(timeout=True)
         self.assertIn("may or may not", message)
 
+    def calls_until(self, args, hangs):
+        """run_az on `args` where the first `hangs` calls time out. (calls, result)."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if len(calls) <= hangs:
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return subprocess.CompletedProcess(cmd, 0, '{"id": 1}', "")
+
+        with mock.patch.object(azure.shutil, "which", return_value="/usr/bin/az"), \
+             mock.patch.object(azure.subprocess, "run", fake_run):
+            try:
+                return calls, azure.run_az(args)
+            except SystemExit:
+                return calls, None
+
+    def test_a_read_that_hangs_is_asked_again(self):
+        # IDE-154: a plain `work-item show` hung behind Docker Desktop networking.
+        calls, result = self.calls_until(["boards", "work-item", "show", "--id", "1"], 1)
+        self.assertEqual((len(calls), result), (2, {"id": 1}))
+        calls, result = self.calls_until(["boards", "work-item", "show", "--id", "1"], 9)
+        self.assertEqual((len(calls), result), (1 + azure.READ_RETRIES, None))
+
+    def test_a_write_that_hangs_is_never_sent_twice(self):
+        for args in (["boards", "work-item", "create", "--type", "Task"],
+                     ["boards", "work-item", "update", "--id", "1"],
+                     ["devops", "invoke", "--http-method", "POST"]):
+            with self.subTest(args=args):
+                calls, result = self.calls_until(args, 1)
+                self.assertEqual((len(calls), result), (1, None))
+
     def test_a_missing_work_item_is_a_malformed_request_not_an_outage(self):
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(cmd, 1, "", "TF401232: Work item 9 does not exist")
