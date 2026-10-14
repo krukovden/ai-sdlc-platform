@@ -2031,9 +2031,12 @@ class AdoScenarioRunner:
         self.write_report()
 
     def create_feature(self):
+        # A fresh correlation id per live run: correlation is exact and refuses
+        # duplicates, so a fixed one would collide with every earlier run's card.
+        self.cid = f"calc_small_cli_{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
         issue = self.board.create_issue(
             title="Small calculator CLI",
-            body=FEATURE_BODY,
+            body=FEATURE_BODY.replace("cid: calc_small_cli_001", f"cid: {self.cid}"),
             project_id=self.profile["project_id"],
             kind="feature",
         )
