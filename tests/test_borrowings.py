@@ -1,5 +1,6 @@
 """Phase borrowings: offline probes of the contracts, not model judgments."""
 import json
+from pathlib import Path
 import unittest
 
 from test_discovery import DiscoveryTestCase, discovery
@@ -124,11 +125,22 @@ class PlanBorrowings(unittest.TestCase):
                "## What was reviewed\n\n| Artifact | Status |\n| -- | -- |\n"
                "| Storage model | skipped |\n\n## What it costs us\n\nEvery future "
                "operator must keep the contract.\n\n## Чем платим\n\n- всегда\n\n"
-               "## Decision registry\n\n| id | d |\n| -- | -- |\n| D-1 | hand parser |\n")
+               "## Decision registry\n\n| id | d |\n| -- | -- |\n| D-1 | hand parser |\n"
+               "\n## How it is built\n\n* architect: claude\n* critic: primary (codex)\n")
         lines = adr.splitlines()
         floor = [lines[n - 1] for n in planning.deterministic_constraints(adr)]
         self.assertEqual(floor, ["- a parser", "| D-1 | hand parser |"])
         self.assertIn('"what was reviewed"', planning.coverage_prompt({"pbis": []}, adr))
+
+    def test_every_heading_design_renders_is_classified_for_the_floor(self):
+        # A new ADR section must be a decision: deliverable, or the design's
+        # process. Two live runs blocked on sections nobody had classified.
+        import re
+        root = Path(planning.__file__).resolve().parents[2]
+        rendered = set(re.findall(r'words\.heading\("([a-z-]+)"',
+                                  (root / "skills" / "design" / "design.py").read_text()))
+        deliverable = {"decision-registry"}
+        self.assertEqual(rendered - set(planning.PROCESS_SECTIONS) - deliverable, set())
 
     def test_a_pbi_with_no_command_witness_is_refused_at_the_cut(self):
         payload = self.payload()

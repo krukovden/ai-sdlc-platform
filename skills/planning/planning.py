@@ -1334,10 +1334,11 @@ LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
 
 
 # Sections that record how the design was made, not what is built: no PBI can
-# deliver "Storage model | skipped" or a rejected alternative. On the live runs
-# of 2026-10-14 their rows were forced into the floor and burned every planning
-# attempt (IDE-153). The reviewer may still extract from them; the floor does not.
-PROCESS_SECTIONS = ("reviewed", "cost", "alternatives", "tried-and-rejected",
+# deliver "Storage model | skipped", "architect: claude" or a rejected
+# alternative. On the live runs of 2026-10-14 their rows were forced into the
+# floor and burned every planning attempt (IDE-153). Checked against every
+# heading design.py renders and templates/adr*.md carry. The reviewer may still extract from them; the floor does not.
+PROCESS_SECTIONS = ("reviewed", "how-built", "cost", "alternatives", "tried-and-rejected",
                     "not-in-scope", "not-doing", "open-questions")
 
 
