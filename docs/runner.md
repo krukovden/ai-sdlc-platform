@@ -111,7 +111,13 @@ written before IDE-150 in the old spelling (`idp:owner:<run>`, `idp:paused:<run>
 are read as they are and re-spelt on their next change.
 
 PBIs carry no phase tag. During 3.2 a worker claims one with
-`idp:in-progress@<run>/w<N>`, paused as `idp:paused@<run>/w<N>`.
+`idp:in-progress@<run>/w<N>`; a paused PBI is `idp:paused@<run>` (the run, not
+the worker: any of that run's workers, or any run, may take it).
+
+Limits of this spelling: on Linear each run id becomes a label in the team, and
+labels are not deleted when they leave a card — a team accumulates them (reads
+page through up to 5000). Case: the grammar is case-insensitive, run ids are
+not.
 
 To stop one Feature, use `run.py stop` or the local stop file; `idp:stop` is no
 longer part of the vocabulary (a card that still carries it is honoured).

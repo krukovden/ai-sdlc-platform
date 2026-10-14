@@ -357,6 +357,11 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         for label in self.team_labels():
             if label["name"].casefold() == wanted:
                 return label["id"]
+        # A label created by a concurrent run since the cache was filled.
+        self._labels = None
+        for label in self.team_labels():
+            if label["name"].casefold() == wanted:
+                return label["id"]
 
         mutation = """
         mutation Label($input: IssueLabelCreateInput!) {
@@ -372,15 +377,28 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         self._labels = None
         return result["issueLabel"]["id"]
 
+    LABEL_PAGES = 50                                    # 5000 labels: bounded, not capped
+
     def team_labels(self):
+        """Every label of the team, page by page — IDE-150's state labels carry a
+        run id, so a team accumulates more than one page of them."""
         if getattr(self, "_labels", None) is None:
             q = """
-            query Labels($id: String!) {
-              team(id: $id) { labels(first: 100) { nodes { id name } } }
+            query Labels($id: String!, $after: String) {
+              team(id: $id) { labels(first: 100, after: $after) {
+                nodes { id name } pageInfo { hasNextPage endCursor } } }
             }
             """
-            self._labels = query(self.token, q,
-                                 {"id": self.team["id"]})["team"]["labels"]["nodes"]
+            found, after = [], None
+            for _ in range(self.LABEL_PAGES):
+                page = query(self.token, q, {"id": self.team["id"], "after": after})
+                labels = page["team"]["labels"]
+                found.extend(labels["nodes"])
+                info = labels.get("pageInfo") or {}
+                if not info.get("hasNextPage") or not info.get("endCursor"):
+                    break
+                after = info["endCursor"]
+            self._labels = found
         return self._labels
 
     def get_issue(self, identifier):

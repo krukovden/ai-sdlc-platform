@@ -1006,6 +1006,38 @@ class GuardTests(ScriptTestCase):
         self.assertIn("not prefixed", message)
 
 
+class ExactCorrelationTests(ScriptTestCase):
+    """A CONTAINS hit is a candidate; the machine header's cid is the identity (IDE-150 review)."""
+
+    def find(self, *items, cid="fp_abc123"):
+        merged = {}
+        for item in items:
+            merged.update(item)
+        fake = FakeAz(merged)
+        with stub(fake):
+            return azure.Board(None, PROFILE).find_by_correlation(cid)
+
+    def test_a_prose_mention_of_the_cid_is_not_the_card(self):
+        mention = work_item("41", description='```sdlc-meta\n{"cid": "fp_other"}\n```\nsee fp_abc123')
+        self.assertIsNone(self.find(mention))
+
+    def test_a_longer_cid_that_starts_with_this_one_is_not_the_card(self):
+        longer = work_item("41", description='{"cid": "fp_abc123_extra"}')
+        real = work_item("42", description='{"cid": "fp_abc123"}')
+        self.assertEqual(self.find(longer, real)["identifier"], "42")
+
+    def test_a_card_published_before_ide_150_is_found_by_its_whole_tag(self):
+        legacy = work_item("42", tags="sdlc:cid=fp_abc123")
+        prefix = work_item("43", tags="sdlc:cid=fp_abc1234")
+        self.assertEqual(self.find(prefix, legacy)["identifier"], "42")
+
+    def test_two_cards_with_the_same_cid_are_refused_not_guessed(self):
+        one = work_item("41", description='{"cid": "fp_abc123"}')
+        two = work_item("42", description='{"cid": "fp_abc123"}')
+        with self.assertRaises(SystemExit):
+            self.find(one, two)
+
+
 class CorrelationTests(ScriptTestCase):
     """Idempotency reads the cid in the description; old cards' sdlc:cid tag is still read."""
 

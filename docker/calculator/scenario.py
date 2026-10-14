@@ -1910,12 +1910,13 @@ class AdoScenarioRunner:
 
     def human_move_feature(self, target, note):
         card = self.board.read_card(self.feature_id)
+        # A human moves the card to a new state: every state tag goes, whatever
+        # its spelling (bare phase, in-progress@run, paused@run, old owner tags);
+        # idp:blocked and labels outside idp: stay.
         tags_now = []
         for label in card.get("tags") or []:
             folded = str(label).strip().casefold()
-            if folded in {tags.DESIGN.casefold(), tags.DESIGN_REVIEW.casefold(),
-                          tags.DEVELOPMENT.casefold(), tags.QA.casefold(),
-                          tags.PR_REVIEW.casefold()}:
+            if folded.startswith(tags.TAG_PREFIX) and folded != tags.BLOCKED:
                 continue
             tags_now.append(label)
         tags_now.append(target)

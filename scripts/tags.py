@@ -146,7 +146,8 @@ FEATURE_PHASES = {
 # How the logical tags are spelt on a board (IDE-150): one state tag.
 IN_PROGRESS = "in-progress"
 PAUSED = "paused"
-_STATE = re.compile(r"^idp:(?:(?P<phase>[a-z-]+):)?(?P<state>in-progress|paused)@(?P<who>.+)$")
+_STATE = re.compile(r"^idp:(?:(?P<phase>[a-z-]+):)?(?P<state>in-progress|paused)@(?P<who>.+)$",
+                    re.IGNORECASE)
 
 # A run id goes into a tag, so it is held to what a tag can safely carry.
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -178,11 +179,33 @@ def decode(labels):
         if match and (phase is None or TAG_PREFIX + phase.casefold() in PHASE_TAGS):
             if phase:
                 out.append(TAG_PREFIX + phase.casefold())
-            prefix = OWNER_PREFIX if match.group("state") == IN_PROGRESS else PAUSED_PREFIX
+            state = match.group("state").casefold()
+            prefix = OWNER_PREFIX if state == IN_PROGRESS else PAUSED_PREFIX
             out.append(prefix + match.group("who"))
         else:
             out.append(label)
     return out
+
+
+def _fact(label):
+    """One logical tag as a fact: the grammar case-folded, a run identity verbatim.
+
+    Run ids are case-sensitive everywhere ownership is checked, so a no-op must
+    not fold `Run-A` into `run-a` and swallow a real change of owner.
+    """
+    text = str(label).strip()
+    for prefix in (OWNER_PREFIX, PAUSED_PREFIX):
+        if text.casefold().startswith(prefix):
+            return prefix + text[len(prefix):]
+    return text.casefold()
+
+
+def ambiguous(labels):
+    """Two holders, a holder and a pause, or one phase spelt twice: not one state."""
+    logical = decode(labels)
+    holders = [l for l in logical if _fold(l).startswith((OWNER_PREFIX, PAUSED_PREFIX))]
+    phases = [_fold(l) for l in logical if _fold(l) in PHASE_TAGS]
+    return len(holders) > 1 or len(phases) != len(set(phases))
 
 
 def encode(labels):
@@ -385,8 +408,23 @@ def _write(board, identifier, decide):
 
     # Unchanged means the same facts, whatever the spelling: a card still in the
     # pre-IDE-150 spelling is re-spelt on its next real change, not by a no-op.
-    same_tags = [_fold(t) for t in tags] == [_fold(t) for t in card.get("tags") or []]
-    tags = encode(tags)
+    same_tags = [_fact(t) for t in tags] == [_fact(t) for t in card.get("tags") or []]
+    if ambiguous(raw.get("tags")):
+        # Rival holders are a human's to sort out. The one write allowed is the
+        # flag that says so: idp:blocked on top of the card's tags exactly as
+        # they are, so no ownership fact is regrouped or lost.
+        before = sorted(_fact(t) for t in card.get("tags") or [] if _fold(t) != BLOCKED)
+        after = sorted(_fact(t) for t in tags if _fold(t) != BLOCKED)
+        if before != after or not is_blocked(tags):
+            return _result("refused", raw,
+                           message=f"{identifier} carries conflicting state tags "
+                                   f"({', '.join(raw.get('tags') or [])}); nothing was changed.",
+                           fix="leave one state tag on the card, then re-run")
+        tags = list(raw.get("tags") or [])
+        if not is_blocked(tags):
+            tags.append(BLOCKED)
+    else:
+        tags = encode(tags)
     same_status = status is None or _fold(status) == _fold(card.get("status") or "")
     if same_tags and same_status:
         return _result("unchanged", raw)

@@ -1173,10 +1173,22 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             f"([System.Description] CONTAINS {_literal(cid)}"
             f" OR [System.Tags] CONTAINS {_literal(TAG_CID_PREFIX + cid)})",
             columns=["System.Id", "System.Title"])
-        if not rows:
-            return None
-        return self.get_issue(str((rows[0].get("fields") or {}).get("System.Id")
-                                  or rows[0].get("id")))
+        # CONTAINS only finds candidates: a description that mentions this cid in
+        # prose, or carries a longer cid that starts with it, is not this card.
+        # The identity is the machine header's cid, or the whole legacy tag.
+        exact = []
+        for row in rows:
+            issue = self.get_issue(str((row.get("fields") or {}).get("System.Id")
+                                       or row.get("id")))
+            legacy = {str(t).strip() for t in issue.get("labels") or []}
+            if read_cid(issue.get("description") or "") == cid or TAG_CID_PREFIX + cid in legacy:
+                exact.append(issue)
+        if len(exact) > 1:
+            fail(EXIT.INVALID,
+                 f"{len(exact)} work items carry correlation id {cid}: "
+                 f"{', '.join(str(i['identifier']) for i in exact)}. Refusing to pick one.",
+                 fix="remove the duplicate work item, then re-run")
+        return exact[0] if exact else None
 
     def _brief(self, row, project=None):
         fields = row.get("fields") or {}

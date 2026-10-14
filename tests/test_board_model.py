@@ -99,6 +99,42 @@ class OneStateTagTests(ScriptTestCase):
         self.assertEqual(board.cards["1"]["tags"], ["idp:design:in-progress@run-b"])
 
 
+class OneStateTagReviewTests(ScriptTestCase):
+    """The astra review of IDE-150: case, rival holders, takeover identity."""
+
+    def test_the_grammar_is_case_insensitive_and_the_run_id_verbatim(self):
+        labels = ["IDP:DEVELOPMENT:IN-PROGRESS@Run-A"]
+        self.assertEqual(tags.phase_of(labels), tags.DEVELOPMENT)
+        self.assertEqual(tags.owner_of(labels), "Run-A")
+        self.assertEqual(tags.paused_of(["Idp:Design:Paused@run-b"]), "run-b")
+
+    def test_an_uppercase_holder_on_a_pbi_is_still_a_holder(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DEVELOPMENT)
+        tags.claim(board, "1", A)
+        board.add_card("2", ["IDP:IN-PROGRESS@run-old/w1"], kind="pbi", parent="1")
+        self.assertEqual(tags.claim_pbi(board, "2", A, 2, feature="1")["outcome"], "conflict")
+        self.assertEqual(board.cards["2"]["tags"], ["IDP:IN-PROGRESS@run-old/w1"])
+
+    def test_rival_holders_are_a_conflict_and_only_blocking_writes(self):
+        board = FakeBoard()
+        rivals = ["idp:design:in-progress@run-a", "idp:design:in-progress@run-b"]
+        feature(board, "1", *rivals)
+        self.assertTrue(tags.ambiguous(rivals))
+        self.assertEqual(tags.claim(board, "1", A)["outcome"], "refused")
+        self.assertEqual(tags.set_blocked(board, "1", A)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], rivals + ["idp:blocked"])
+        self.assertTrue(tags.ambiguous(["idp:design:in-progress@run-a", "idp:design:paused@run-b"]))
+        self.assertFalse(tags.ambiguous(["idp:design:in-progress@run-a", "idp:blocked"]))
+
+    def test_a_takeover_that_only_changes_the_case_of_the_run_id_is_written(self):
+        board = FakeBoard()
+        feature(board, "1", "idp:design:in-progress@Run-A")
+        rev = board.cards["1"]["rev"]
+        self.assertEqual(tags.take_over(board, "1", A, rev)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design:in-progress@run-a"])
+
+
 class TransitionTableTests(ScriptTestCase):
     """One table, one actor per row; the runner's writer never reaches a human's."""
 
