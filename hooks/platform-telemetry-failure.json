@@ -1,0 +1,16 @@
+{
+  "name": "platform-telemetry-failure",
+  "description": "Claude Code fires only PostToolUseFailure for a failing Bash call: same detection as platform-telemetry for that case. Side effect only; prints nothing and never fails a session.",
+  "event": "PostToolUseFailure",
+  "matcher": [
+    "Bash"
+  ],
+  "script": "skills/platform-telemetry/detect.py",
+  "runtime": "python3",
+  "registration": "hooks/hooks.json",
+  "platforms": [
+    "claude"
+  ],
+  "timeoutSec": 30,
+  "failOpen": "( <command> ) >/dev/null 2>&1; exit 0 \u2014 a missing python3 or a throwing import fails before the script's own try"
+}

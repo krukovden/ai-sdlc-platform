@@ -1,4 +1,4 @@
-# HUB registration lines for IDE-147
+# HUB registration lines for IDE-147 and IDE-151
 
 Ready-to-paste one-line entries for the Linear HUB document.
 
@@ -9,6 +9,7 @@ Ready-to-paste one-line entries for the Linear HUB document.
 - Development orchestration and tested-SHA merges — IDE-147 — `scripts/phase3/plan.py`, `scripts/phase3/shape.py`, `scripts/phase3/states.py`, `scripts/phase3/bugs.py`, `scripts/phase3/review.py`, `scripts/phase3/finalize.py`, `scripts/phase3/merge.py`, `scripts/phase3/integration.py`, `scripts/phase3/journal.py`, `scripts/phase3/gitops.py`, `scripts/phase3/orchestrator.py`
 - Executors and session isolation — IDE-147 — `scripts/executors/agents.py`, `scripts/executors/environment.py`, `scripts/executors/local.py`, `scripts/executors/orca_backend.py`, `scripts/executors/roles.py`, `scripts/handoff.py`, `scripts/hooks/cliff_handoff.py`, `scripts/hooks/context_watch.py`, `scripts/hooks/statusline.py`
 - Development worker and documenter skills — IDE-147 — `skills/development/SKILL.md`, `skills/documenter/SKILL.md`
+- Self-reporting telemetry and user feedback — IDE-151 — `skills/platform-telemetry/`, `skills/platform-feedback/`, `hooks/platform-telemetry.json`, `hooks/platform-telemetry-failure.json`, `docs/telemetry.md`
 - Area blueprints and runner evidence pack — IDE-147 — `scripts/blueprint.py`, `docs/runner.md`, `scripts/experiments/e2_claim_race.py`, `scripts/experiments/e3_attachment_roundtrip.py`, `scripts/experiments/e4_cliff_hooks.py`, `scripts/experiments/e7_mentions.py`, `docs/experiments/README.md`
 
 ## Removed

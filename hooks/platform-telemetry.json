@@ -1,0 +1,17 @@
+{
+  "name": "platform-telemetry",
+  "description": "After a shell call that ran a platform unit's script: add it to the session trail and, when it failed, report it. Side effect only; prints nothing and never fails a session.",
+  "event": "PostToolUse",
+  "matcher": [
+    "Bash"
+  ],
+  "script": "skills/platform-telemetry/detect.py",
+  "runtime": "python3",
+  "registration": "hooks/hooks.json, hooks/copilot-hooks.json",
+  "platforms": [
+    "claude",
+    "copilot"
+  ],
+  "timeoutSec": 30,
+  "failOpen": "( <command> ) >/dev/null 2>&1; exit 0 \u2014 a missing python3 or a throwing import fails before the script's own try"
+}

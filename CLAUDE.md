@@ -220,6 +220,12 @@ runner and the scripts around it:
 - **Area blueprints and experiment harness** — `scripts/blueprint.py`,
   `docs/runner.md`, `scripts/experiments/`, `docs/experiments/`
 
+**IDE-151 added self-reporting telemetry**, ported from engineering-catalog's design: a
+fail-open `PostToolUse` / `PostToolUseFailure` hook reports a failing platform script, the
+`platform-telemetry` skill lets the model report a unit that contradicted its instructions,
+and `/platform-feedback` sends a user's feedback after an explicit yes. It reports to the
+engineering catalog's receiver, the same one the catalog uses — see [`docs/telemetry.md`](docs/telemetry.md).
+
 On Azure DevOps the runner now calls engineering-catalog's `ado-board` unit for
 todo / doing / done moves and `reconcile` when it is installed. That unit is the
 one merged in [krukovden/engineering-catalog#3](https://github.com/krukovden/engineering-catalog/pull/3).
@@ -243,7 +249,8 @@ scripts/       run.py, phases.py, exit_codes.py, lease.py, tags.py, handoff.py  
                experiments/ (e2, e3, e4, e7 live probes)                                ✅
 skills/        feature-discovery/, design/, planning/, establish-project/               ✅
                development/, documenter/, platform-freshness/                            ✅
-docs/          project-state.md (generated), runner.md, install.md                       ✅
+               platform-telemetry/, platform-feedback/ (self-reporting, IDE-151)         ✅
+docs/          project-state.md (generated), runner.md, install.md, telemetry.md         ✅
                experiments/ (pre-registered live checks)                                 ✅
 docker/        install smoke and package e2e harness                                     ✅
 cli/           version.js, marketplace helpers                                           ✅
@@ -313,7 +320,7 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 - **The nine Linear statuses no longer carry phases.** `Ready for Design` … `PR Review` still exist on the IdeaHub board, but a Feature's position is its `idp:` label; a card sitting in one of those statuses with no phase label resolves as off the route until it is tagged. A profile that maps a Feature phase under `phases` is refused with a FIX line; only `phases.pbi` may rename a backlog item's states.
 - **The Orca environment check is a probe, not a sandbox.** Before the first Orca session of a run the backend checks the *names* of variables visible inside an Orca terminal and refuses Orca for that run if a denied name is present. That proves the launch path we measured, not a machine boundary: a model under the same OS user can still open files the user can read directly, including token files.
 - **Model isolation is process-level, not user-level.** Worker sessions do not inherit named board-token variables, the subprocess backend points `AZURE_CONFIG_DIR` at a fresh empty directory, `board.py` refuses direct board access when `IDP_NO_BOARD=1`, and runner-marked hooks write only pause requests. But a model running as the same OS user can still read files that user can read directly, including `~/.feature-discovery/linear-token` or a profile's `token_path` for Azure DevOps. A full credential boundary needs the model under a separate OS user or in a container with only the intended files mounted.
-- **Copilot hooks are shipped, not plugin-registered.** Claude plugin installs wire the freshness hook automatically. Copilot does not: `hooks/copilot-hooks.json` must still be installed by hand into `~/.copilot/hooks/`, or printed with absolute paths. Until that changes, Copilot's layer-2 cliff handoff is opt-in, while the runner-side guarantee still works.
+- **Copilot hooks are shipped, not plugin-registered.** Claude plugin installs wire the freshness hook automatically. Copilot does not: `hooks/copilot-hooks.json` must still be installed by hand into `~/.copilot/hooks/`, or printed with absolute paths. Until that changes, Copilot's layer-2 cliff handoff is opt-in, while the runner-side guarantee still works. The same holds for the telemetry `postToolUse` hook (IDE-151): on Copilot it reports only once that file is installed.
 - **The clean-session check on the establish documentation has not been run.** [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) requires that a session given only the documentation describes `/idp-establish` correctly without reading the milestone's issues. Until it runs, the documentation is written but unverified.
 - **This file is a hand-maintained summary, and it has drifted before.** Two entries here described a repository that no longer existed, and a session that read them cold went hunting a credential bug that had already been fixed ([IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed)). `board.py memory check` now warns when this file is older than the last commit touching `scripts/`, `skills/`, `schemas/`, `templates/`, `lint/` or `registry/`. It is a warning and not a refusal, because most of those commits change nothing this file claims — which is also why the drift is invisible one commit at a time. When it warns, read the claims against the commits it lists.
 

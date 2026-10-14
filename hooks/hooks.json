@@ -20,6 +20,28 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "( python3 \"${CLAUDE_PLUGIN_ROOT}/skills/platform-telemetry/detect.py\" ) >/dev/null 2>&1; exit 0",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "( python3 \"${CLAUDE_PLUGIN_ROOT}/skills/platform-telemetry/detect.py\" ) >/dev/null 2>&1; exit 0",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "StopFailure": [

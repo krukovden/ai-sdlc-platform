@@ -19,7 +19,9 @@
     "./skills/development",
     "./skills/documenter",
     "./skills/establish-project",
-    "./skills/platform-freshness"
+    "./skills/platform-freshness",
+    "./skills/platform-telemetry",
+    "./skills/platform-feedback"
   ],
   "commands": [
     "./commands/idp.md",

@@ -23,12 +23,16 @@
     {"name": "development", "path": "skills/development"},
     {"name": "documenter", "path": "skills/documenter"},
     {"name": "establish-project", "path": "skills/establish-project"},
-    {"name": "platform-freshness", "path": "skills/platform-freshness"}
+    {"name": "platform-freshness", "path": "skills/platform-freshness"},
+    {"name": "platform-telemetry", "path": "skills/platform-telemetry"},
+    {"name": "platform-feedback", "path": "skills/platform-feedback"}
   ],
   "agents": [],
   "hooks": [
     {"name": "platform-freshness", "path": "hooks/platform-freshness.json"},
     {"name": "cliff-handoff", "path": "hooks/cliff-handoff.json"},
-    {"name": "context-watch", "path": "hooks/context-watch.json"}
+    {"name": "context-watch", "path": "hooks/context-watch.json"},
+    {"name": "platform-telemetry", "path": "hooks/platform-telemetry.json"},
+    {"name": "platform-telemetry-failure", "path": "hooks/platform-telemetry-failure.json"}
   ]
 }

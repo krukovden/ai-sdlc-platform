@@ -364,7 +364,7 @@ class ShippedHookFilesTests(unittest.TestCase):
 
     def test_claude_registers_the_watch_and_the_cliff_beside_freshness(self):
         hooks = self.read("hooks.json")["hooks"]
-        self.assertEqual(list(hooks), ["SessionStart", "PostToolUse", "StopFailure"])
+        self.assertEqual(list(hooks), ["SessionStart", "PostToolUse", "PostToolUseFailure", "StopFailure"])
         self.assertEqual(len(hooks["SessionStart"][0]["hooks"]), 1)
         self.assertIn("context_watch.py", hooks["PostToolUse"][0]["hooks"][0]["command"])
         self.assertIn("cliff_handoff.py\" --host claude",

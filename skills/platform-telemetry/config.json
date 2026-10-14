@@ -1,0 +1,4 @@
+{
+  "endpoint": "https://func-tss-ai-dogfood-scus.azurewebsites.net/api/report",
+  "enabled": true
+}
