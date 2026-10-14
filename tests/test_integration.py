@@ -328,6 +328,22 @@ class MemoryLiftTests(IntegrationTestCase):
         self.assertIsNone(world.remote_file(FEATURE_BRANCH, "src/oops.py"))
         self.assertIsNotNone(world.remote_file(FEATURE_BRANCH, "memory/units/modules.md"))
 
+    def test_a_malformed_answer_is_an_attempt_not_a_crash(self):
+        world = self.world_with_memory()
+        attempts = []
+
+        def malformed(world_, worktree, prompt):
+            attempts.append(1)
+            if len(attempts) == 1:
+                answer = Path(prompt.split("Then write ", 1)[1].split(" as JSON", 1)[0])
+                answer.write_text("[]", encoding="utf-8")
+                return EXIT.DONE
+            return phase3_world.lift_all(world_, worktree, prompt)
+
+        world.memory_writer = malformed
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual(len(attempts), 2)
+
     def test_a_pbi_that_edits_the_journal_is_refused_at_finalize(self):
         world = self.world(plan={"pbis": [pbi("a")]})
         world.behaviors["a"] = [phase3_world.ok(extra={

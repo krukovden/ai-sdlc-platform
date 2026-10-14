@@ -1365,6 +1365,10 @@ def lift_problems(wt, tip, offered, answer_path):
     except (OSError, ValueError):
         return problems + [f"{answer_path.name} is missing or not JSON: "
                            '{"lifted": [{"source", "id"}], "skipped": [{"source", "why"}]}']
+    if not isinstance(answer, dict) or not all(
+            isinstance(answer.get(kind, []), list) for kind in ("lifted", "skipped")):
+        return problems + [f"{answer_path.name} must be an object whose `lifted` and `skipped` "
+                           "are lists"]
     decided = {}
     for kind in ("lifted", "skipped"):
         for item in answer.get(kind) or []:

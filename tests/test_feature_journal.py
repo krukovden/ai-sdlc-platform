@@ -77,6 +77,8 @@ class FormatTests(ScriptTestCase):
     def test_an_existing_directory_wins_over_a_renamed_title(self):
         self.assertEqual(fj.locate(["IDE-7-old-title", "IDE-70-other"], "IDE-7", "New title"),
                          "docs/features/IDE-7-old-title")
+        # Always `<id>-<slug>`: the prefix finalize protects is `docs/features/<id>-`.
+        self.assertEqual(fj.locate(["IDE-7"], "IDE-7", "Title"), "docs/features/IDE-7-title")
         self.assertEqual(fj.locate([], "IDE-7", "Offline search!"),
                          "docs/features/IDE-7-offline-search")
 
@@ -96,6 +98,13 @@ class DesignDecisionTests(ScriptTestCase):
         self.assertIn("a flat file cannot be indexed", entries[0]["alternative"])
         self.assertEqual(entries[1]["alternative"], "Keep everything in memory")
         self.assertEqual(entries[1]["rationale"], "values must survive a restart")
+
+    def test_a_reason_without_a_broken_option_is_not_turned_into_one(self):
+        adr = ADR.replace("data migrates once written; a flat file cannot be indexed",
+                          "data migrates once written")
+        entry = fj.design_decisions("IDE-7", adr, "2026-10-14")[0]
+        self.assertEqual(entry["rationale"], "data migrates once written")
+        self.assertNotIn("data migrates", entry["alternative"])
 
     def test_a_russian_adr_is_read_too(self):
         entries = fj.design_decisions("IDE-7", ADR_RU, "2026-10-14")

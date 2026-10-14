@@ -181,6 +181,23 @@ class LintTests(Repo):
         self.assertEqual(pm.parse_unit(unit.read_text())["summary"], "Login")
         self.assertEqual(self.lint(), [])
 
+    def test_index_check_writes_nothing(self):
+        unit = self.memory / "units" / "auth.md"
+        unit.write_text("<!-- memory:unit auth — x -->\n# Auth\n\n## Entries\n")
+        index = self.memory / "index.md"
+        index.write_text(index.read_text().replace("|---|---|\n", "|---|---|\n| [[auth]] | Login |\n"))
+        before = unit.read_text(), index.read_text()
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            pm.main(["index", "--memory", str(self.memory), "--check"])
+        self.assertEqual((unit.read_text(), index.read_text()), before)
+
+    def test_a_duplicate_entry_id_is_reported(self):
+        self.add(token="aaaa", on="2026-10-14")
+        path = self.memory / "units" / "storage.md"
+        text = path.read_text()
+        path.write_text(text + "\n" + text[text.index("### e-"):])
+        self.assertTrue(any("used more than once" in p for p in self.lint()))
+
     def test_size_budgets(self):
         self.add(body="word " * 400)
         problems = self.lint(unit_budget=500, index_budget=100)
@@ -286,6 +303,13 @@ class ReconcileTests(Repo):
         git(self.repo, "checkout", "-q", "-b", "later")
         number, kept = pm.mark(self.repo, self.memory, 4, through=a)
         self.assertEqual((number, kept), (4, []))
+
+    def test_a_conflict_with_no_number_keeps_the_watermark_line(self):
+        text = ("# x\n\n<<<<<<< ours\nreconciled-pr: none\n=======\nreconciled-sha: abc\n"
+                ">>>>>>> theirs\n")
+        resolved = pm.resolve_index(text)
+        self.assertIn("reconciled-pr: none", resolved)
+        self.assertNotIn("<<<<<<<", resolved)
 
     def test_a_conflict_keeps_the_higher_watermark(self):
         text = ("# x\n\n<<<<<<< ours\nreconciled-pr: 12\n=======\nreconciled-pr: 15\n"

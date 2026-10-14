@@ -74,7 +74,7 @@ def locate(names, feature, title):
     """
     prefix = f"{feature}-"
     for name in sorted(names or []):
-        if name.startswith(prefix) or name == feature:
+        if name.startswith(prefix):
             return f"{DIRECTORY}/{name}"
     return f"{DIRECTORY}/{directory_name(feature, title)}"
 
@@ -245,7 +245,7 @@ def design_decisions(feature, adr_text, on):
             continue
         if cells[2] != "hard-to-reverse":
             continue
-        why, _, breaks = cells[3].rpartition("; ")
+        why, _, breaks = cells[3].rpartition("; ") if "; " in cells[3] else (cells[3], "", "")
         entries.append(decision(
             summary=cells[1], context=f"A hard-to-reverse design decision of the ADR ({cells[0]})",
             decision_=cells[1], rationale=why or cells[3],

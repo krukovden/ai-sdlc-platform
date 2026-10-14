@@ -288,8 +288,11 @@ class Store:
     def index_text(self):
         return self.index.read_text(encoding="utf-8") if self.index.exists() else ""
 
-    def generated_index(self):
-        """index.md with its Units table rebuilt; unit summaries seeded from old rows."""
+    def generated_index(self, write=True):
+        """index.md with its Units table rebuilt; unit summaries seeded from old rows.
+
+        `write=False` computes the same answer and touches no unit file (`--check`).
+        """
         text = self.index_text()
         rows = {u["slug"]: u["summary"] for u in parse_index(text)["units"]}
         units = []
@@ -299,7 +302,9 @@ class Store:
                 # Migration from the catalog's hand-kept table: the row becomes the
                 # unit's own summary, once, and from then on the table is derived.
                 summary = rows[unit["name"]][:SUMMARY_LIMIT]
-                unit["file"].write_text(with_summary(unit["text"], summary), encoding="utf-8")
+                if write:
+                    unit["file"].write_text(with_summary(unit["text"], summary),
+                                            encoding="utf-8")
             units.append({"slug": unit["name"], "summary": summary or ""})
         return replace_units_table(text, units_table(units))
 
@@ -448,6 +453,13 @@ def lint(memory, features=None, base=None, repo=None, index_budget=INDEX_BUDGET,
             problems.append(f"units/{name} is {size} bytes; the budget is {unit_budget}. "
                             "Prune superseded material into a summary sentence or split "
                             "the unit")
+    seen = set()
+    for unit in units:
+        for entry in unit["entries"]:
+            if entry.get("id") in seen:
+                problems.append(f"units/{unit['file'].name}: entry id {entry['id']} is used "
+                                "more than once")
+            seen.add(entry.get("id"))
     problems += supersede_problems(units)
     slugs = {u["name"] for u in units}
     rows = {u["slug"] for u in index["units"]}
@@ -620,8 +632,10 @@ def _merge_hunk(ours, theirs):
     placed = False
     for line in ours + theirs:
         if re.match(r"^reconciled-(pr|sha):", line):
-            if not placed and numbers:
-                merged.append(f"reconciled-pr: {max(numbers)}")
+            if not placed:
+                # The higher number wins; with no number on either side, the
+                # first watermark line is kept as it was, never dropped.
+                merged.append(f"reconciled-pr: {max(numbers)}" if numbers else line)
                 placed = True
             continue
         if line not in merged or not line.strip():
@@ -700,7 +714,7 @@ def _dispatch(args):
     if args.command == "index":
         store = Store(args.memory)
         before = store.index_text()
-        after = store.generated_index()
+        after = store.generated_index(write=not args.check)
         if args.check:
             if after != before:
                 print("index.md: the Units table is stale; run project_memory.py index",
