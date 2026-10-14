@@ -372,9 +372,10 @@ class Integration:
 
     def ensure(self):
         dev = self.dev
-        todo = dev.mover.names().get("todo") if hasattr(dev.mover, "names") else None
+        # Per kind, as planning does: live Feature 105110 created an integration
+        # Task with the PBI's `New`, which an Azure DevOps Task does not have.
         shape.ensure(self.board, self.board.get_issue(self.feature), dev.plan, self.profile,
-                     dev.header, todo_status=todo)
+                     dev.header, todo_status=dev.todo_states())
 
     def amend(self, entries, record):
         """Append entries to the plan, commit it, pin it. The plan is the record."""

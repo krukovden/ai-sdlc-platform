@@ -350,15 +350,8 @@ class Development:
         except plans.PlanError as exc:
             return self.block_feature(f"the pinned plan cannot be used: {exc}")
         self.pin = pinned
-        todo = None
-        if hasattr(self.mover, "names"):
-            todo = {
-                "pbi": self.mover.names(kind="pbi").get("todo"),
-                "task": self.mover.names(kind="task").get("todo"),
-                "bug": self.mover.names(kind="bug").get("todo"),
-            }
         ids, _ = shape.ensure(self.board, issue, self.plan, self.profile, header,
-                              todo_status=todo)
+                              todo_status=self.todo_states())
         # What planning cut, not what integration or QA added to the plan since.
         cut = [p["key"] for p in self.plan["pbis"] if p["key"] not in amended_keys(self.plan)]
         first = plans.first_pinned(self.board, feature) or pinned
@@ -370,6 +363,16 @@ class Development:
             self.journal.add(f"Why this cut: {self.plan['notes']}")
         self.journal.upload()
         return EXIT.DONE
+
+    def todo_states(self):
+        """The board's to-do state per work item kind, or None where the mover has none.
+
+        Per kind, because a board's types disagree: on Azure DevOps Scrum a PBI
+        starts in `New` and a Task in `To Do`.
+        """
+        if not hasattr(self.mover, "names"):
+            return None
+        return {kind: self.mover.names(kind=kind).get("todo") for kind in ("pbi", "task", "bug")}
 
     def adr_text(self, feature, route):
         if route == "small-feature":

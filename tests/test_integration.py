@@ -267,6 +267,27 @@ class RoundTests(IntegrationTestCase):
         self.assertIn(fixes[0], self.qa_meta(world)["depends_on"])
         self.assertEqual(self.feature_tags(world), [tags.QA])
 
+    def test_an_integration_task_starts_in_the_tasks_own_todo_state(self):
+        # Live Feature 105110: a Task created by 3.3 got the PBI's `New`, which an
+        # Azure DevOps Task does not have; the create landed and the move failed.
+        class Mover:
+            def names(self, issue=None, kind=None):
+                return {"todo": {"pbi": "New", "task": "To Do", "bug": "New"}[kind or "pbi"]}
+
+        dev = phase3.Development.__new__(phase3.Development)
+        dev.mover = Mover()
+        self.assertEqual(dev.todo_states(), {"pbi": "New", "task": "To Do", "bug": "New"})
+        seen = {}
+        fake = type("Dev", (), {"mover": dev.mover, "todo_states": dev.todo_states,
+                                "plan": {"pbis": []}, "header": {}, "feature": FEATURE,
+                                "board": mock.Mock()})()
+        step = integration.Integration.__new__(integration.Integration)
+        step.dev, step.profile = fake, PROFILE
+        with mock.patch.object(shape, "ensure",
+                               lambda *a, **k: seen.update(k) or ({}, None)):
+            step.ensure()
+        self.assertEqual(seen["todo_status"]["task"], "To Do")
+
     def qa_meta(self, world):
         return world.items()[shape.QA_KEY]["meta"]
 
