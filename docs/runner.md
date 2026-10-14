@@ -86,8 +86,10 @@ the table above: a mistake in an ADR or a plan multiplies into every PBI cut fro
 it, and a reviewer weaker than the author reviews nothing. A profile that puts a
 model below its role's floor anywhere on that role's list refuses the run with
 exit 2 before any session starts; a fallback below the floor is never borrowed;
-a model the table does not know meets only `fast`. Classify a new model in the
-registry before it can design or review.
+a model the table does not know meets only `fast` — and that includes a bare
+agent name like `codex`, whose model comes from the user's own configuration, so
+design and review must name their model. Classify a new model in the registry
+before it can design or review.
 
 The one way past it is deliberate: `executors.model_floor_override` maps a role to
 the reason. The run proceeds, and every session below the floor posts a

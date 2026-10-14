@@ -686,8 +686,10 @@ class Runner:
             feedback=f"\nThe last attempt was refused by the runner's checks: {feedback}\n"
                      "Fix exactly that." if feedback else "")
         try:
-            return reconnect("design", feature, worktree, prompt,
+            code = reconnect("design", feature, worktree, prompt,
                              context={"IDP_CONTEXT_DIR": str(context)})
+            self.record_floor_override(feature)
+            return code
         except executors.ResolutionError as exc:
             tags.release(self.board, feature, self.run_id)
             raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
@@ -711,7 +713,7 @@ class Runner:
             tags.release(self.board, feature, self.run_id)
             raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
 
-    def record_floor_override(self, card, feature=None):
+    def record_floor_override(self, card, feature=None, journal=True):
         """A session that ran below its role's floor says so on the card (IDE-152).
 
         The override is the profile's deliberate choice, so it never stops the
@@ -722,16 +724,20 @@ class Runner:
         if not note:
             return None
         feature = feature or card
+        # Keyed per run and card: a redesign with a new reason, or a second
+        # PBI reviewed below the floor, is a new record, never a dropped one.
         lease.post_event(
-            self.board, feature, FLOOR, f"{FLOOR}:{note['role']}:{note['model']}",
+            self.board, feature, FLOOR,
+            f"{FLOOR}:{self.run_id}:{card}:{note['role']}:{note['model']}:"
+            f"{sha256(note['reason'])[:19]}",
             text=(f"The {note['role']} role ran on `{note['model']}` ({note['tier']}), below "
                   f"its `{note['floor']}` floor, because the profile overrides it: "
                   f"{note['reason']}"),
             run=self.run_id, card=str(card), **note)
-        if note["role"] == "design":
-            journal = getattr(self.design, "journal", None)
-            if journal is not None:
-                journal(feature, {"event": "model_floor_override", **note})
+        if journal and note["role"] == "design":
+            write = getattr(self.design, "journal", None)
+            if write is not None:
+                write(feature, {"event": "model_floor_override", **note})
         return note
 
     def floor_overrides(self, feature):
@@ -839,7 +845,9 @@ class Runner:
 
     def review_comment(self, feature, title, text, board=None):
         digest = sha256(text)
-        below = [e for e in self.floor_overrides(feature) if e.get("role") == "design"]
+        # Only this run's design sessions wrote the ADR the gate asks about.
+        below = [e for e in self.floor_overrides(feature)
+                 if e.get("role") == "design" and e.get("run") == self.run_id]
         warning = "".join(
             f" **Written below the model floor:** `{e.get('model')}` is {e.get('tier')}, "
             f"design needs {e.get('floor')}; the profile's reason: {e.get('reason')}."

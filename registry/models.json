@@ -14,7 +14,9 @@
     "`models` is looked up first, by the exact `agent[:model]` entry; then",
     "`patterns`, in order, first match wins (shell-style `*`). An entry without",
     "a model is the agent's own default, and is classified only where that",
-    "default is known."
+    "default is known — which is never: an agent's default comes from the user's",
+    "own configuration, so a bare `codex` or `claude` is unknown, and design and",
+    "review must name their model."
   ],
   "tiers": ["fast", "standard", "frontier"],
   "floors": {
@@ -24,8 +26,6 @@
     "worker": "fast"
   },
   "models": {
-    "claude": "standard",
-    "codex": "frontier",
     "copilot:gpt-6-astra": "frontier",
     "copilot:gpt-5.4": "frontier",
     "copilot:grok-4.7": "standard",
@@ -34,14 +34,18 @@
   "patterns": [
     {"match": "*:*flash*", "tier": "fast"},
     {"match": "*:*haiku*", "tier": "fast"},
-    {"match": "*:*mini*", "tier": "fast"},
-    {"match": "*:*nano*", "tier": "fast"},
-    {"match": "*:*lite*", "tier": "fast"},
+    {"match": "*:*-mini", "tier": "fast"},
+    {"match": "*:*-mini-*", "tier": "fast"},
+    {"match": "*:mini-*", "tier": "fast"},
+    {"match": "*:*-nano", "tier": "fast"},
+    {"match": "*:*-nano-*", "tier": "fast"},
+    {"match": "*:*-lite", "tier": "fast"},
+    {"match": "*:*-lite-*", "tier": "fast"},
     {"match": "claude:*opus*", "tier": "frontier"},
     {"match": "claude:*fable*", "tier": "frontier"},
     {"match": "claude:*sonnet*", "tier": "standard"},
-    {"match": "copilot:claude-opus*", "tier": "frontier"},
-    {"match": "copilot:claude-sonnet*", "tier": "standard"},
+    {"match": "copilot:claude-*opus*", "tier": "frontier"},
+    {"match": "copilot:claude-*sonnet*", "tier": "standard"},
     {"match": "*:*-pro", "tier": "frontier"},
     {"match": "*:*-pro-*", "tier": "frontier"},
     {"match": "*:*-codex", "tier": "frontier"},

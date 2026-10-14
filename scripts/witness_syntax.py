@@ -22,6 +22,9 @@ import shutil
 import subprocess
 
 PYTHON = re.compile(r"^python(\d+(\.\d+)?)?$")
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+SEPARATORS = (";", "&&", "||", "|", "(", "!", "then", "do", "else", "time", "env",
+              "exec", "timeout")
 SHELL_TIMEOUT = 10
 
 
@@ -41,20 +44,35 @@ def shell_problem(command, which=shutil.which, run=subprocess.run):
 
 
 def python_problems(command):
+    """Compile the `python -c` code a shell would pass verbatim, and nothing else.
+
+    Only what can be read statically is judged. Quoting that does not close is
+    the shell layer's verdict, not this one's; a heredoc is data, not commands;
+    and code that depends on an expansion (`$X`, a backquote) is not the code
+    the shell would hand Python, so it is left alone rather than refused.
+    """
+    if "<<" in command:
+        return []
     try:
-        words = shlex.split(command, posix=True)
-    except ValueError as exc:
-        return [f"its quoting does not close: {exc}"]
+        words = shlex.split(command, comments=True, posix=True)
+    except ValueError:
+        return []
     problems = []
     for n, word in enumerate(words[:-2]):
-        if PYTHON.match(os.path.basename(word)) and words[n + 1] == "-c":
-            try:
-                compile(words[n + 2], "<witness>", "exec")
-            except SyntaxError as exc:
-                problems.append(f"its `{word} -c` code does not compile: {exc.msg} "
-                                f"(line {exc.lineno}, column {exc.offset})")
-            except ValueError as exc:
-                problems.append(f"its `{word} -c` code does not compile: {exc}")
+        starts = n == 0 or words[n - 1] in SEPARATORS or \
+            words[n - 1].endswith((";", "&&", "||", "|")) or ASSIGNMENT.match(words[n - 1])
+        if not (starts and PYTHON.match(os.path.basename(word)) and words[n + 1] == "-c"):
+            continue
+        code = words[n + 2]
+        if "$" in code or "`" in code:
+            continue
+        try:
+            compile(code, "<witness>", "exec")
+        except SyntaxError as exc:
+            problems.append(f"its `{word} -c` code does not compile: {exc.msg} "
+                            f"(line {exc.lineno}, column {exc.offset})")
+        except ValueError as exc:
+            problems.append(f"its `{word} -c` code does not compile: {exc}")
     return problems
 
 

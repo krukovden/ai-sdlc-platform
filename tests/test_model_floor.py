@@ -62,6 +62,22 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(table.tier("claude:opus"), "frontier")
         self.assertEqual(table.tier("claude:sonnet"), "standard")
 
+    def test_gemini_pro_is_not_mistaken_for_a_mini_model(self):
+        table = floors()
+        self.assertEqual(table.tier("gemini:gemini-2.5-pro"), "frontier")
+        self.assertEqual(table.tier("copilot:gemini-3-pro"), "frontier")
+        self.assertEqual(table.tier("codex:gpt-5.1-codex-mini"), "fast")
+        self.assertEqual(table.tier("copilot:gpt-5-mini"), "fast")
+
+    def test_an_agent_default_is_unknown_because_the_user_configures_it(self):
+        table = floors()
+        for bare in ("codex", "claude", "copilot"):
+            self.assertIsNone(table.tier(bare), bare)
+        handle = resolver({"roles": {"design": ["claude:opus"], "worker": ["codex"]}},
+                          {"codex"})
+        with self.assertRaises(ResolutionError):
+            handle.resolve("design")
+
     def test_an_unknown_model_meets_only_the_lowest_floor(self):
         table = floors()
         self.assertIsNone(table.tier("cursor:something-new"))
@@ -173,6 +189,25 @@ class OverrideOnTheCardTests(RunnerTestCase):
                    if d["title"] == run.memory.feature_file(FEATURE, "history")]
         self.assertIn("model_floor_override", history[-1]["content"])
 
+    def test_a_new_reason_on_a_later_run_is_recorded_and_the_gate_shows_only_it(self):
+        board = new_board()
+        first = self.runner(board, run_id="run-1")
+        first.executor.last = run.executors.Session(floor_override={
+            "role": "design", "model": FLASH, "tier": "fast", "floor": "frontier",
+            "reason": "old reason"})
+        first.record_floor_override(FEATURE)
+        second = self.runner(board, run_id="run-2")
+        second.executor.last = run.executors.Session(floor_override={
+            "role": "design", "model": FLASH, "tier": "fast", "floor": "frontier",
+            "reason": "new reason"})
+        second.record_floor_override(FEATURE)
+        notes = run.lease.events(board.list_comments(FEATURE), run.FLOOR)
+        self.assertEqual([n["reason"] for n in notes], ["old reason", "new reason"])
+        second.review_comment(FEATURE, "ADR", "text")
+        gate = board.list_comments(FEATURE)[-1]["body"]
+        self.assertIn("new reason", gate)
+        self.assertNotIn("old reason", gate)
+
     def test_a_run_at_the_floor_writes_nothing_about_it(self):
         board = new_board()
         runner = self.runner(board)
@@ -196,6 +231,17 @@ class WitnessSyntaxTests(ScriptTestCase):
                         "python3 -m calc \"2*(3+4)\" | grep -qx \"14\"",
                         "npm test && grep -q usage README.md"):
             self.assertEqual(witness_syntax.problems(command), [], command)
+
+    def test_what_cannot_be_read_statically_is_not_refused(self):
+        for command in ("# It's a comment\npython3 -m unittest",
+                        'CODE=0; python3 -c "raise SystemExit($CODE)"',
+                        "cat <<'EOF'\npython3 -c 'not python code'\nEOF",
+                        "echo python3 -c 'x('"):
+            self.assertEqual(witness_syntax.problems(command), [], command)
+
+    def test_python_after_a_separator_or_an_assignment_is_compiled(self):
+        for command in ("cd x && python3 -c 'print(('", "FOO=1 python3 -c 'x(('"):
+            self.assertTrue(witness_syntax.problems(command), command)
 
     def test_a_command_the_shell_cannot_read_is_refused(self):
         self.assertTrue(witness_syntax.problems("grep -q 'unterminated README.md"))

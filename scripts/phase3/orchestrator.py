@@ -762,8 +762,14 @@ class Development:
     def record_floor_override(self, card):
         """A session below its role's floor is written on the Feature (IDE-152)."""
         record = getattr(self.runner, "record_floor_override", None)
-        if record is not None:
-            record(card, feature=self.feature)
+        if record is None:
+            return
+        # Phase 3 publishes its own journal; the design cache is phase 2's.
+        note = record(card, feature=self.feature, journal=False)
+        if note and self.journal is not None:
+            self.journal.add(f"{card}: the {note['role']} role ran on `{note['model']}` "
+                             f"({note['tier']}), below its `{note['floor']}` floor — "
+                             f"the profile's reason: {note['reason']}")
 
     def session(self, role, card, worktree, prompt, context, **kwargs):
         executors = runner_executors()
@@ -848,7 +854,9 @@ class Development:
         if reconnect is None:
             return EXIT.HANDOFF
         try:
-            return reconnect(role, card, worktree, prompt, context=context)
+            code = reconnect(role, card, worktree, prompt, context=context)
+            self.record_floor_override(card)
+            return code
         except runner_executors().ResolutionError as exc:
             tags.release(self.board, self.feature, self.run_id)
             raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
