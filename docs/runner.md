@@ -95,13 +95,26 @@ Sub-phases are internal to the owner and never appear on the board.
 | `idp:development` | Approved; phase 3 may start | human |
 | `idp:qa` | Development is done, feature PR is open, QA Testing PBI is with the human | development |
 | `idp:pr-review` | Reserved for automated QA later | QA, later |
-| `idp:blocked` | Modifier: work stopped, reason in a comment | runner or human |
-| `idp:owner:<run>` | Claimed by one run | runner |
-| `idp:paused:<run>` | Stopped on purpose or at the cliff; any run may take it immediately | runner or hook path |
-| `idp:stop` | Finish the task in flight, then pause this Feature | human |
+| `idp:<phase>:in-progress@<run>` | One run holds the Feature in that phase | runner |
+| `idp:<phase>:paused@<run>` | Stopped on purpose or at the cliff; any run may take it immediately | runner or hook path |
+| `idp:blocked` | The only modifier: work stopped, reason in a comment | runner or human |
 
-PBIs carry no phase tag. During 3.2 a worker claims them with
-`idp:owner:<run>/w<N>`.
+**A card carries one state tag** (IDE-150): the phase, and who holds it, in a
+single tag — plus `idp:blocked` when blocked. The claim is the fenced swap
+`idp:design` → `idp:design:in-progress@<run>`: one write, `test /rev` on Azure
+DevOps, so the owner is part of the very tag the fence protects. No
+`sdlc:cid` or `sdlc:feature-package` tag is written: cards link through the
+tracker's Parent/Child relations, the ADR and the history are attachments on the
+Feature, and the correlation id lives in the document's machine header (cards
+published earlier still carry those tags; they are read, never written). Cards
+written before IDE-150 in the old spelling (`idp:owner:<run>`, `idp:paused:<run>`)
+are read as they are and re-spelt on their next change.
+
+PBIs carry no phase tag. During 3.2 a worker claims one with
+`idp:in-progress@<run>/w<N>`, paused as `idp:paused@<run>/w<N>`.
+
+To stop one Feature, use `run.py stop` or the local stop file; `idp:stop` is no
+longer part of the vocabulary (a card that still carries it is honoured).
 
 ### Routes, as phases
 

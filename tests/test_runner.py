@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from support import REPO_ROOT, SCRIPTS_DIR, ScriptTestCase, load_script
+from support import REPO_ROOT, SCRIPTS_DIR, ScriptTestCase, load_script, decoded
 from fakeboard import FakeBoard, crash_and_resume
 from scripted import DesignSession, ScriptedExecutor
 
@@ -466,7 +466,7 @@ class SessionOutcomeTests(RunnerTestCase):
                                     executors_profile=profile)
         code = self.runner(board, executor=executor).run_feature(FEATURE)
         self.assertEqual(code, EXIT.HANDOFF)
-        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertIn("idp:paused:run-1", decoded(board.cards[FEATURE]["tags"]))
         self.assertFalse(executor.resolver.available(run.executors.Choice("claude", "opus")))
         self.assertEqual(str(executor.resolve("design")), "codex:gpt-5")
         self.assertEqual(self.slept, [])
@@ -489,14 +489,14 @@ class SessionOutcomeTests(RunnerTestCase):
         code = self.runner(board, executor=executor).run_feature(FEATURE)
         self.assertEqual(code, EXIT.HANDOFF)
         self.assertEqual(self.slept, list(run.INFRA_BACKOFF))
-        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertIn("idp:paused:run-1", decoded(board.cards[FEATURE]["tags"]))
         self.assertFalse(lease.events(board.list_comments(FEATURE), run.ATTEMPT))
 
     def test_a_rate_limit_pauses_the_card_for_any_run_to_take(self):
         board = new_board()
         code = self.runner(board, lambda *a: {"limit": "rate_limit"}).run_feature(FEATURE)
         self.assertEqual(code, EXIT.HANDOFF)
-        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertIn("idp:paused:run-1", decoded(board.cards[FEATURE]["tags"]))
         self.assertFalse(lease.events(board.list_comments(FEATURE), run.ATTEMPT))
         # ...and another run takes it at once, with the same claim write.
         self.assertEqual(self.runner(board, run_id="run-2").run_feature(FEATURE), EXIT.DONE)
@@ -725,7 +725,7 @@ class CommandLineTests(RunnerTestCase):
                 mock.patch.object(run.sys, "exit", side_effect=SystemExit):
             with self.assertRaises(SystemExit):
                 run.cmd_reap(args)
-        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-1/w1"])
+        self.assertEqual(decoded(board.cards["2"]["tags"]), ["idp:owner:run-1/w1"])
 
 
 class LaunchFails(ScriptedExecutor):
@@ -789,7 +789,7 @@ class DesignFencingTests(RunnerTestCase):
         executor = LaunchFails(self.session(), fails={"design": 99})
         self.assertEqual(self.runner(board, executor=executor).run_feature(FEATURE),
                          EXIT.HANDOFF)
-        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertIn("idp:paused:run-1", decoded(board.cards[FEATURE]["tags"]))
         self.assertNotIn(tags.BLOCKED, board.cards[FEATURE]["tags"])
         self.assertEqual(lease.events(board.list_comments(FEATURE), run.ATTEMPT), [])
         self.assertEqual(executor.launch_failures, len(run.INFRA_BACKOFF) + 1)
@@ -1020,7 +1020,7 @@ lock.release()
             with self.assertRaises(SystemExit) as caught:
                 run.cmd_stop(args)
         self.assertIsNone(caught.exception.code)
-        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, f"idp:paused:{run_id}"])
+        self.assertEqual(decoded(board.cards[FEATURE]["tags"]), [tags.DESIGN, f"idp:paused:{run_id}"])
 
 
 if __name__ == "__main__":

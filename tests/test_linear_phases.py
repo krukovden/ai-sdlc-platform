@@ -16,7 +16,7 @@ import os
 import unittest
 from unittest import mock
 
-from support import FakeLinear, ScriptTestCase, issue_node, linear, load_script, make_board
+from support import FakeLinear, ScriptTestCase, issue_node, linear, load_script, make_board, decoded
 
 RUN = {"IDP_RUN_ID": "run-a"}
 
@@ -96,7 +96,7 @@ class StartPhaseTests(ScriptTestCase):
         _, fake, result = self.run_start()
 
         self.assertTrue(result["changed"])
-        self.assertEqual(sorted(fake.label_names()), ["idp:design", "idp:owner:run-a"])
+        self.assertEqual(sorted(decoded(fake.label_names())), ["idp:design", "idp:owner:run-a"])
         self.assertEqual(len([d for d in fake.mutations if "issueUpdate" in d]), 1)
 
     def test_the_status_is_left_alone(self):
@@ -173,7 +173,7 @@ class FinishPhaseTests(ScriptTestCase):
 
     def test_blocked_is_a_modifier_and_the_phase_stays(self):
         fake, _ = self.finish(("idp:design", "idp:owner:run-a"), kind="blocked")
-        self.assertEqual(sorted(fake.label_names()),
+        self.assertEqual(sorted(decoded(fake.label_names())),
                          ["idp:blocked", "idp:design", "idp:owner:run-a"])
 
     def test_refuses_a_card_nobody_claimed_and_changes_nothing(self):

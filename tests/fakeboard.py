@@ -123,6 +123,15 @@ class FakeBoard(phases.PhaseMixin):
         card = self._card(identifier)
         if rev != card["rev"]:
             return {"conflict": True}
+        # IDE-150, enforced on every write in every test: what the runner writes
+        # carries at most one idp state tag, plus idp:blocked (and idp:stop, the
+        # human's request, which the runner never writes but must carry through).
+        state = [t for t in tags_ if str(t).casefold().startswith("idp:")
+                 and str(t).casefold() not in ("idp:blocked", "idp:stop")]
+        before = {str(t).casefold() for t in card["tags"]}
+        if len(state) > 1 and any(str(t).casefold() not in before for t in state):
+            # A conflict a human made is carried, never erased; adding to one is a bug.
+            raise AssertionError(f"{identifier}: more than one idp state tag written: {list(tags_)}")
         card["tags"] = list(tags_)
         if status:
             card["status"] = status
@@ -199,7 +208,9 @@ class FakeBoard(phases.PhaseMixin):
 
     def find_by_correlation(self, correlation_id):
         for card in self.cards.values():
-            if f"sdlc:cid={correlation_id}" in card["tags"]:
+            # IDE-150: the cid lives in the description; the old tag is still read.
+            if (f"sdlc:cid={correlation_id}" in card["tags"]
+                    or str(correlation_id) in (card.get("description") or "")):
                 return self.get_issue(card["identifier"])
         return None
 

@@ -230,6 +230,7 @@ UNSAFE_LITERAL = re.compile(r"['\"\n\r]")
 # block are the same fact in two renderings; one expression reads both.
 CID_PATTERN = re.compile(r'"?\bcid"?\s*:\s*"?([A-Za-z0-9_.:@+-]+)"?')
 
+# Read-only since IDE-150: cards published earlier carry these; nothing writes them.
 TAG_FEATURE_PACKAGE = "sdlc:feature-package"
 TAG_CID_PREFIX = "sdlc:cid="
 
@@ -1159,15 +1160,18 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
     def find_by_correlation(self, correlation_id):
         """The idempotency check, and the reason re-publication is safe.
 
-        The tag is the identity, not the description: a description passes
-        through an HTML sanitiser on the way in and a tag does not, so the tag
-        is the one carrier that cannot be quietly reformatted out from under
-        the next run.
+        IDE-150: the identity is the `cid` in the description's machine header,
+        not a tag. A correlation id is `[a-z0-9_-]`, which the description's HTML
+        sanitiser leaves alone, so a CONTAINS on the description finds it. Cards
+        published before IDE-150 carry it as an `sdlc:cid=` tag; that is still
+        read, never written.
         """
         if not correlation_id:
             return None
+        cid = str(correlation_id)
         rows = self.query(
-            f"[System.Tags] CONTAINS {_literal(TAG_CID_PREFIX + str(correlation_id))}",
+            f"([System.Description] CONTAINS {_literal(cid)}"
+            f" OR [System.Tags] CONTAINS {_literal(TAG_CID_PREFIX + cid)})",
             columns=["System.Id", "System.Title"])
         if not rows:
             return None
@@ -1202,16 +1206,11 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         not among them: a card enters a phase through the transition table in
         scripts/tags.py, as one more fenced write, and nowhere else.
         """
-        tags = []
-        header_type = _header_type(body)
-        kind = header_type or ("pbi" if parent else "feature")
-        if kind == "feature":
-            tags.append(TAG_FEATURE_PACKAGE)
-
-        cid = read_cid(body)
-        if cid:
-            tags.append(TAG_CID_PREFIX + cid)
-        return tags
+        # IDE-150: nothing. The correlation id stays in the document's machine
+        # header, links between cards are the tracker's own Parent/Child, and an
+        # idp: tag already says the card is the platform's — so no sdlc:cid and
+        # no sdlc:feature-package tag is written any more.
+        return []
 
     def create_issue(self, title, body=None, parent=None, status=None, project_id=None,
                      kind=None):

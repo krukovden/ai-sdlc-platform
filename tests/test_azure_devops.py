@@ -25,7 +25,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from support import REPO_ROOT, ScriptTestCase, board, load_script
+from support import REPO_ROOT, ScriptTestCase, board, load_script, decoded
 from test_publish_linear import approved_package
 
 azure = load_script("sync_azure_devops_state")
@@ -297,7 +297,13 @@ class FakeAz:
         rows = []
         for identifier, item in self.items.items():
             fields = item["fields"]
-            if "[System.Tags] CONTAINS" in wiql:
+            if "[System.Description] CONTAINS" in wiql:
+                # IDE-150's correlation lookup: description, or the old tag.
+                cid = wiql.split("[System.Description] CONTAINS", 1)[1].split("'")[1]
+                if (cid not in (fields.get("System.Description") or "")
+                        and f"sdlc:cid={cid}" not in (fields.get("System.Tags") or "")):
+                    continue
+            elif "[System.Tags] CONTAINS" in wiql:
                 wanted = wiql.split("CONTAINS", 1)[1].split("'")[1]
                 if wanted not in (fields.get("System.Tags") or ""):
                     continue
@@ -812,7 +818,7 @@ class MachineHeaderTests(ScriptTestCase):
         with stub(fake):
             azure.Board("pat", PROFILE).create_issue(
                 title="t", body=body, status="New", project_id="Contoso Platform")
-        tags = fake.fields(fake.matching("boards", "work-item", "create")[0])["System.Tags"]
+        tags = fake.fields(fake.matching("boards", "work-item", "create")[0]).get("System.Tags", "")
         self.assertNotIn("idp:", tags)
         self.assertNotIn("sdlc:ready-for-design", tags)
 
@@ -849,13 +855,13 @@ class CreateTests(ScriptTestCase):
         self.assertTrue(result["url"].endswith("/_workitems/edit/500"))
         self.assertTrue(result["branchName"].startswith("feature/500-"))
 
-    def test_the_tags_carry_the_whole_machine_contract(self):
+    def test_no_sdlc_label_is_written_ide_150(self):
         body = "---\ntype: feature\ncid: fp_abc123\n---\n\n## Зачем\n\nтекст"
         fake, _ = self.create(body=body)
-        tags = fake.fields(fake.matching("boards", "work-item", "create")[0])["System.Tags"]
+        tags = fake.fields(fake.matching("boards", "work-item", "create")[0]).get("System.Tags", "")
 
-        self.assertIn("sdlc:feature-package", tags)
-        self.assertIn("sdlc:cid=fp_abc123", tags)
+        self.assertNotIn("sdlc:feature-package", tags)
+        self.assertNotIn("sdlc:cid=", tags)
 
     def test_the_criteria_are_not_repeated_in_the_description(self):
         """The board renders the field as its own section; the body repeated it.
@@ -938,9 +944,9 @@ class CreateTests(ScriptTestCase):
     def test_a_child_is_not_tagged_as_a_feature_package(self):
         fake, _ = self.create(parent="10", status=None,
                               body="---\ntype: pbi\ncid: fp_x\n---\n")
-        tags = fake.fields(fake.matching("boards", "work-item", "create")[0])["System.Tags"]
+        tags = fake.fields(fake.matching("boards", "work-item", "create")[0]).get("System.Tags", "")
         self.assertNotIn("sdlc:feature-package", tags)
-        self.assertIn("sdlc:cid=fp_x", tags)
+        self.assertNotIn("sdlc:cid=", tags)
 
     def test_area_and_iteration_are_stamped_when_the_profile_names_them(self):
         profile = dict(PROFILE, area_path="Contoso\\Platform",
@@ -1001,14 +1007,15 @@ class GuardTests(ScriptTestCase):
 
 
 class CorrelationTests(ScriptTestCase):
-    """Idempotency reads the tag, because the tag is the carrier nothing rewrites."""
+    """Idempotency reads the cid in the description; old cards' sdlc:cid tag is still read."""
 
-    def test_the_lookup_is_one_wiql_query_on_the_cid_tag(self):
+    def test_the_lookup_is_one_wiql_query_on_the_description_and_the_old_tag(self):
         fake = FakeAz(work_item(tags="sdlc:cid=fp_abc123"))
         with stub(fake):
             found = azure.Board(None, PROFILE).find_by_correlation("fp_abc123")
 
         wiql = fake.flag(fake.matching("boards", "query")[0], "--wiql")
+        self.assertIn("[System.Description] CONTAINS 'fp_abc123'", wiql)
         self.assertIn("[System.Tags] CONTAINS 'sdlc:cid=fp_abc123'", wiql)
         self.assertEqual(found["identifier"], "42")
 
@@ -1043,24 +1050,24 @@ class T9ForAzureDevOps(ScriptTestCase):
         fake = self.publish_twice()
         self.assertEqual(len(fake.matching("boards", "work-item", "create")), 1)
 
-    def test_the_second_run_found_the_card_through_the_tag(self):
+    def test_the_second_run_found_the_card_through_the_cid(self):
         fake = self.publish_twice()
         wiqls = [fake.flag(c, "--wiql") for c in fake.matching("boards", "query")]
-        self.assertTrue(any("sdlc:cid=fp_abc123def456" in w for w in wiqls),
+        self.assertTrue(any("[System.Description] CONTAINS 'fp_abc123def456'" in w for w in wiqls),
                         f"no cid query was issued; queries were {wiqls}")
 
     def test_the_card_is_created_tagged_and_then_put_in_design(self):
         fake = self.publish_twice()
         create = fake.matching("boards", "work-item", "create")[0]
-        tags = fake.fields(create)["System.Tags"]
+        tags = fake.fields(create).get("System.Tags", "")
 
-        self.assertIn("sdlc:feature-package", tags)
-        self.assertIn("sdlc:cid=fp_abc123def456", tags)
+        self.assertNotIn("sdlc:feature-package", tags)
+        self.assertNotIn("sdlc:cid=", tags)
         # The phase tag arrives through the writer, fenced, and survives the
         # second run untouched.
         final = fake.items["500"]["fields"]["System.Tags"]
         self.assertIn("idp:design", final)
-        self.assertIn("sdlc:cid=fp_abc123def456", final)
+        self.assertNotIn("sdlc:cid=", final)
         fenced = [json.loads(c["body"].decode("utf-8")) for c in
                   fake.rest_matching("PATCH", "wit/workitems/500")
                   if b"System.Tags" in c["body"]]
@@ -1108,8 +1115,8 @@ class PhaseTests(ScriptTestCase):
         fake = FakeAz(work_item(state="New", tags="idp:design"))
         with stub(fake), mock.patch.dict(azure.os.environ, RUN):
             result = self.board().start_phase("42", "design")
-        self.assertIn("idp:owner:run-a", result["labels"])
-        self.assertIn("idp:design", result["labels"])
+        self.assertIn("idp:owner:run-a", decoded(result["labels"]))
+        self.assertIn("idp:design", decoded(result["labels"]))
         self.assertTrue(result["changed"])
 
     def test_a_card_in_another_phase_is_refused_and_nothing_is_written(self):
@@ -1892,7 +1899,7 @@ class FencedTagWriteTests(ScriptTestCase):
         handle, fake = self.board_with(tags="idp:design")
         with stub(fake), mock.patch.dict(azure.os.environ, RUN):
             result = handle.start_phase("42", "design")
-        self.assertIn("idp:owner:run-a", result["labels"])
+        self.assertIn("idp:owner:run-a", decoded(result["labels"]))
         patches = self.patches(fake)
         self.assertEqual(len(patches), 1, "one revision, or a window opens")
         self.assertEqual(patches[0][0], {"op": "test", "path": "/rev", "value": 1})

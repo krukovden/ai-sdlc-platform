@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from support import REPO_ROOT, ScriptTestCase
+from support import REPO_ROOT, ScriptTestCase, decoded
 from fakeboard import FakeBoard
 from scripted import ScriptedExecutor
 from test_runner import FEATURE, FEATURE_BODY, PROFILE, RunnerTestCase, new_board, run
@@ -153,7 +153,7 @@ class AgentLoopTests(AgentTestCase):
         with mock.patch.object(lease, "post_event", side_effect=delayed):
             reaped = loop.reap(board.list_project())
         self.assertEqual(reaped, 1)
-        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-1/w1"])
+        self.assertEqual(decoded(board.cards["2"]["tags"]), ["idp:owner:run-1/w1"])
 
     def test_a_call_the_session_made_alone_becomes_a_decision_comment(self):
         board = new_board()
@@ -288,7 +288,7 @@ class AgentLoopTests(AgentTestCase):
         loop = self.loop(board, development=Refusing)
         loop.read_branch = lambda branch: (text, True)
         loop.run(passes=1)
-        self.assertEqual(board.cards["7"]["tags"], ["idp:paused:run-9"])
+        self.assertEqual(decoded(board.cards["7"]["tags"]), ["idp:paused:run-9"])
         self.assertIn("idp:owner:run-9", board.cards[FEATURE]["tags"])   # a live Feature owner
 
     def test_serve_narrows_the_phases(self):
@@ -319,7 +319,7 @@ class StopTests(AgentTestCase):
         self.presence.request_stop()
         self.assertEqual(loop.run(passes=5), EXIT.DONE)
         self.assertEqual(self.executor.calls, [])
-        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:paused:run-1"])
+        self.assertEqual(decoded(board.cards[FEATURE]["tags"]), [tags.DESIGN, "idp:paused:run-1"])
         self.assertFalse(self.presence.stop_file.exists())
         self.assertFalse(self.presence.pid_file.exists())
 
@@ -332,7 +332,7 @@ class StopTests(AgentTestCase):
 
         self.loop(board, stop_then_crash, self.session()).run(passes=5)
         self.assertEqual(len(self.executor.calls), 1)        # no second session
-        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:paused:run-1"])
+        self.assertEqual(decoded(board.cards[FEATURE]["tags"]), [tags.DESIGN, "idp:paused:run-1"])
         pause = lease.events(board.list_comments(FEATURE), "pause")
         self.assertIn("run.py stop", pause[-1]["reason"])
 
@@ -346,7 +346,7 @@ class StopTests(AgentTestCase):
             return None
 
         self.loop(board, tag_stop_then_crash, self.session()).run(passes=3)
-        self.assertEqual(sorted(board.cards[FEATURE]["tags"]),
+        self.assertEqual(sorted(decoded(board.cards[FEATURE]["tags"])),
                          sorted([tags.DESIGN, tags.STOP, "idp:paused:run-1"]))
         self.assertEqual(board.cards[OTHER]["tags"], [tags.DESIGN_REVIEW])
         self.assertEqual([c["card"] for c in self.executor.calls], [FEATURE, OTHER])
@@ -374,8 +374,8 @@ class StopTests(AgentTestCase):
         agent_mode.stop(board, self.home, ["run-1"], board.list_project, self.worktrees,
                         handoff=Handoff, mention=lambda c: f"#{c}", out=out)
         self.assertEqual(handed, [("7-g2", "7", "#7")])
-        self.assertEqual(board.cards["7"]["tags"], ["idp:paused:run-1"])
-        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:paused:run-1"])
+        self.assertEqual(decoded(board.cards["7"]["tags"]), ["idp:paused:run-1"])
+        self.assertEqual(decoded(board.cards[FEATURE]["tags"]), [tags.DESIGN, "idp:paused:run-1"])
         # Stopping again changes nothing.
         effects = board.side_effects
         agent_mode.stop(board, self.home, ["run-1"], board.list_project, self.worktrees,
@@ -413,7 +413,7 @@ class StopTests(AgentTestCase):
         runner.stopping = agent_mode.stop_signal(board, presence)
         self.assertEqual(runner.run_feature(FEATURE), EXIT.HANDOFF)
         self.assertEqual(len(self.executor.calls), 1)
-        self.assertIn("idp:paused:run-1", board.cards[FEATURE]["tags"])
+        self.assertIn("idp:paused:run-1", decoded(board.cards[FEATURE]["tags"]))
 
 
 class ForegroundPresenceTests(AgentTestCase):
@@ -500,7 +500,7 @@ class TakeoverTests(AgentTestCase):
         result = agent_mode.takeover(board, FEATURE, "run-1",
                                      lambda q: asked.append(q) or "yes", False, out=out, profile=HASH)
         self.assertEqual(result["outcome"], "written")
-        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:owner:run-1"])
+        self.assertEqual(decoded(board.cards[FEATURE]["tags"]), [tags.DESIGN, "idp:owner:run-1"])
         self.assertTrue(lease.events(board.list_comments(FEATURE), lease.TAKEOVER))
         shown = out.getvalue()
         self.assertIn("held by run `run-9`", shown)
@@ -550,7 +550,7 @@ class TakeoverTests(AgentTestCase):
         result = agent_mode.takeover(board, FEATURE, "run-1",
                                      lambda q: self.fail("asked"), False, out=io.StringIO(), profile=HASH)
         self.assertEqual(result["outcome"], "written")
-        self.assertEqual(board.cards[FEATURE]["tags"], [tags.DESIGN, "idp:owner:run-1"])
+        self.assertEqual(decoded(board.cards[FEATURE]["tags"]), [tags.DESIGN, "idp:owner:run-1"])
 
     def test_claiming_a_paused_card_records_the_profile_hash(self):
         # F12: `takeover --claim-only` used to write a claim with no profile hash.
@@ -745,8 +745,8 @@ class Phase3StopTests(Phase3TestCase):
         runner.stopping = lambda card: stopping.get("why")
         self.assertEqual(runner.run_feature(FEATURE), EXIT.HANDOFF)
         card = world.items()["a"]["id"]
-        self.assertEqual(world.board.cards[card]["tags"], ["idp:paused:run-1"])
-        self.assertIn("idp:paused:run-1", world.board.cards[FEATURE]["tags"])
+        self.assertEqual(decoded(world.board.cards[card]["tags"]), ["idp:paused:run-1"])
+        self.assertIn("idp:paused:run-1", decoded(world.board.cards[FEATURE]["tags"]))
         g1 = world.events(card, lease.CLAIM)[0]["branch"]
         self.assertIn("wip(handoff): stopped", git(world.remote, "log", "--format=%s", g1))
         self.assertIn("stopped: run.py stop was requested", world.remote_file(g1, "handoff.md"))

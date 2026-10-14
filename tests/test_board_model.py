@@ -20,7 +20,7 @@ import threading
 import unittest
 
 from fakeboard import Crash, FakeBoard, crash_and_resume, phases, tags
-from support import ScriptTestCase, load_script
+from support import ScriptTestCase, load_script, decoded
 
 lease = load_script("lease")
 
@@ -30,6 +30,73 @@ HASH = "sha256:profile"
 
 def feature(board, identifier="1", *labels, status="New"):
     return board.add_card(identifier, labels, status=status, kind="feature")
+
+
+class OneStateTagTests(ScriptTestCase):
+    """IDE-150: on the board a card carries one state tag (+ idp:blocked) — exact spellings."""
+
+    def test_the_lifecycle_of_a_feature_is_one_tag_at_every_step(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design"])
+        self.assertEqual(tags.claim(board, "1", A)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design:in-progress@run-a"])
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design:paused@run-a"])
+        self.assertEqual(tags.claim(board, "1", B)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design:in-progress@run-b"])
+        self.assertEqual(tags.set_blocked(board, "1", B)["outcome"], "written")
+        self.assertEqual(sorted(board.cards["1"]["tags"]),
+                         ["idp:blocked", "idp:design:in-progress@run-b"])
+
+    def test_a_hand_off_leaves_only_the_next_phase(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+        tags.claim(board, "1", A)
+        self.assertEqual(tags.hand_off(board, "1", A, tags.DESIGN_REVIEW)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design-review"])
+
+    def test_a_worker_holds_a_pbi_with_one_tag(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DEVELOPMENT)
+        tags.claim(board, "1", A)
+        board.add_card("2", (), kind="pbi", parent="1")
+        self.assertEqual(tags.claim_pbi(board, "2", A, 1, feature="1")["outcome"], "written")
+        self.assertEqual(board.cards["2"]["tags"], ["idp:in-progress@run-a/w1"])
+
+    def test_encode_and_decode_are_inverse_and_keep_other_labels(self):
+        logical = ["team:x", tags.DEVELOPMENT, tags.owner_tag("run-7")]
+        board_form = tags.encode(logical)
+        self.assertEqual(board_form, ["team:x", "idp:development:in-progress@run-7"])
+        self.assertEqual(tags.decode(board_form), logical)
+        self.assertEqual(tags.decode(["idp:paused@run-7/w2"]), ["idp:paused:run-7/w2"])
+        self.assertEqual(tags.owner_of(["idp:qa:in-progress@run-1"]), "run-1")
+        self.assertEqual(tags.phase_of(["idp:qa:in-progress@run-1"]), tags.QA)
+
+    def test_an_ambiguous_card_is_not_folded(self):
+        two_owners = [tags.DESIGN, tags.owner_tag(A), tags.owner_tag(B)]
+        self.assertEqual(tags.encode(two_owners), two_owners)
+        self.assertEqual(tags.decode(["idp:nonsense:in-progress@run-a"]),
+                         ["idp:nonsense:in-progress@run-a"])
+
+    def test_a_card_in_the_old_spelling_is_respelt_on_its_next_change_not_by_a_no_op(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN, tags.owner_tag(A))
+        self.assertEqual(tags.claim(board, "1", A)["outcome"], "unchanged")
+        self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(A)])
+        self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design:paused@run-a"])
+
+    def test_two_runs_racing_for_one_card_one_wins(self):
+        board = FakeBoard()
+        feature(board, "1", tags.DESIGN)
+
+        def b_claims_first(card):
+            board.on_read = None
+            tags.claim(board, "1", B)
+        board.on_read = b_claims_first
+        self.assertEqual(tags.claim(board, "1", A)["outcome"], "conflict")
+        self.assertEqual(board.cards["1"]["tags"], ["idp:design:in-progress@run-b"])
 
 
 class TransitionTableTests(ScriptTestCase):
@@ -106,7 +173,7 @@ class ClaimRaceTests(ScriptTestCase):
         b = tags.claim(board, "1", B, tags.DESIGN)
         self.assertEqual(results[0]["outcome"], "written")
         self.assertEqual(b["outcome"], "conflict")
-        self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(A)])
+        self.assertEqual(decoded(board.cards["1"]["tags"]), [tags.DESIGN, tags.owner_tag(A)])
 
     def test_a_claim_after_the_winner_landed_is_a_conflict_naming_the_holder(self):
         board = FakeBoard()
@@ -201,7 +268,7 @@ class FencingTests(ScriptTestCase):
         board.on_read = takeover_in_between
         result = tags.hand_off(board, "1", A, tags.DESIGN_REVIEW)
         self.assertEqual(result["outcome"], "conflict")
-        self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(B)])
+        self.assertEqual(decoded(board.cards["1"]["tags"]), [tags.DESIGN, tags.owner_tag(B)])
 
     def test_only_the_features_owner_may_claim_its_pbis(self):
         board = FakeBoard()
@@ -213,7 +280,7 @@ class FencingTests(ScriptTestCase):
 
         claimed = tags.claim_pbi(board, "2", A, 1, feature="1", status="Active")
         self.assertEqual(claimed["outcome"], "written")
-        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-a/w1"])
+        self.assertEqual(decoded(board.cards["2"]["tags"]), ["idp:owner:run-a/w1"])
         self.assertEqual(board.cards["2"]["status"], "Active")
         self.assertEqual(tags.claim_pbi(board, "2", A, 2, feature="1")["outcome"],
                          "conflict", "a second worker of the same run is still a rival")
@@ -262,9 +329,9 @@ class PauseTests(ScriptTestCase):
         feature(board, "1", tags.DESIGN)
         tags.claim(board, "1", A, tags.DESIGN)
         self.assertEqual(tags.pause(board, "1", A)["outcome"], "written")
-        self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, "idp:paused:run-a"])
+        self.assertEqual(decoded(board.cards["1"]["tags"]), [tags.DESIGN, "idp:paused:run-a"])
         self.assertEqual(tags.claim(board, "1", B, tags.DESIGN)["outcome"], "written")
-        self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(B)])
+        self.assertEqual(decoded(board.cards["1"]["tags"]), [tags.DESIGN, tags.owner_tag(B)])
 
     def pbi(self, *labels):
         board = FakeBoard()
@@ -276,7 +343,7 @@ class PauseTests(ScriptTestCase):
         # Handoff layers 2 and 3 pause from inside the worker's session.
         board = self.pbi("idp:owner:run-a/w1", "sdlc:cid=x")
         self.assertEqual(tags.pause(board, "2", A)["outcome"], "written")
-        self.assertEqual(board.cards["2"]["tags"], ["sdlc:cid=x", "idp:paused:run-a"])
+        self.assertEqual(decoded(board.cards["2"]["tags"]), ["sdlc:cid=x", "idp:paused:run-a"])
         self.assertEqual(tags.pause(board, "2", A)["outcome"], "unchanged")
 
     def test_another_runs_worker_is_not_paused(self):
@@ -287,7 +354,7 @@ class PauseTests(ScriptTestCase):
     def test_a_paused_pbi_is_claimed_at_once_and_loses_the_paused_tag(self):
         board = self.pbi("idp:paused:run-a")
         self.assertEqual(tags.claim_pbi(board, "2", B, 3, feature="1")["outcome"], "written")
-        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-b/w3"])
+        self.assertEqual(decoded(board.cards["2"]["tags"]), ["idp:owner:run-b/w3"])
 
 
 class ReapTests(ScriptTestCase):
@@ -305,7 +372,7 @@ class ReapTests(ScriptTestCase):
         board.advance(59)
         report = lease.reap(board, "1")
         self.assertEqual(report[0]["outcome"], "alive")
-        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertIn(tags.owner_tag(A), decoded(board.cards["1"]["tags"]))
 
     def test_a_lease_past_sixty_minutes_is_reaped_and_the_phase_stays(self):
         board = self.claimed()
@@ -345,8 +412,8 @@ class ReapTests(ScriptTestCase):
         board.advance(61)
         report = lease.reap(board, "1")
         self.assertEqual([r["outcome"] for r in report], ["reaped", "waiting", "waiting"])
-        self.assertEqual(board.cards["2"]["tags"], ["idp:owner:run-a/w1"])
-        self.assertEqual(board.cards["3"]["tags"], ["idp:owner:run-a/w2"])
+        self.assertEqual(decoded(board.cards["2"]["tags"]), ["idp:owner:run-a/w1"])
+        self.assertEqual(decoded(board.cards["3"]["tags"]), ["idp:owner:run-a/w2"])
         self.assertEqual(board.cards["4"]["tags"], ["idp:owner:run-z/w1"])
 
     def test_a_workers_lease_is_its_runs_heartbeat_on_the_feature(self):
@@ -524,7 +591,7 @@ class ReapTests(ScriptTestCase):
         self._renew_before_release(board)
         report = lease.reap(board, "1")
         self.assertEqual(report[0]["outcome"], "alive")
-        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertIn(tags.owner_tag(A), decoded(board.cards["1"]["tags"]))
         self.assertEqual(lease.count_events(board, "1", lease.REAP), 0)
 
     def test_a_heartbeat_that_does_not_move_rev_before_removal_is_not_evicted(self):
@@ -533,7 +600,7 @@ class ReapTests(ScriptTestCase):
         self._renew_before_release(board)
         report = lease.reap(board, "1")
         self.assertEqual(report[0]["outcome"], "alive")
-        self.assertIn(tags.owner_tag(A), board.cards["1"]["tags"])
+        self.assertIn(tags.owner_tag(A), decoded(board.cards["1"]["tags"]))
         self.assertEqual(lease.count_events(board, "1", lease.REAP), 0)
 
     def test_a_renewal_before_a_child_release_keeps_the_pbi(self):
@@ -553,7 +620,7 @@ class ReapTests(ScriptTestCase):
         report = lease.reap(board, "1")
         child = next(entry for entry in report if entry["identifier"] == "2")
         self.assertEqual(child["outcome"], "waiting")
-        self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
+        self.assertIn(tags.owner_tag(f"{A}/w1"), decoded(board.cards["2"]["tags"]))
         self.assertEqual(lease.count_events(board, "2", lease.REAP), 0)
 
     def test_a_parent_heartbeat_during_child_reap_leaves_the_child_for_the_next_pass(self):
@@ -575,7 +642,7 @@ class ReapTests(ScriptTestCase):
         self.assertEqual(report[0]["outcome"], "reaped")
         child = next(entry for entry in report if entry["identifier"] == "2")
         self.assertEqual(child["outcome"], "waiting")
-        self.assertIn(tags.owner_tag(f"{A}/w1"), board.cards["2"]["tags"])
+        self.assertIn(tags.owner_tag(f"{A}/w1"), decoded(board.cards["2"]["tags"]))
         self.assertEqual(lease.reap(board, "2")[0]["outcome"], "alive")
 
 
@@ -596,7 +663,7 @@ class TakeoverTests(ScriptTestCase):
         feature(board, "1", tags.DESIGN, tags.owner_tag(A))
         result = lease.takeover(board, "1", B, lambda info: True, profile=HASH)
         self.assertEqual(result["outcome"], "written")
-        self.assertEqual(board.cards["1"]["tags"], [tags.DESIGN, tags.owner_tag(B)])
+        self.assertEqual(decoded(board.cards["1"]["tags"]), [tags.DESIGN, tags.owner_tag(B)])
         self.assertEqual(lease.count_events(board, "1", lease.TAKEOVER), 1)
 
     def test_a_card_that_moved_since_it_was_shown_is_a_conflict(self):

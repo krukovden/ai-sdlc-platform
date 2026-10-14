@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from support import ScriptTestCase
+from support import ScriptTestCase, decoded
 from fakeboard import Crash, crash_and_resume
 from test_runner import LaunchFails
 from phase3_world import (EXIT, FEATURE, FEATURE_BRANCH, GIT_ENV, PROFILE, World, crashes,
@@ -1193,7 +1193,7 @@ class HandoffLayerThreeTests(Phase3TestCase):
         rev = world.board.cards["7"]["rev"]
         result = phase3.common.handoff_module().pause(world.board, "7", "run-1")
         self.assertEqual(result["outcome"], "written")
-        self.assertEqual(world.board.cards["7"]["tags"], ["idp:paused:run-1"])
+        self.assertEqual(decoded(world.board.cards["7"]["tags"]), ["idp:paused:run-1"])
         self.assertEqual(world.board.cards["7"]["rev"], rev + 1)
 
 

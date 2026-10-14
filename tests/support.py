@@ -238,3 +238,13 @@ class FakeLinear:
         if "query Issue" in document:
             return {"issue": self.issue}
         raise AssertionError(f"unexpected GraphQL document: {document!r}")
+
+
+def decoded(labels):
+    """A card's tags as the logical view the rules reason about (IDE-150).
+
+    The board spells ownership inside the one state tag; a test that asserts who
+    holds a card asserts it on this view, and the spelling itself is pinned by
+    the dedicated encoding tests and by FakeBoard's one-state-tag invariant.
+    """
+    return load_script("tags").decode(labels)

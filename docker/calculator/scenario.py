@@ -1997,10 +1997,14 @@ class AdoScenarioRunner:
         self.results.append(item)
         self.log.write(f"step {name}: {detail}")
         for row in state:
-            for tag in row["tags"]:
-                if tag.startswith(tags.OWNER_PREFIX):
-                    self.problem(f"{name}: owner tag left behind",
-                                 [f"{row['id']} still carries {tag}."])
+            for who in tags.owners(row["tags"]):
+                self.problem(f"{name}: owner left behind",
+                             [f"{row['id']} is still held by {who}: {row['tags']}."])
+            state_tags = [t for t in row["tags"] if str(t).casefold().startswith("idp:")
+                          and str(t).casefold() != tags.BLOCKED]
+            if len(state_tags) > 1 or any(str(t).startswith("sdlc:") for t in row["tags"]):
+                self.problem(f"{name}: more than one state tag or an sdlc tag",
+                             [f"{row['id']} carries {row['tags']} (IDE-150: one state tag)."])
         self.write_report()
 
     def create_feature(self):

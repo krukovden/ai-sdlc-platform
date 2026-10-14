@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from support import SCRIPTS_DIR, ScriptTestCase, load_package
+from support import SCRIPTS_DIR, ScriptTestCase, load_package, decoded
 from phase3_world import BARE_OK, GIT_ENV, git
 from fakeboard import FakeBoard
 from test_runner import run as runner_module
@@ -184,7 +184,7 @@ class LayerTwoTests(GitTestCase):
         code, result = cliff.run("claude", None, self.stop_failure(), self.env,
                                  open_board=lambda: board)
         self.assertEqual(result["paused"], "written")
-        self.assertEqual(board.cards["7"]["tags"], ["idp:paused:run-1"])
+        self.assertEqual(decoded(board.cards["7"]["tags"]), ["idp:paused:run-1"])
 
     def test_without_one_it_commits_a_pause_request_the_next_reader_honours(self):
         board, card = self.held_pbi("run-7")
@@ -203,7 +203,7 @@ class LayerTwoTests(GitTestCase):
                                                   agent_mode.branch_reader(other),
                                                   out=io.StringIO())
         self.assertEqual(paused, [card])
-        self.assertEqual(board.cards[card]["tags"], ["idp:paused:run-7"])
+        self.assertEqual(decoded(board.cards[card]["tags"]), ["idp:paused:run-7"])
         # Asked twice, it is one pause.
         self.assertEqual(agent_mode.honour_pause_requests(
             board, board.list_project(), agent_mode.branch_reader(other),

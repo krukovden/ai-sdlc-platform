@@ -121,9 +121,13 @@ The Feature's board tags are now a phase model, not a sub-phase diary:
 | `idp:development` | Approved; phase 3 may start | human |
 | `idp:qa` | Development is done; feature PR is open; QA Testing PBI is with the human | development |
 | `idp:pr-review` | Reserved for automated QA later | QA, later |
-| `idp:blocked` | Modifier: keep the phase tag, add the reason in a comment | runner or human |
-| `idp:owner:<run>` | Claimed by one run | runner |
-| `idp:paused:<run>` | Stopped deliberately or at the cliff; any run may take it immediately | runner or hook path |
+| `idp:<phase>:in-progress@<run>` | One run holds the Feature in that phase | runner |
+| `idp:<phase>:paused@<run>` | Stopped deliberately or at the cliff; any run may take it immediately | runner or hook path |
+| `idp:blocked` | The only modifier: keep the state tag, add the reason in a comment | runner or human |
+
+One state tag per card, owner inside it, and nothing else of ours (IDE-150): no
+`sdlc:` tags — links are the tracker's Parent/Child, the correlation id lives in
+the machine header.
 
 Planning always creates a visible **QA Testing** PBI that depends on every
 development PBI. It holds two Tasks: *Write test cases and Playwright* for the
