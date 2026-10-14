@@ -123,8 +123,6 @@ def _clean_framework(value):
         return None
     scope = value.get("scope")
     return {
-        # The receiver is shared with the engineering catalog; the name tells the reports apart.
-        "name": "ai-sdlc-platform",
         "version": _ver(value.get("version")),
         "scope": scope if isinstance(scope, str) and re.fullmatch(r"[a-z-]{1,20}", scope) else None,
         "bundles": [b for b in (value.get("bundles") or []) if isinstance(b, str) and trail.UNIT_RE.fullmatch(b)][:20],
@@ -203,8 +201,8 @@ def cap_size(payload):
             payload["failure"]["command"] = None
 
     def drop_units():
-        if payload.get("framework"):
-            payload["framework"]["units"] = []
+        if payload.get("catalog"):
+            payload["catalog"]["units"] = []
     steps = [halve, halve, drop_tails,
              lambda: payload["trail"].__setitem__("toolCalls", None),
              lambda: payload["trail"].__setitem__("catalogEvents", []),
@@ -275,7 +273,8 @@ def build_report(given, ctx=None):
         "installId": ctx.get("installId") if isinstance(ctx.get("installId"), str) and UUID_RE.fullmatch(ctx["installId"]) else None,
         "sessionId": trail.valid_id(ctx.get("sessionId")),
         "occurrence": 1 if occurrence is None else int(occurrence),
-        "framework": framework,
+        # The receiver is shared with the engineering catalog and its schema 1 names this object `catalog`.
+        "catalog": framework,
         "env": _clean_env(ctx.get("env")),
         "repo": _clean_repo(ctx.get("repo")),
         "unit": {"name": unit_name, "kind": _one_of(KINDS, unit_in.get("kind")),

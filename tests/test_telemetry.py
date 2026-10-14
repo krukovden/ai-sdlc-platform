@@ -510,8 +510,12 @@ class DetectTests(Home):
         self.assertEqual(body["unit"]["name"], "design")
         self.assertEqual(body["failure"]["exitCode"], 3)
         self.assertEqual(body["env"]["platform"], "claude")
-        self.assertEqual(body["framework"]["version"], units.framework(env={})["version"])
-        self.assertEqual(body["framework"]["name"], "ai-sdlc-platform")
+        self.assertEqual(body["catalog"]["version"], units.framework(env={})["version"])
+        # The receiver is shared with the engineering catalog and refuses any other top-level key.
+        self.assertEqual(set(body), {"schema", "kind", "source", "reportId", "signature", "timestamp", "installId",
+                                     "sessionId", "occurrence", "catalog", "env", "repo", "unit", "failure",
+                                     "model", "trail", "feedback"})
+        self.assertEqual(set(body["catalog"]), {"version", "scope", "bundles", "units"})
         self.assertNotIn("/Users/x", json.dumps(body))
         self.assertEqual(body["trail"]["catalogEvents"][-1]["unit"], "design")
 

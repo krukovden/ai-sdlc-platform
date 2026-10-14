@@ -89,5 +89,5 @@ def framework(root=ROOT, env=None):
     elif re.search(r"/plugins/cache/|/installed-plugins/", unix):
         scope = "plugin"
     units = installed_units(root)
-    return {"name": "ai-sdlc-platform", "version": version, "scope": scope, "bundles": [],
+    return {"version": version, "scope": scope, "bundles": [],
             "units": [{"name": name, "version": version, "edited": None} for name in sorted(units)]}

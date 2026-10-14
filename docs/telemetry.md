@@ -20,8 +20,12 @@ The platform reports to the engineering catalog's receiver, set in
 | Answers | `201` stored; `400` / `413` / `415` rejected and nothing written; `5xx` outcome unknown |
 | Storage | `reports/<repo.project>/<YYYY-MM-DD>/<HHmmss>Z_<kind>_<id>.json`, kept 180 days |
 
-Reports carry `framework.name: "ai-sdlc-platform"`, which is how they are told
-apart from the catalog's own in the same store.
+The receiver validates schema 1 strictly and was written for the catalog: the
+install object must be called `catalog`, not the design's `framework`, and no
+extra field is accepted anywhere — a platform report cannot name itself. In the
+store it is told apart by its unit names and by `repo`. Checked live on
+2026-10-14: a report with `framework` was refused with `400 must have required
+property 'catalog'`.
 
 ## Placeholders
 
