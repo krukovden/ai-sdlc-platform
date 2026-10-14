@@ -697,7 +697,16 @@ def validate_plan(plan, session, adr_text):
                         f"Task {task['key']}: extend {reuse['path']} must be listed in existing"})
         for message in check_separation(pbi):
             problems.append({"code": 3, "message": message})
-        for criterion in pbi.get("acceptance_criteria") or []:
+        criteria = pbi.get("acceptance_criteria") or []
+        if criteria and not any((c.get("witness") or {}).get("command") for c in criteria):
+            # Finalize refuses a PBI with no runnable witness, after the worker
+            # built it; the live ADO run of 2026-10-14 cut one with evidence
+            # witnesses only. The planner can fix that now, for nothing.
+            problems.append({"code": 3, "message":
+                f"PBI {pbi['key']}: no acceptance criterion has a command witness, and "
+                "finalize refuses a PBI with zero runnable witnesses. Give at least one "
+                "criterion a pointed `command` probe"})
+        for criterion in criteria:
             command = (criterion.get("witness") or {}).get("command")
             for why in load_witness_syntax().problems(command):
                 problems.append({"code": 3, "message":

@@ -117,6 +117,14 @@ class PlanBorrowings(unittest.TestCase):
         problems, _, _ = planning.validate_plan(payload, {}, ADR)
         self.assertTrue(any("can never pass" in p["message"] for p in problems), problems)
 
+    def test_a_pbi_with_no_command_witness_is_refused_at_the_cut(self):
+        payload = self.payload()
+        for criterion in payload["pbis"][0]["acceptance_criteria"]:
+            criterion["witness"] = {"evidence": "the reviewer saw it"}
+        problems, _, _ = planning.validate_plan(payload, {}, ADR)
+        self.assertTrue(any("zero runnable witnesses" in p["message"] for p in problems),
+                        problems)
+
     def test_supersede_requires_explicit_deletion(self):
         payload = self.payload()
         task = payload["pbis"][0]["tasks"][0]

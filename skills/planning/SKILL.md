@@ -193,6 +193,8 @@ proof"}`, `{"command": "pointed probe", "timeout": 30}`, or `{"manual": "why hum
 judgment is necessary and what to observe"}`. Timeout is a positive integer in
 seconds. A witness is a pointed probe, not a test-suite run, and never restates a
 gate's command. Preserve criteria against the verified branch-point baseline.
+Every PBI has at least one `command` witness: finalize runs only commands, and a
+PBI with none is refused after it is built, so `validate` refuses it first.
 
 Every PBI has `tasks`. Each task names `key`, `title`, `not_done_if`, `existing`
 (files to extend, an empty list only for new work), and concrete `deliverables`.

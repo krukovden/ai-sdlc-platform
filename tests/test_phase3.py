@@ -384,12 +384,15 @@ class OutcomeTests(Phase3TestCase):
         record = world.board.attachments.get(world.items()["a"]["id"], [])
         self.assertFalse([d for d in record if "Witness record" in d["title"]])
 
-    def test_zero_runnable_witnesses_is_malformed_never_a_pass(self):
+    def test_zero_runnable_witnesses_is_refused_when_the_plan_is_cut(self):
+        # Finalize still refuses such a PBI (OutcomeTests below the cut has no
+        # way to reach it now); planning refuses it first, before any worker.
+        # The scripted planner stops where `propose` refuses (a live one would
+        # read the refusal and fix the plan); no PBI exists and no worker ran.
         world = self.one(witness={"manual": "a human looks at it"})
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
-        reason = world.events(world.items()["a"]["id"], lease.BLOCK)[-1]["reason"]
-        self.assertIn("zero runnable witnesses", reason)
-        self.assertEqual(self.attempts(world, "a"), [])
+        self.assertIsNone(phase3.plan.pinned(world.board, FEATURE))
+        self.assertNotIn("worker", world.sessions)
 
     def test_a_diff_touching_the_plan_is_refused(self):
         world = self.one()

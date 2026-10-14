@@ -63,7 +63,9 @@ def pbi(key, paths, depends_on=None, sections=("1",), parallel_with=None, **extr
         "result": f"После {key} наблюдаемое поведение появляется целиком.",
         "acceptance_criteria": [
             {"id": "AC-1", "text": "нет новых падений относительно базы точки ветвления",
-             "witness": {"evidence": f"tests/test_{key}.py::test_it"}}],
+             "witness": {"evidence": f"tests/test_{key}.py::test_it"}},
+            {"id": "AC-2", "text": f"tests/test_{key}.py exists",
+             "witness": {"command": f"test -f tests/test_{key}.py", "timeout": 30}}],
         "tasks": [{"key": key + "-1", "title": "Extend the slice",
                    "not_done_if": "The observable result is absent",
                    "existing": [], "deliverables": ["Slice implemented"]}],
