@@ -140,8 +140,10 @@ class UnverifiedAgentTests(ScriptTestCase):
         asked = []
         # The real resolver holds the profile to the floors, so review names a
         # model the tier table classifies (IDE-152).
-        spec = dict(SPEC_EXECUTORS, roles=dict(SPEC_EXECUTORS["roles"],
-                                               review=["copilot:gpt-6-astra"]))
+        spec = dict(SPEC_EXECUTORS, roles={"design": ["claude:opus"],
+                                           "worker": ["codex", "copilot"],
+                                           "review": ["copilot:gpt-6-astra"],
+                                           "integration": ["claude:opus"]})
         handle = executors.default_resolver(
             spec, which=lambda binary: "/bin/" + binary,
             run=lambda argv, **kw: asked.append(argv[0]) or type(
