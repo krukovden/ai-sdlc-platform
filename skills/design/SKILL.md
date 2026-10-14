@@ -104,7 +104,10 @@ did not happen must never read like a search that found nothing.
 It objects; you decide. Every objection has to be disposed of before the ADR is
 issued — `accepted` or `rejected`, and a rejection needs a reason. An objection
 you overrule does not disappear: it goes into «Рассмотрено и отклонено», and
-into the feature's Tried & Rejected when the work merges.
+when development starts the runner writes it into the feature's
+`docs/features/<id>-<slug>/decisions.md` as a load-bearing entry whose
+Alternative is the objection — the feature's Tried & Rejected, offered to project
+memory at finalize.
 
 If the critic's provider turns out to be the same model as the architect, the
 run continues and the collision is recorded as a degradation, printed to you and

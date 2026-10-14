@@ -1,9 +1,9 @@
-"""Project memory on the board, and the detector that keeps it honest.
+"""Project memory's board-side remainder, and the detector that keeps it honest.
 
 The epic's feature registry is gone (IDE-147, *Memory*): the product
 repository's `memory/index.md` is the registry, and every command that read the
-old one refuses with a fix that names it. What remains is a feature's own files
-and the cases that matter for them: a closed card with no commit behind it, a
+old one refuses with a fix that names it, and since IDE-155 a Feature's journal
+is in git, so the board keeps only the ADR. What remains is the cases that matter: a closed card with no commit behind it, a
 summary older than the code it describes, and a check that would pass because
 it ran against a stale clone.
 
@@ -66,16 +66,24 @@ class RegistryRemovedTests(ScriptTestCase):
                      "seed", "core"):
             self.assertFalse(hasattr(memory, name), name)
 
-    def test_why_points_at_the_features_files_and_at_memory_index(self):
+    def test_why_points_at_the_journal_in_git_and_at_memory_index(self):
         fake = mock.Mock()
         fake.get_issue.return_value = {"title": "Feature", "status": "Active",
+                                       "branch": "feature/IDE-42",
                                        "url": "https://example.invalid/IDE-42"}
         fake.list_attachments.return_value = [
-            {"title": memory.feature_file("IDE-42", "history")}, {"title": "Notes"}]
+            {"title": memory.feature_file("IDE-42", "adr")}, {"title": "Notes"}]
         text = board.explain(fake, "IDE-42")
-        self.assertIn(memory.feature_file("IDE-42", "history"), text)
+        self.assertIn(memory.feature_file("IDE-42", "adr"), text)
+        self.assertIn("docs/features/IDE-42-", text)
+        self.assertIn("feature/IDE-42", text)
         self.assertNotIn("Notes", text)
         self.assertIn("memory/index.md", text)
+
+    def test_memory_record_refuses_before_reaching_the_board(self):
+        code, err = self.run_board("memory", "record", "IDE-42", "--entry", "x")
+        self.assertEqual(code, board.EXIT.INVALID)
+        self.assertIn("docs/features/", err.split("FIX:", 1)[1])
 
 
 class DriftTests(ScriptTestCase):
@@ -232,42 +240,6 @@ class StaleDocumentationTests(ScriptTestCase):
         self.assertNotIn("origin/main", [a for args in seen for a in args])
 
 
-class HistoryTests(ScriptTestCase):
-    """The feature's history is append-only, and one merge is one line."""
-
-    def test_creates_the_document_with_a_first_entry(self):
-        text = memory.append_entry(None, "wired the resolver in", "2026-08-15")
-
-        self.assertIn(memory._section_table().heading("feature-history", level=1), text)
-        self.assertIn("**2026-08-15**", text)
-        self.assertIn("wired the resolver in", text)
-
-    def test_appends_after_what_is_already_there(self):
-        first = memory.append_entry(None, "first thing", "2026-08-14")
-        second = memory.append_entry(first, "second thing", "2026-08-15")
-
-        self.assertIn("first thing", second)
-        self.assertLess(second.index("first thing"), second.index("second thing"))
-
-    def test_names_the_pbi_whose_merge_it_records(self):
-        text = memory.append_entry(None, "did the thing", "2026-08-15", pbi="IDE-94")
-        self.assertIn("(IDE-94)", text)
-
-    def test_recording_the_same_merge_twice_appends_once(self):
-        first = memory.append_entry(None, "did the thing", "2026-08-15", pbi="IDE-94")
-        again = memory.append_entry(first, "did the thing", "2026-08-15", pbi="IDE-94")
-        self.assertEqual(first, again)
-
-    def test_an_empty_entry_is_refused_rather_than_recorded(self):
-        with self.assertRaises(memory.MemoryError_) as caught:
-            memory.append_entry(None, "   ", "2026-08-15")
-        self.assertIn("records nothing", str(caught.exception))
-
-    def test_the_document_title_is_derived_from_the_feature(self):
-        self.assertEqual(memory.history_title("IDE-42"),
-                         "IDE-42 · 01 · History — what happened to this feature")
-
-
 class ProcessFeatureTests(ScriptTestCase):
     """A feature that produced rules rather than code lands nowhere in git.
 
@@ -317,24 +289,26 @@ class NamingTests(ScriptTestCase):
     one day open the wrong document and be confident about it.
     """
 
-    def test_the_epic_keeps_its_hub_and_tried_and_rejected_and_01_stays_empty(self):
-        self.assertEqual(
-            [memory.epic_file(r) for r in ("hub", "tried_rejected")],
-            ["00 · HUB — read this before any work",
-             "02 · Tried & Rejected — do not re-litigate"])
+    def test_the_epic_keeps_only_its_hub_and_01_02_stay_empty(self):
+        self.assertEqual([memory.epic_file(r) for r in memory.EPIC_FILES],
+                         ["00 · HUB — read this before any work"])
 
-    def test_a_feature_carries_the_same_shape_plus_its_identifier(self):
-        self.assertEqual(
-            [memory.feature_file("IDE-42", r)
-             for r in ("adr", "history", "tried_rejected")],
-            ["IDE-42 · 00 · ADR — how we build it and what it costs",
-             "IDE-42 · 01 · History — what happened to this feature",
-             "IDE-42 · 02 · Tried & Rejected — do not re-litigate"])
+    def test_the_projects_tried_and_rejected_points_at_memory_index(self):
+        with self.assertRaises(memory.MemoryError_) as caught:
+            memory.epic_file("tried_rejected")
+        self.assertIn("Rejected at project level", str(caught.exception))
+        self.assertIn("memory/index.md", str(caught.exception))
 
-    def test_tried_and_rejected_is_02_on_both_levels(self):
-        """The one thing anybody has to remember."""
-        self.assertTrue(memory.epic_file("tried_rejected").startswith("02 · "))
-        self.assertIn(" 02 · ", memory.feature_file("IDE-42", "tried_rejected"))
+    def test_a_feature_carries_only_its_adr_on_the_board(self):
+        self.assertEqual([memory.feature_file("IDE-42", r) for r in memory.FEATURE_FILES],
+                         ["IDE-42 · 00 · ADR — how we build it and what it costs"])
+
+    def test_the_journal_files_refuse_with_where_they_live_now(self):
+        for role in ("history", "tried_rejected"):
+            with self.assertRaises(memory.MemoryError_) as caught:
+                memory.feature_file("IDE-42", role)
+            self.assertIn("docs/features/", str(caught.exception))
+            self.assertIn("FIX:", str(caught.exception))
 
     def test_the_existing_hub_document_already_matches(self):
         """Nothing to migrate: the one file that exists was already named this."""
@@ -343,19 +317,18 @@ class NamingTests(ScriptTestCase):
 
     def test_a_feature_file_without_its_identifier_is_refused(self):
         with self.assertRaises(memory.MemoryError_) as caught:
-            memory.feature_file("", "history")
+            memory.feature_file("", "adr")
         self.assertIn("downloaded", str(caught.exception))
 
     def test_an_unknown_role_names_the_roles_that_exist(self):
         with self.assertRaises(memory.MemoryError_) as caught:
             memory.feature_file("IDE-42", "changelog")
         self.assertIn("adr", str(caught.exception))
-        self.assertIn("history", str(caught.exception))
 
     def test_the_same_name_serves_a_board_that_attaches_files(self):
         self.assertEqual(
-            memory.attachment_name(memory.feature_file("IDE-42", "history")),
-            "IDE-42 · 01 · History — what happened to this feature.md")
+            memory.attachment_name(memory.feature_file("IDE-42", "adr")),
+            "IDE-42 · 00 · ADR — how we build it and what it costs.md")
 
     def test_a_name_from_outside_the_convention_is_recognised_as_such(self):
         self.assertTrue(memory.is_conventional(memory.epic_file("hub")))

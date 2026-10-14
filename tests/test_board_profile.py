@@ -4,6 +4,8 @@ Nothing here touches the real .idp/profile.json or ~/.feature-discovery:
 every profile and token lives in a temporary directory that is removed again.
 """
 
+import contextlib
+import io
 import os
 import subprocess
 import tempfile
@@ -109,11 +111,30 @@ class LoadProfileTests(ScriptTestCase):
                             "qa@example.invalid"], check=True, capture_output=True, text=True)
             nested = root / "src"
             nested.mkdir(parents=True)
-            with chdir(nested):
+            with chdir(nested), contextlib.redirect_stdout(io.StringIO()):
                 board.cmd_setup(SimpleNamespace(team_key=None, force=False))
 
             self.assertTrue((root / ".idp" / "profile.json").exists())
             self.assertFalse((root / "src" / ".idp" / "profile.json").exists())
+            # Step two of setup (IDE-155): committed project memory at the root.
+            self.assertTrue((root / "memory" / "index.md").exists())
+            self.assertIn("idp:memory:start", (root / "CLAUDE.md").read_text())
+            self.assertFalse((root / "src" / "memory").exists())
+
+    def test_setup_again_keeps_the_profile_and_still_initialises_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "repo"
+            subprocess.run(["git", "-C", str(root.parent), "init", "-q", str(root)],
+                           check=True, capture_output=True, text=True)
+            (root / ".idp").mkdir()
+            (root / ".idp" / "profile.json").write_text('{"mine": true}\n')
+            out = io.StringIO()
+            with chdir(root), contextlib.redirect_stdout(out):
+                board.cmd_setup(SimpleNamespace(team_key=None, force=False, no_memory=False))
+            self.assertEqual((root / ".idp" / "profile.json").read_text(), '{"mine": true}\n')
+            self.assertIn("Kept", out.getvalue())
+            self.assertIn("NEXT: memory/index.md is a skeleton", out.getvalue())
+            self.assertTrue((root / "memory" / "units").is_dir())
 
     def test_the_advice_names_the_installed_command_when_that_is_how_we_were_called(self):
         with mock.patch.object(board.sys, "argv", ["/home/u/.local/bin/idp", "status"]):

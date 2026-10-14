@@ -93,8 +93,8 @@ before it can design or review.
 
 The one way past it is deliberate: `executors.model_floor_override` maps a role to
 the reason. The run proceeds, and every session below the floor posts a
-`model-floor` comment on the Feature, lands in the design journal attached as the
-Feature's History, and is repeated in the comment that asks the human to approve
+`model-floor` comment on the Feature, lands in the design session's local journal,
+and is repeated in the comment that asks the human to approve
 the ADR.
 
 ```json
@@ -134,8 +134,8 @@ single tag — plus `idp:blocked` when blocked. The claim is the fenced swap
 `idp:design` → `idp:design:in-progress@<run>`: one write, `test /rev` on Azure
 DevOps, so the owner is part of the very tag the fence protects. No
 `sdlc:cid` or `sdlc:feature-package` tag is written: cards link through the
-tracker's Parent/Child relations, the ADR and the history are attachments on the
-Feature, and the correlation id lives in the document's machine header (cards
+tracker's Parent/Child relations, the ADR is an attachment on the Feature, its
+journal is in `docs/features/` on the feature branch (IDE-155), and the correlation id lives in the document's machine header (cards
 published earlier still carry those tags; they are read, never written). Cards
 written before IDE-150 in the old spelling (`idp:owner:<run>`, `idp:paused:<run>`)
 are read as they are and re-spelt on their next change.
@@ -329,8 +329,12 @@ result itself:
 - `validate.py` passes;
 - the ADR header carries `scope: small|medium|large`;
 - the critic record exists;
-- the attachment round-trips byte-identically;
-- the design journal replaces any older attachment under the same title.
+- the attachment round-trips byte-identically.
+
+The design session's own journal stays in its local cache; what lasts of the design
+is in the ADR, and the runner turns it into journal entries when development starts.
+The session's context carries `memory-index.md` — the product repository's
+`memory/index.md` — so a design never re-proposes a project-level rejection.
 
 Then the runner moves the Feature to `idp:design-review` and posts the ADR sha256.
 The approval is for exactly those bytes. A redesign replaces the old attachment and
@@ -358,7 +362,13 @@ deterministic shell:
 4. the plan is committed to the feature branch and pinned by sha256 in a planning
    comment;
 5. the board shape is created idempotently: PBIs, Tasks and the QA Testing PBI;
-6. the feature journal starts as `01 · History` on the Feature.
+6. the feature journal starts in `docs/features/<card>-<slug>/` on the feature
+   branch (IDE-155): `adr.md` is the approved ADR, `decisions.md` gets one
+   load-bearing entry per hard-to-reverse ADR decision and per critic objection the
+   architect overruled, plus the plan's cut, and `history.md` the progress lines.
+   The runner is the only writer; the journal rides in the runner's own commits —
+   the plan, each plan amendment, and the finalize commit — so a resumed run makes
+   exactly the commits a clean one did.
 
 Witnesses always come from the pinned plan commit, never from the live card text.
 
@@ -409,12 +419,20 @@ blocked rather than handed to QA undocumented.
 
 ### Phase 4: QA hand-off
 
-Today the runner stops at the human's QA gate. When 3.3 is green it:
+Today the runner stops at the human's QA gate. When 3.3 is green and documented it
+makes the **finalize commit** (IDE-155): the runner offers the platform's
+`memory-writer` the journal's load-bearing decisions that no memory entry carries
+yet (`project_memory.py candidates`); the session lifts the ones that pass the
+durability and three-part tests with `project_memory.py add` and writes nothing
+outside `memory/`; the runner checks the diff and `project_memory.py lint`, freezes
+the journal, and commits both onto the feature branch. A journal or memory change
+after a green round does not make integration run again. Then it:
 
-1. opens the feature PR into `main`;
-2. moves the QA Testing PBI to `doing`;
-3. assigns it to the first approver when possible;
-4. uploads the feature journal;
+1. opens the feature PR into `main`, with a *Decisions needing confirmation*
+   section listing the memory entries the PR carries;
+2. posts one comment on the Feature naming those entries;
+3. moves the QA Testing PBI to `doing`;
+4. assigns it to the first approver when possible;
 5. moves the Feature to `idp:qa` and releases the owner tag in the same write.
 
 From there the human decides:
@@ -584,7 +602,9 @@ ordinary profiles; without these keys, behavior is unchanged.
 | Session context | `<worktree>/.idp/context/` |
 | Session report | `<worktree>/.idp/result.json` |
 | Session logs | `<worktree>/.idp/logs/` |
-| Feature journal working file | `~/.idp/worktrees/<repo>/<card>-journal/journal.md` |
+| Feature journal working copy | `~/.idp/worktrees/<repo>/<card>-journal/{history,decisions}.md` |
+| Feature journal | `docs/features/<card>-<slug>/{history,decisions,adr}.md` on the feature branch |
+| Project memory | `memory/index.md`, `memory/units/<slug>.md` in the product repository |
 | Area blueprints | `docs/blueprint/<area>.md` in the product repository |
 | Pinned plan | `docs/plans/<card>.plan.json` on the feature branch |
 | Agent loop pid / stop file | `~/.idp/agent/<run>.pid`, `~/.idp/agent/<run>.stop` |

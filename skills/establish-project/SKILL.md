@@ -123,8 +123,9 @@ stage, writes the optional wiki pages and the epic description, and writes the
 profile and `PROJECT.md` into the repository. It is idempotent: if it breaks,
 run it again.
 
-The only feature registry is the repository's `memory/index.md`, maintained by
-engineering-catalog's memory-writer after a merge into `main`. Publication points
+The only feature registry is the repository's `memory/index.md`, created by
+`/idp-setup` and maintained by the platform's memory-writer at each feature's
+finalize. Publication points
 `PROJECT.md` there but does not create or overwrite it, publish a registry on the
 epic, or write `memory_doc` into the profile.
 

@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Project memory on the board: a feature's own files, and the drift detector.
+"""Project memory's board-side remainder: the ADR's name, and the drift detector.
 
-The contract was IDE-76: four files on two levels, the epic carrying the
-feature registry and the project's Tried & Rejected, each feature card its own
-history and its own Tried & Rejected. IDE-147 (*Memory*) removed the epic's
-registry. Two registries need a rule for which one wins, and that rule is where
-drift starts, so there is one: **the product repository's `memory/index.md`**.
+The contract was IDE-76: four files on two levels, the epic carrying the feature
+registry and the project's Tried & Rejected, each feature card its own history
+and its own Tried & Rejected. IDE-147 (*Memory*) removed the epic's registry, and
+IDE-155 moved the rest into git: **the tracker holds work; git holds knowledge.**
 
-What stays here:
-
-* **While a Feature is in flight**, its journal (`01 · History`) and its Tried
-  & Rejected are attachments on the Feature, so every agent sees them without
-  the repository. Their names are below, in `FEATURE_FILES`.
-* **When the feature merges into `main`**, engineering-catalog's
-  `memory-writer` moves the decisions that will outlive it, and the
-  rejections, into the repository's `memory/` — this platform hands them over
-  and writes nothing there itself.
+* **The project store** is the product repository's committed `memory/`
+  (`index.md` + `units/`), owned by this platform — `scripts/project_memory.py`,
+  the `memory` and `memory-init` skills and the `memory-writer` agent. Its
+  `## Rejected at project level` replaced the epic's Tried & Rejected.
+* **A Feature's journal** — its history, its decisions (Tried & Rejected is every
+  decision's `Alternative`), and a copy of its ADR — lives in
+  `docs/features/<id>-<slug>/` on the feature branch and merges with the code
+  (`scripts/feature_journal.py`). The runner is its only writer.
+* **At finalize**, still on the feature branch, memory-writer lifts the journal's
+  load-bearing decisions into `memory/`, so the memory change ships in the same
+  pull request as the code.
+* **On the board** stays only what a human gate needs: the ADR attachment, whose
+  approval hash is the design gate. Its name is below, in `FEATURE_FILES`.
 * The drift detector, for what it can still check without a registry: a card
   the board calls finished with no commit behind it, and a hand-written summary
   older than the code it describes.
@@ -32,10 +35,9 @@ with confidence, which is how the drift this whole mechanism exists to prevent
 actually happened once.
 """
 
-import importlib.util
 import re
 import subprocess
-import sys
+
 from pathlib import Path
 
 # The registry answered "what can the platform do", so a feature that produced
@@ -50,9 +52,17 @@ MEMORY_INDEX = "memory/index.md"
 REGISTRY_REMOVED = ("the feature registry on the epic is removed (IDE-147, Memory): the "
                     f"product repository's {MEMORY_INDEX} is the registry, and two "
                     "registries would need a rule for which one wins")
-REGISTRY_FIX = (f"read {MEMORY_INDEX} in the product repository (engineering-catalog's "
-                "`memory` skill); decisions reach it when a feature merges into main, "
-                "through engineering-catalog's memory-writer")
+REGISTRY_FIX = (f"read {MEMORY_INDEX} in the product repository (the platform's `memory` "
+                "skill); a feature's decisions reach it at finalize, on the feature branch, "
+                "through the platform's memory-writer, and merge with the code")
+FEATURES_DIRECTORY = "docs/features"
+JOURNAL_REMOVED = ("a Feature's history and Tried & Rejected are no longer board attachments "
+                   "(IDE-155): the tracker holds work, git holds knowledge")
+JOURNAL_FIX = (f"read {FEATURES_DIRECTORY}/<id>-<slug>/ on the feature branch (history.md, "
+               "decisions.md — every Alternative there is a rejection — and adr.md), or on "
+               "main once it merged; the runner is their only writer")
+REJECTED_REMOVED = ("the project's Tried & Rejected on the epic is removed (IDE-155): it is "
+                    f"`## Rejected at project level` in {MEMORY_INDEX}")
 
 
 class MemoryError_(Exception):
@@ -204,8 +214,8 @@ def check_drift(issues, profile, do_fetch=True):
     the third rule of IDE-128, the case that got past the registry's two: a
     work item closed as Done whose code was on nobody's `main`. The registry's
     own rules — an entry with no code behind it, a merged feature missing from
-    it — left with the registry; `memory/index.md` is engineering-catalog's to
-    check.
+    it — left with the registry; `memory/index.md` is `project_memory.py lint`'s
+    to check.
 
     Reports. Fixes nothing: a detector that edits the thing it checks can only
     ever agree with itself.
@@ -270,7 +280,7 @@ def describe_drift(findings):
         notes.append("Skipped as process features, not capabilities: "
                      + ", ".join(findings["process"]))
     notes.append(f"The registry is {MEMORY_INDEX} in the product repository; "
-                 "engineering-catalog checks it.")
+                 "`project_memory.py lint` checks it.")
 
     if not lines:
         repos = ", ".join(findings["repositories"])
@@ -302,18 +312,20 @@ def describe_drift(findings):
 
 EPIC_FILES = {
     "hub":            ("00", "HUB", "read this before any work"),
-    "tried_rejected": ("02", "Tried & Rejected", "do not re-litigate"),
 }
 
 # Roles that were removed, each with why and where its content lives now. `01`
-# at epic level stays unassigned, so an old link never lands on a new meaning.
-REMOVED_ROLES = {"registry": (REGISTRY_REMOVED, REGISTRY_FIX)}
+# and `02` stay unassigned, so an old link never lands on a new meaning.
+REMOVED_ROLES = {"registry": (REGISTRY_REMOVED, REGISTRY_FIX),
+                 "tried_rejected": (REJECTED_REMOVED, REGISTRY_FIX)}
 
+# On the board a Feature carries only its ADR: the design gate's approval hash
+# covers those bytes. Its journal is in git (IDE-155).
 FEATURE_FILES = {
     "adr":            ("00", "ADR", "how we build it and what it costs"),
-    "history":        ("01", "History", "what happened to this feature"),
-    "tried_rejected": ("02", "Tried & Rejected", "do not re-litigate"),
 }
+REMOVED_FEATURE_ROLES = {"history": (JOURNAL_REMOVED, JOURNAL_FIX),
+                         "tried_rejected": (JOURNAL_REMOVED, JOURNAL_FIX)}
 
 
 def _compose(table, role, prefix=None):
@@ -345,7 +357,15 @@ def feature_file(identifier, role):
         raise MemoryError_("a feature file without its identifier cannot be "
                            "told apart from another feature's once it is "
                            "downloaded or listed alongside them")
+    if role in REMOVED_FEATURE_ROLES:
+        message, fix = REMOVED_FEATURE_ROLES[role]
+        raise MemoryError_(f"{message}.\nFIX: {fix}")
     return _compose(FEATURE_FILES, role, prefix=identifier)
+
+
+def journal_removed():
+    """The refusal a former journal command answers with: (message, fix)."""
+    return JOURNAL_REMOVED, JOURNAL_FIX
 
 
 def attachment_name(title):
@@ -366,55 +386,3 @@ def is_conventional(title):
 
 MEMORY_FILE_PATTERN = re.compile(
     r"^(?:[A-Z]+-\d+ · )?\d{2} · .+ — .+$")
-
-
-# ---------------------------------------------------------------------------
-# The feature's own history
-# ---------------------------------------------------------------------------
-
-def history_title(identifier):
-    return feature_file(identifier, "history")
-
-
-def _section_table():
-    """`scripts/sections.py`: the one place a section id becomes words (IDE-132)."""
-    existing = sys.modules.get("idp_sections")
-    if existing is not None:
-        return existing
-    spec = importlib.util.spec_from_file_location(
-        "idp_sections", Path(__file__).resolve().parent / "sections.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["idp_sections"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def append_entry(existing, entry, on_date, pbi=None, language=None):
-    """Add one line to a feature's history, newest last.
-
-    Append-only on purpose. The history answers "how did this get to be the way
-    it is", and a document that can be rewritten answers a different question:
-    "how does someone want it to look now".
-    """
-    entry = (entry or "").strip()
-    if not entry:
-        raise MemoryError_("a history entry with no text records nothing; "
-                           "say what the merge changed")
-
-    source = f" ({pbi})" if pbi else ""
-    line = f"* **{on_date}**{source} — {entry}"
-
-    if not existing:
-        words = _section_table()
-        return "\n".join([
-            words.heading("feature-history", language, level=1),
-            "",
-            words.phrase("history-preamble", language),
-            "",
-            line,
-            "",
-        ])
-
-    if existing.rstrip().endswith(line):
-        return existing            # the same merge recorded twice is one merge
-    return existing.rstrip() + "\n" + line + "\n"
