@@ -1033,10 +1033,19 @@ def check_adr_unchanged(board, profile, session):
                 "Re-run init and re-cut the plan against the design that exists.")
 
 
+PLANNER_ENV = "IDP_PLANNER"
+
+
 def planner_model(override=None):
-    """Who cuts the plan, as data: the coverage pass must run on someone else."""
+    """Who cuts the plan, as data: the coverage pass must run on someone else.
+
+    Under run.py the runner names the executor it started, `agent[:model]`, in
+    IDP_PLANNER (IDE-153); providers.json is what a hand-run session falls back on.
+    """
     if override:
         return override
+    if os.environ.get(PLANNER_ENV, "").strip():
+        return os.environ[PLANNER_ENV].strip()
     try:
         config = load_reviewer().load_providers()
     except Exception:
@@ -1350,6 +1359,53 @@ def deterministic_constraints(adr_text):
     return floor
 
 
+class CoverageGap(PlanError):
+    """The coverage report is trustworthy and some ADR constraint has no PBI.
+
+    Distinct from a plain PlanError on the report itself: a gap is the planner's
+    to fix, an untrustworthy report the reviewer's to redo (IDE-153).
+    """
+
+
+def coverage_prompt(plan, adr_text):
+    """What the independent coverage reviewer is asked, whoever runs it."""
+    floor = deterministic_constraints(adr_text)
+    return (
+        "Independently extract EVERY load-bearing constraint from the ADR, including "
+        "quantifiers, enumerations and each table row. Give each a stable id, exact "
+        "source quote and source line. Then map each constraint to PBIs that actually "
+        "deliver it; a section reference alone is not coverage. Leave missing constraints "
+        "out of coverage. Never omit a constraint because no PBI covers it.\nADR:\n"
+        + "\nThese ADR lines are mandatory constraints (add others, drop none): "
+        + ", ".join(map(str, floor))
+        + "\nADR:\n" + adr_text + "\nPBIs:\n" + canonical_json(plan))
+
+
+def verify_coverage(report, plan, adr_text):
+    """The script's half of the coverage pass, on a report already schema-valid.
+
+    Raises PlanError when the report cannot be trusted — no constraints, a quote
+    the ADR does not carry, a mandatory line dropped — and CoverageGap when it
+    can be and a constraint is left uncovered.
+    """
+    if not report["constraints"]:
+        raise PlanError(3, "coverage review extracted no load-bearing ADR constraints")
+    source_lines = adr_text.splitlines()
+    for constraint in report["constraints"]:
+        line = constraint["line"]
+        if line > len(source_lines) or constraint["quote"] not in source_lines[line - 1]:
+            raise PlanError(3, "coverage constraint has no matching ADR source quote")
+    quoted = {constraint["line"] for constraint in report["constraints"]}
+    dropped = [str(number) for number in deterministic_constraints(adr_text)
+               if number not in quoted]
+    if dropped:
+        raise PlanError(3, "coverage review dropped ADR lines that must be constraints: "
+                           "line " + ", ".join(dropped))
+    missing = coverage_difference(report, plan["pbis"])
+    if missing:
+        raise CoverageGap(3, "ADR constraints missing from PBIs: " + ", ".join(missing))
+
+
 def check_coverage(plan, adr_text, planner_model, providers=None, runner=None):
     reviewer = load_reviewer()
     if not planner_model or planner_model.casefold() == "unknown":
@@ -1363,39 +1419,15 @@ def check_coverage(plan, adr_text, planner_model, providers=None, runner=None):
         if (identity and identity.casefold() != planner_model.casefold()
                 and provider.get("name", "").casefold() != planner_model.casefold()):
             independent["reviewer"][role] = provider
-    floor = deterministic_constraints(adr_text)
-    prompt = (
-        "Independently extract EVERY load-bearing constraint from the ADR, including "
-        "quantifiers, enumerations and each table row. Give each a stable id, exact "
-        "source quote and source line. Then map each constraint to PBIs that actually "
-        "deliver it; a section reference alone is not coverage. Leave missing constraints "
-        "out of coverage. Never omit a constraint because no PBI covers it.\nADR:\n"
-        + "\nThese ADR lines are mandatory constraints (add others, drop none): "
-        + ", ".join(map(str, floor))
-        + "\nADR:\n" + adr_text + "\nPBIs:\n" + canonical_json(plan))
     kwargs = {"providers": independent, "schema_name": "plan-coverage.schema.json"}
     if runner is not None:
         kwargs["runner"] = runner
-    report, mode, failures = reviewer.review(prompt, **kwargs)
+    report, mode, failures = reviewer.review(coverage_prompt(plan, adr_text), **kwargs)
     if report is None:
         raise PlanError(3, "independent planning coverage review unavailable: "
                            + "; ".join(failures) + f". FIX: configure a reviewer provider "
                            f"in registry/providers.json that is not '{planner_model}'")
-    if not report["constraints"]:
-        raise PlanError(3, "coverage review extracted no load-bearing ADR constraints")
-    source_lines = adr_text.splitlines()
-    for constraint in report["constraints"]:
-        line = constraint["line"]
-        if line > len(source_lines) or constraint["quote"] not in source_lines[line - 1]:
-            raise PlanError(3, "coverage constraint has no matching ADR source quote")
-    quoted = {constraint["line"] for constraint in report["constraints"]}
-    dropped = [str(number) for number in floor if number not in quoted]
-    if dropped:
-        raise PlanError(3, "coverage review dropped ADR lines that must be constraints: "
-                           "line " + ", ".join(dropped))
-    missing = coverage_difference(report, plan["pbis"])
-    if missing:
-        raise PlanError(3, "ADR constraints missing from PBIs: " + ", ".join(missing))
+    verify_coverage(report, plan, adr_text)
     return {"report": report, "mode": mode, "planner_model": planner_model,
             "adr_hash": content_hash(adr_text), "plan_hash": content_hash(canonical_json(plan))}
 
@@ -1413,6 +1445,14 @@ def cmd_finalize(args):
     adr_text = load_adr(session)
     problems, _, _ = accept_plan(session, plan, adr_text)
     enforce(problems)
+    if os.environ.get(CONTEXT_ENV, "").strip():
+        # Under run.py the coverage review is the runner's, run on the profile's
+        # review role after this session reports (IDE-153). This session never
+        # chooses or reaches its own reviewer: on 2026-10-14 a planner that could
+        # wrote one, re-pointed providers.json at it and passed its own plan.
+        print("plan accepted: the runner runs the independent coverage review after you "
+              "report; do not run it, configure it, or write a reviewer")
+        return None
     recorded = session.get("planner_model") or "unknown"
     if args.planner_model and args.planner_model.casefold() != recorded.casefold():
         raise PlanError(3, f"--planner-model '{args.planner_model}' is not the planner recorded "

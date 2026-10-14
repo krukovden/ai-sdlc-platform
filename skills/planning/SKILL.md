@@ -211,3 +211,10 @@ source quotes and computes the set difference. Missing constraints, malformed
 reports, and unavailable independent review block finalize. Fix the plan and repeat;
 never claim a section reference alone proves coverage. The result is bound to both
 the ADR and plan hashes, so edits require another finalize.
+
+**Under run.py the coverage review is not yours** (IDE-153). `finalize` checks the
+plan locally and stops there; the runner runs the independent review itself, on
+the profile's `review` role, after you report. Never run, configure or write a
+reviewer, and never edit the platform — `registry/`, `scripts/`, `skills/`: the
+runner hashes it and refuses a session that changed it. When no reviewer is
+reachable, that is the runner's to report, not yours to work around.

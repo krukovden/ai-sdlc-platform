@@ -617,6 +617,23 @@ def planning_coverage(plan, adr_text, planner_model, **_):
     }
 
 
+def coverage_step(worktree, prompt):
+    """The runner's coverage reviewer, scripted: every mandatory ADR line, covered (IDE-153)."""
+    output = Path(prompt.split("write that JSON, and nothing else, to ", 1)[1]
+                  .split("\n", 1)[0].rstrip("."))
+    request = (Path(worktree) / ".idp" / "context" / "request.md").read_text(encoding="utf-8")
+    adr = request.split("\nADR:\n", 2)[2].split("\nPBIs:\n", 1)[0]
+    lines = adr.splitlines()
+    numbers = planning.deterministic_constraints(adr) or [1]
+    constraints = [{"id": f"C{n}", "quote": lines[n - 1].strip(), "line": n} for n in numbers]
+    keys = [pbi["key"] for pbi in json.loads(request.split("\nPBIs:\n", 1)[1])["pbis"]]
+    output.write_text(json.dumps({
+        "constraints": constraints,
+        "coverage": [{"constraint": c["id"], "pbis": keys[:1]} for c in constraints]}),
+        encoding="utf-8")
+    return EXIT.DONE
+
+
 class TrackingSubprocessExecutor(executors.SubprocessExecutor):
     def __init__(self, resolver, **kwargs):
         super().__init__(resolver, **kwargs)
@@ -954,6 +971,8 @@ class DryCalculatorExecutor(ScriptedExecutor):
             return self.plan_step(card, context)
         if role == "design":
             return self.design_step(card, worktree, context)
+        if prompt.startswith("You are the independent coverage reviewer"):
+            return coverage_step(worktree, prompt)
         if role == "review":
             (Path(worktree) / ".idp" / "review.json").write_text(
                 json.dumps({"findings": []}), encoding="utf-8"

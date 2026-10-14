@@ -87,6 +87,7 @@ INFRA = "infra"
 PATHS = "paths"
 RACE = "merge-race"
 UNMERGED = "merge-refused"
+COVERED = "coverage"
 
 PLANNING_PROMPT = """You are the planning session for {feature}, started by run.py (IDE-147).
 Follow the planning skill exactly: {skill}
@@ -99,14 +100,28 @@ Feature itself is the input).
 Drive the process with `python3 {planning_py}` and nothing else:
   1. `init {feature} --resume`, then `context {feature} --json`
   2. cut the plan, write it to a file, `propose {feature} --plan-file <file>`
-  3. `graph {feature}`, then `finalize {feature}`
+  3. `graph {feature}`, then `finalize {feature}` (it checks the plan locally)
   4. then finish with: python3 {run_py} report --code 0 --reason "plan ready"
 
 Never run publish_planning.py and never call a tracker: the runner commits the plan,
-pins it and creates the cards. If a human has to decide something first, finish with
+pins it and creates the cards. The independent coverage review is the runner's too,
+on another model, after you report: never run, configure or write a reviewer, and
+never edit the platform at {platform} — the runner refuses a session that changed it. If a human has to decide something first, finish with
 `report --code 2 --reason "<the question>"`; if your context is running out,
 `report --code 4 --reason "<where you stopped>"`.
 {feedback}"""
+
+COVERAGE_PROMPT = """You are the independent coverage reviewer of the plan for {feature}, started by
+run.py (IDE-153). Another model cut this plan; your job is to find what it left out.
+
+{context}/request.md is the whole request: the approved ADR, the ADR lines that must
+each become a constraint, and the plan's PBIs. Answer it as JSON matching the schema
+{schema}, and write that JSON, and nothing else, to {output}.
+Read only; change no file but {output}, and never call a tracker.
+
+Then finish with: python3 {run_py} report --code 0 --reason "coverage written"
+If you cannot do it, finish with `report --code 4 --reason "<why>"`.
+"""
 
 WORKER_PROMPT = """You are the development worker for PBI {pbi} of Feature {feature}, started by run.py (IDE-147).
 Follow the development skill exactly: {skill}
@@ -381,7 +396,6 @@ class Development:
         try:
             found, _, _ = self.planning.accept_plan(session, plan, adr_text)
             problems += [p["message"] for p in found]
-            self.planning.require_coverage(session, plan, adr_text)
         except self.planning.PlanError as exc:
             problems.append(exc.message)
         return plans.plan_text(plan), problems
@@ -391,7 +405,13 @@ class Development:
         adr_text = self.adr_text(feature, route)
         text, problems = self.plan_candidate(feature, adr_text)
         if text is not None and not problems:
-            return EXIT.DONE, text
+            # A plan cut by an earlier run: its planner is not known here, so the
+            # reviewer is held apart from whoever the design role resolves to.
+            problems = self.coverage(feature, text, adr_text, base, None)
+            if problems is None:
+                return EXIT.BLOCKED, None
+            if not problems:
+                return EXIT.DONE, text
         feedback = "; ".join(problems) if problems else None
         launches = 0
         for _ in range(MAX_ATTEMPTS * 2 + len(INFRA_BACKOFF) + 1):
@@ -406,18 +426,16 @@ class Development:
             prompt = PLANNING_PROMPT.format(
                 feature=feature, skill=self.planning.SKILL_DIR / "SKILL.md", context=context,
                 planning_py=self.planning.SKILL_DIR / "planning.py",
-                run_py=self.runner.run_py,
+                run_py=self.runner.run_py, platform=getattr(self.runner, "repo_root", ""),
                 feedback=(f"\nThe last attempt was refused by the runner's checks: "
                           f"{feedback}\nFix exactly that.") if feedback else "")
+            planner = self.planner_choice()
+            env = {"IDP_CONTEXT_DIR": str(context), "PLANNING_HOME": str(self.planning_home),
+                   self.planning.PLANNER_ENV: str(planner)}
             if (self.executor.last or {}).get("unsettled"):
-                code = self.reconnect_session(
-                    "design", feature, worktree, prompt,
-                    {"IDP_CONTEXT_DIR": str(context),
-                     "PLANNING_HOME": str(self.planning_home)})
+                code = self.reconnect_session("design", feature, worktree, prompt, env)
             else:
-                code = self.session("design", feature, worktree, prompt,
-                                    {"IDP_CONTEXT_DIR": str(context),
-                                     "PLANNING_HOME": str(self.planning_home)})
+                code = self.session("design", feature, worktree, prompt, env, choice=planner)
             last = self.executor.last or {}
             while last.get("unsettled"):
                 # Not an attempt and not a pause: another run must not start a
@@ -428,10 +446,7 @@ class Development:
                     if confirm is not None and confirm(feature):
                         return self.pause_card(feature, stop), None
                 self.sleep(INFRA_BACKOFF[0])
-                code = self.reconnect_session(
-                    "design", feature, worktree, prompt,
-                    {"IDP_CONTEXT_DIR": str(context),
-                     "PLANNING_HOME": str(self.planning_home)})
+                code = self.reconnect_session("design", feature, worktree, prompt, env)
                 last = self.executor.last or {}
             if last.get("launch_failed", False):
                 launches += 1
@@ -441,6 +456,12 @@ class Development:
                 return self.launch_paused(feature, "planning", last), None
             if code == EXIT.DONE:
                 text, problems = self.plan_candidate(feature, adr_text)
+                if text is not None and not problems:
+                    ran = runner_executors().Choice(last.get("agent"), last.get("model") or None) \
+                        if last.get("agent") else planner
+                    problems = self.coverage(feature, text, adr_text, base, ran)
+                    if problems is None:
+                        return EXIT.BLOCKED, None
                 if text is not None and not problems:
                     return EXIT.DONE, text
                 feedback = "; ".join(problems) or "the session reported done and no plan is " \
@@ -462,6 +483,127 @@ class Development:
             feedback = last.get("reason") or cause
             self.feature_attempt("planning", attempts + 1, cause, feedback)
         return self.block_feature("planning made no progress"), None
+
+    def planner_choice(self):
+        """The executor the planning session runs on, resolved here so it can be named."""
+        try:
+            return self.executor.resolve("design")
+        except runner_executors().ResolutionError as exc:
+            tags.release(self.board, self.feature, self.run_id)
+            raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
+
+    def coverage(self, feature, text, adr_text, base, planner):
+        """The independent coverage review of a plan, run by the runner (IDE-153).
+
+        Never by the planning session: on the live run of 2026-10-14 a planner
+        that held its own reviewer wrote one, re-pointed providers.json at it and
+        passed its own plan. Here the reviewer is the profile's `review` role,
+        resolved with the planner as the author, and its answer goes through the
+        planning skill's own checks. The planning cache cannot vouch for a
+        review — the session could write it — so only this one counts.
+
+        Returns the gaps the planner must close ([] when every constraint is
+        covered), or None when the review could not be run and the Feature is
+        blocked rather than its plan pinned unreviewed.
+        """
+        plan = json.loads(text)
+        digest = plans.digest(text)
+        done = lease.events(self.board.list_comments(feature), COVERED, plan=digest)
+        if done:
+            self.journal_line(f"Coverage reviewed by `{done[-1].get('reviewer')}`: "
+                              f"{done[-1].get('constraints')} ADR constraints, every one "
+                              "delivered by a PBI.")
+            return []
+        executors = runner_executors()
+        # A plan an earlier run cut names no planner here; the design role's
+        # executor is who cuts plans on this profile, so the reviewer is held
+        # apart from it.
+        author = planner
+        if author is None:
+            try:
+                author = self.executor.resolve("design")
+            except executors.ResolutionError:
+                author = None
+        try:
+            reviewer = self.executor.resolve("review", author=author)
+        except executors.ResolutionError as exc:
+            self.block_feature(f"no independent reviewer may check the plan's coverage, so "
+                               f"it is not pinned unreviewed: {exc.message}")
+            return None
+        wt = self.git.worktree(self.home / f"{feature}-coverage", sha=base)
+        local_excludes(wt.path)
+        context = wt.path / ".idp" / "context"
+        context.mkdir(parents=True, exist_ok=True)
+        (context / "request.md").write_text(self.planning.coverage_prompt(plan, adr_text),
+                                            encoding="utf-8")
+        output = wt.path / ".idp" / "coverage.json"
+        reviewer_module = self.planning.load_reviewer()
+        schema = reviewer_module.SCHEMAS / "plan-coverage.schema.json"
+        prompt = COVERAGE_PROMPT.format(feature=feature, context=context, schema=schema,
+                                        output=output, run_py=self.runner.run_py)
+        env = {"IDP_CONTEXT_DIR": str(context)}
+        problem = "the review did not run"
+        for _ in range(REVIEW_RETRIES + 1):
+            if output.exists():
+                output.unlink()
+            try:
+                code = self.executor.run_role("review", feature, wt.path, prompt, context=env,
+                                              author=author, choice=reviewer)
+            except executors.ResolutionError as exc:
+                self.block_feature(f"the plan's coverage reviewer could not be started, so "
+                                   f"the plan is not pinned unreviewed: {exc.message}")
+                return None
+            self.record_floor_override(feature)
+            last = self.executor.last or {}
+            while last.get("unsettled"):
+                stop = getattr(self.runner, "stopping", lambda card: None)(feature)
+                if stop:
+                    confirm = getattr(self.executor, "confirm_stopped", None)
+                    if confirm is not None and confirm(feature):
+                        self.pause_card(feature, stop)
+                        return None
+                self.sleep(INFRA_BACKOFF[0])
+                code = self.reconnect_session("review", feature, wt.path, prompt, env)
+                last = self.executor.last or {}
+            wt.reset_to(base)
+            if code != EXIT.DONE:
+                problem = last.get("reason") or f"the review ended {code}"
+                continue
+            try:
+                report = reviewer_module.parse_and_validate(
+                    output.read_text(encoding="utf-8"), "plan-coverage.schema.json")
+                self.planning.verify_coverage(report, plan, adr_text)
+            except OSError as exc:
+                problem = f"the reviewer wrote no {output.name}: {exc}"
+                continue
+            except reviewer_module.ReviewerError as exc:
+                problem = str(exc)
+                continue
+            except self.planning.CoverageGap as exc:
+                self.journal_line(f"Coverage review by `{reviewer}` of the plan by "
+                                  f"`{author}`: {exc.message}.")
+                return [exc.message]
+            except self.planning.PlanError as exc:
+                problem = exc.message
+                continue
+            n = len(report["constraints"])
+            lease.post_event(
+                self.board, feature, COVERED, f"{COVERED}:{feature}:{digest}",
+                text=(f"Coverage review by `{reviewer}`, independent of the planner "
+                      f"`{author}`: all {n} load-bearing ADR constraints are delivered "
+                      f"by some PBI."),
+                plan=digest, reviewer=str(reviewer), planner=str(author or ""),
+                constraints=n)
+            self.journal_line(f"Coverage reviewed by `{reviewer}`: {n} ADR constraints, "
+                              "every one delivered by a PBI.")
+            return []
+        self.block_feature(f"the plan's independent coverage review could not be completed, "
+                           f"so the plan is not pinned unreviewed: {problem}")
+        return None
+
+    def journal_line(self, text):
+        if self.journal is not None:
+            self.journal.add(text)
 
     def commit_plan(self, feature, text, base):
         """The plan on the feature branch, one commit; the commit that carries it."""
@@ -759,8 +901,15 @@ class Development:
 
         self.pool.submit(pbi, work)
 
+    def platform_intact(self):
+        """After every session: the platform it ran beside is unchanged (IDE-153)."""
+        check = getattr(self.runner, "check_platform", None)
+        if check is not None:
+            check(self.feature)
+
     def record_floor_override(self, card):
         """A session below its role's floor is written on the Feature (IDE-152)."""
+        self.platform_intact()
         record = getattr(self.runner, "record_floor_override", None)
         if record is None:
             return
@@ -794,6 +943,7 @@ class Development:
                 tags.release(self.board, self.feature, self.run_id)
                 raise self.runner.error(EXIT.BLOCKED, error.message, error.fix)
             raise error
+        self.platform_intact()
         code, last = answer
         last = last or {}
         item, claim, wt = job["item"], job["claim"], job["wt"]

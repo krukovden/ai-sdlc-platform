@@ -123,6 +123,32 @@ def fail(code, message, fix=None):
     sys.exit(code)
 
 
+PLATFORM_PARTS = ("scripts", "skills", "registry", "schemas", "templates", "lint")
+
+
+def platform_digest(root=REPO_ROOT):
+    """One hash of everything the runner trusts on disk, caches excluded (IDE-153).
+
+    A session runs as an agent that may be able to write here — a Docker Desktop
+    bind mount ignores permissions — and on 2026-10-14 one did: it wrote its own
+    reviewer and re-pointed registry/providers.json at it. The runner reads
+    these files again after the session, so a change made by a session must
+    stop the run rather than be trusted.
+    """
+    digest = hashlib.sha256()
+    root = Path(root)
+    for part in PLATFORM_PARTS:
+        base = root / part
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if "__pycache__" in path.parts or path.suffix == ".pyc" or not path.is_file():
+                continue
+            digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
 def sha256(text):
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -341,6 +367,7 @@ class Runner:
         self.reconcile = reconcile or phase3.states.reconciler(self.profile, out=self.out,
                                                                cwd=str(self.repo))
         self.sleep = sleep
+        self.platform = platform_digest(self.repo_root)
 
     def say(self, text):
         print(text, file=self.out)
@@ -688,6 +715,7 @@ class Runner:
         try:
             code = reconnect("design", feature, worktree, prompt,
                              context={"IDP_CONTEXT_DIR": str(context)})
+            self.check_platform(feature)
             self.record_floor_override(feature)
             return code
         except executors.ResolutionError as exc:
@@ -705,6 +733,7 @@ class Runner:
         try:
             code = self.executor.run_role("design", feature, worktree, prompt,
                                           context={"IDP_CONTEXT_DIR": str(context)})
+            self.check_platform(feature)
             self.record_floor_override(feature)
             return code
         except executors.ResolutionError as exc:
@@ -712,6 +741,25 @@ class Runner:
             # the card is released rather than blocked.
             tags.release(self.board, feature, self.run_id)
             raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
+
+    def check_platform(self, feature):
+        """Stop the run when a session changed the platform it is run from (IDE-153).
+
+        The Feature is blocked, because what the session did has to be looked at
+        by a human before any run trusts this platform's checks again.
+        """
+        now = platform_digest(self.repo_root)
+        if now == self.platform:
+            return
+        reason = (f"the platform at {self.repo_root} changed during a session of this run "
+                  f"({self.platform[:19]} → {now[:19]}): a session may have rewritten the "
+                  "checks it is judged by")
+        lease.block(self.board, feature, self.run_id, reason)
+        tags.release(self.board, feature, self.run_id)
+        raise RunnerError(EXIT.BLOCKED, f"{feature}: blocked — {reason}",
+                          "find what changed under scripts/, skills/, registry/ and the "
+                          "schemas, restore the platform from git, make it read-only to the "
+                          "agent's user, and lift the block")
 
     def record_floor_override(self, card, feature=None, journal=True):
         """A session that ran below its role's floor says so on the card (IDE-152).

@@ -193,6 +193,9 @@ class World:
         self.findings = {}
         self.sessions = {}
         self.integration = []
+        self.coverage_gap = False
+        self.coverage_answer = None
+        self.coverage_requests = []
         self.documenter = write_blueprint
         self.verdict = VERDICT
         self.profile = profile or PROFILE
@@ -218,6 +221,8 @@ class World:
             role = "documenter"
         elif prompt.startswith("You are the architect's verdict"):
             role = "verdict"
+        elif prompt.startswith("You are the independent coverage reviewer"):
+            role = "coverage"
         self.sessions.setdefault(role, []).append(card)
         if role == "design":
             return self.plan_session(card, worktree, context)
@@ -227,6 +232,8 @@ class World:
             return self.integration_session(worktree, prompt)
         if role == "documenter":
             return self.documenter(self, Path(worktree)) if self.documenter else EXIT.DONE
+        if role == "coverage":
+            return self.coverage_session(worktree, prompt)
         if role == "verdict":
             (Path(worktree) / ".idp" / "verdict.md").write_text(self.verdict, encoding="utf-8")
             return EXIT.DONE
@@ -261,6 +268,38 @@ class World:
                     planning.main(["finalize", card])
             except SystemExit:
                 return EXIT.BLOCKED
+        return EXIT.DONE
+
+    def coverage_session(self, worktree, prompt):
+        """The runner's coverage reviewer (IDE-153): every mandatory ADR line, covered.
+
+        `self.coverage_gap` leaves the first constraint uncovered; a callable
+        `self.coverage_answer(world, request)` writes whatever it returns instead.
+        """
+        output = Path(prompt.split("write that JSON, and nothing else, to ", 1)[1]
+                      .split("\n", 1)[0].rstrip("."))
+        request = (Path(worktree) / ".idp" / "context" / "request.md").read_text(
+            encoding="utf-8")
+        self.coverage_requests.append(request)
+        if self.coverage_answer is not None:
+            answer = self.coverage_answer(self, request)
+            if answer is None:
+                return EXIT.HANDOFF
+            output.write_text(answer if isinstance(answer, str) else json.dumps(answer),
+                              encoding="utf-8")
+            return EXIT.DONE
+        adr = request.split("\nADR:\n", 2)[2].split("\nPBIs:\n", 1)[0]
+        lines = adr.splitlines()
+        constraints = [{"id": f"C{n}", "quote": lines[n - 1].strip(), "line": n}
+                       for n in planning.deterministic_constraints(adr)]
+        if not constraints:
+            constraints = [{"id": "C1", "quote": lines[0].strip(), "line": 1}]
+        keys = [pbi["key"] for pbi in json.loads(request.split("\nPBIs:\n", 1)[1])["pbis"]]
+        covered = constraints[1:] if self.coverage_gap else constraints
+        output.write_text(json.dumps({
+            "constraints": constraints,
+            "coverage": [{"constraint": c["id"], "pbis": keys[:1]} for c in covered]}),
+            encoding="utf-8")
         return EXIT.DONE
 
     def context(self, context):

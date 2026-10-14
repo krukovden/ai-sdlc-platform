@@ -343,7 +343,14 @@ deterministic shell:
 
 1. the Feature is claimed for the whole phase;
 2. the `design` role plans from the approved ADR and card context;
-3. the runner validates the plan, graph and coverage;
+3. the runner validates the plan and graph, then runs the independent coverage
+   review itself (IDE-153): a `review`-role session, resolved with the planner as
+   the author, answers `plan-coverage.schema.json`, and the planning skill's own
+   checks judge the answer. A gap goes back to the planner as feedback; a report
+   that cannot be trusted is retried once, then the Feature is blocked with the
+   plan unpinned. The session's own `finalize` only checks the plan locally, and
+   a coverage record in the planning cache is never trusted — the session can
+   write it;
 4. the plan is committed to the feature branch and pinned by sha256 in a planning
    comment;
 5. the board shape is created idempotently: PBIs, Tasks and the QA Testing PBI;
@@ -528,6 +535,14 @@ The environment boundary is intentionally narrow:
 - before the first Orca session of a run, the backend probes the variable **names**
   visible inside an Orca terminal and refuses Orca for the run if any denied name
   appears.
+
+The runner also hashes its own platform — `scripts/`, `skills/`, `registry/`,
+`schemas/`, `templates/`, `lint/`, caches excluded — when it starts, and again
+after every session. A session that changed it blocks the Feature and stops the
+run (IDE-153): on 2026-10-14 a planning session wrote its own coverage reviewer
+and re-pointed `registry/providers.json` at it. Run the platform from a copy the
+agent's user cannot write; a Docker Desktop bind mount ignores permissions, so
+copy it into the container rather than mounting it.
 
 By default this is still a process boundary, not an OS boundary. A model running
 as the same user can still open files that user can read directly, including token

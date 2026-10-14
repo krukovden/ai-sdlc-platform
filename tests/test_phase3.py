@@ -185,10 +185,10 @@ class PlanningTests(Phase3TestCase):
         self.assertEqual(self.status(world, "a"), "Resolved")
 
     def test_a_plan_the_runner_refuses_is_an_attempt_and_three_block(self):
-        # The session says done, and the runner finds no coverage review for the
-        # plan: the runner's own check refuses it, and counts.
+        # The session says done, and the runner's coverage review finds an ADR
+        # constraint no PBI delivers: the runner refuses the plan, and counts.
         world = self.world()
-        world.skip_finalize = True
+        world.coverage_gap = True
         self.assertEqual(world.runner().run_feature(FEATURE), EXIT.BLOCKED)
         causes = [e["cause"] for e in world.events(FEATURE, orchestrator.ATTEMPT,
                                                     phase="planning")]
@@ -231,7 +231,9 @@ class BuildingTests(Phase3TestCase):
                                          "review": ["copilot:gpt-4.1", "codex:gpt-5"]},
                                "parallel": {"codex": 2, "copilot": 1}},
             available=["codex", "copilot"])).run_feature(FEATURE)
-        calls = [c for c in world.executor_.calls if c["role"] != "design"]
+        # The plan's coverage review (IDE-153) runs before any worker; not counted.
+        calls = [c for c in world.executor_.calls
+                 if c["role"] != "design" and c["card"] != FEATURE]
         self.assertEqual([(c["role"], c["choice"]) for c in calls[:4]],
                          [("worker", "codex:gpt-5"), ("worker", "codex:gpt-5"),
                           ("worker", "copilot:gpt-4.1"), ("review", "copilot:gpt-4.1")])
@@ -242,7 +244,8 @@ class BuildingTests(Phase3TestCase):
                                          "review": ["codex:o3"]},
                                "parallel": {"codex": 1}},
             available=["codex"])).run_feature(FEATURE)
-        roles = [c["role"] for c in capped.executor_.calls if c["role"] != "design"]
+        roles = [c["role"] for c in capped.executor_.calls
+                 if c["role"] != "design" and c["card"] != FEATURE]
         self.assertEqual(roles[:3], ["worker", "review", "worker"])
 
     def test_real_threads_build_the_same_feature(self):
@@ -1014,7 +1017,8 @@ class ReviewTests(Phase3TestCase):
     def test_the_reviewer_is_never_the_author(self):
         world = self.world(plan={"pbis": [pbi("a")]})
         world.runner().run_feature(FEATURE)
-        reviews = [c for c in world.executor_.calls if c["role"] == "review"]
+        reviews = [c for c in world.executor_.calls
+                   if c["role"] == "review" and c["card"] != FEATURE]
         self.assertEqual(reviews[0]["author"], "codex:gpt-5")
         self.assertEqual(reviews[0]["choice"], "copilot:gpt-4.1")
 
@@ -1030,7 +1034,7 @@ class ReviewTests(Phase3TestCase):
 
             def run_role(self, role, card, worktree, prompt, context=None, author=None,
                          choice=None):
-                if role == "review":
+                if role == "review" and card != FEATURE:      # not the plan's coverage
                     self.review_starts += 1
                     if self.review_starts == 1:
                         who = choice or inner.choice
