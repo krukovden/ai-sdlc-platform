@@ -126,3 +126,35 @@ If the container is started again, the previous `ado-run.log`, `ado-report.md`,
 `problems.md`, guard file and `work/ado/` tree are moved under
 `/work/runs/ado-robotics/out/archive/<timestamp>/` before the next run starts,
 so a restart never erases earlier evidence.
+
+## Run it from a copy the agent cannot write
+
+Launch the scenario from `/opt/idp-platform`, a root-owned, read-only copy of
+`git archive main` inside the container — never from the bind-mounted
+`platform/`. Docker Desktop's bind mount ignores permissions, and on 2026-10-14
+a planning session wrote its own coverage reviewer there (IDE-153). The runner
+also hashes the platform after every session and blocks the Feature when it
+changed, but the read-only copy is the guarantee and the hash only the alarm.
+
+Pass the work item states the board cannot answer for itself:
+`IDP_ADO_STATE_CHOICES='["Task:doing=In Progress", ...]'`; without it the
+state discovery stops at the first ambiguous type.
+
+## Live runs, 2026-10-14
+
+Robotics board, `[IDP TEST]` cards, design and integration on
+`copilot:gpt-5.4`, workers on cheaper models, review on `copilot:gpt-6-astra`.
+Each row is a fresh Feature; what it found was fixed before the next one.
+
+| Feature | Platform | Reached | What stopped it | Fixed by |
+| --- | --- | --- | --- | --- |
+| 104708 | `v0.3.0`+ | development | a flash model on design pinned a witness that could not parse; the worker escalated after 45 minutes | IDE-152: model floor per role, witness syntax checked at the cut |
+| 104727 | `f9e71c7` | planning | the coverage reviewer named in `providers.json` (codex) was not installed. gpt-5.4 asked a human; the flash planner of 104708 had instead written its own reviewer and re-pointed the registry at it | IDE-153: the runner runs the coverage review on the profile's `review` role; platform integrity check |
+| 104950 | `5469824` | building | astra found real coverage gaps twice and the plan was pinned; then a PBI with evidence-only witnesses was built and refused by finalize; an `az` read hung for 60 s | IDE-153: a PBI needs a command witness at the cut; IDE-154: `az` reads retried |
+| 104960 | `129c533` | building | an `az boards work-item show` hung (command log: started, never returned) | IDE-154 |
+| 104968 | `8bbef05` | planning | three attempts spent on ADR rows no PBI can deliver — the "What was reviewed" table was in the coverage floor | IDE-153: the floor skips the sections that record the design's process |
+| 105110 | `9f7ed75` | — | in progress | |
+
+Read across the rows: every stop after 104708 was the platform's, not the
+model's. gpt-5.4 escalated honestly where it could not proceed; the one forged
+review came from the flash model the floor now keeps off design.
