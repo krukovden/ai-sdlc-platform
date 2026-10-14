@@ -16,12 +16,17 @@ nobody here knows what that default is, so an unnamed model is treated as
 possibly the same as any model of that agent — the conservative reading: an
 entry the rule cannot prove different is skipped. Nothing left is a loud
 failure, never an unreviewed merge.
+
+**So is the floor** (IDE-152, tiers.py). With `floors` given, an entry on a
+role's own list below the role's floor refuses the run at construction, and a
+fallback below it is skipped; nothing left is a refusal naming the floor.
 """
 
 import re
 from collections import namedtuple
 
 from .agents import UNVERIFIED
+from .tiers import FloorError
 
 AGENTS = ("claude", "codex", "copilot", "cursor", "opencode", "gemini")
 ROLES = ("design", "worker", "review", "integration")
@@ -78,10 +83,16 @@ class Resolver:
     supply tables.
     """
 
-    def __init__(self, executors=None, launchable=None, probe=None):
+    def __init__(self, executors=None, launchable=None, probe=None, floors=None):
         executors = executors or {}
         self.roles = {role: [parse_entry(e) for e in entries]
                       for role, entries in (executors.get("roles") or {}).items()}
+        self.floors = floors
+        if floors is not None:
+            try:
+                floors.check_profile(self.roles)
+            except FloorError as exc:
+                raise ResolutionError(exc.message, exc.fix)
         self.parallel = dict(executors.get("parallel") or {})
         self.launchable = launchable or (lambda agent: False)
         self.probe = probe
@@ -135,6 +146,12 @@ class Resolver:
                 unique.append(choice)
         return unique
 
+    def floor_override(self, role, choice):
+        """What running `choice` in `role` overrode, or None: met, or no floors."""
+        if self.floors is None:
+            return None
+        return self.floors.override(role, as_choice(choice))
+
     def cap(self, agent):
         return int(self.parallel.get(agent, DEFAULT_PARALLEL))
 
@@ -148,8 +165,12 @@ class Resolver:
         author = as_choice(author)
         busy = busy or {}
         skipped = []
+        below = []
         eligible = []
         for choice in self.candidates(role):
+            if self.floors is not None and not self.floors.allowed(role, choice):
+                below.append(str(choice))
+                continue
             if not self.available(choice):
                 continue
             if role == "review" and may_be_same(choice, author):
@@ -157,6 +178,14 @@ class Resolver:
                 continue
             eligible.append(choice)
         if not eligible:
+            if below and not skipped:
+                raise ResolutionError(
+                    f"no available agent meets the '{self.floors.floor(role)}' floor of "
+                    f"the role '{role}': the ones below it ({', '.join(below)}) are "
+                    "never used for it",
+                    f"install and sign in to a {self.floors.floor(role)} model and name it "
+                    f"in executors.roles.{role}, or — knowingly — set "
+                    f"executors.model_floor_override.{role} to the reason")
             if role == "review" and skipped:
                 raise ResolutionError(
                     f"no reviewer differs from the author '{author}': every available "

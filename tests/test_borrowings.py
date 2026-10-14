@@ -109,6 +109,14 @@ class PlanBorrowings(unittest.TestCase):
             with self.assertRaises(planning.PlanError):
                 planning.validate_schema(payload)
 
+    def test_a_witness_that_cannot_parse_is_refused_at_the_cut(self):
+        # IDE-152: the live run pinned this and a worker found out 45 minutes later.
+        payload = self.payload()
+        payload["pbis"][0]["acceptance_criteria"][0]["witness"] = {
+            "command": "python3 -c \"[x for x in ('a', 'b'))]\"", "timeout": 30}
+        problems, _, _ = planning.validate_plan(payload, {}, ADR)
+        self.assertTrue(any("can never pass" in p["message"] for p in problems), problems)
+
     def test_supersede_requires_explicit_deletion(self):
         payload = self.payload()
         task = payload["pbis"][0]["tasks"][0]

@@ -262,6 +262,17 @@
           "type": "string",
           "minLength": 1
         },
+        "model_floor_override": {
+          "description": "Run a role below its model floor (registry/models.json, IDE-152), knowingly. Each value is the reason, written on the card the human approves.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "design": {"type": "string", "minLength": 1},
+            "worker": {"type": "string", "minLength": 1},
+            "review": {"type": "string", "minLength": 1},
+            "integration": {"type": "string", "minLength": 1}
+          }
+        },
         "roles": {
           "type": "object",
           "additionalProperties": false,

@@ -69,16 +69,44 @@ python3 scripts/run.py report --code 0 --reason "ADR ready"
 The runner owns the loop. Models never orchestrate other models. Every session is
 started through one **executor role**:
 
-| Role | Used for |
-| --- | --- |
-| `design` | phase 2 ADR work, and the bug-route verdict |
-| `worker` | one PBI or Bug in 3.2 |
-| `review` | the rubber duck after finalize |
-| `integration` | 3.3 integration review and the documenter |
+| Role | Used for | Floor |
+| --- | --- | --- |
+| `design` | phase 2 ADR work, 3.1 planning, and the bug-route verdict | `frontier` |
+| `worker` | one PBI or Bug in 3.2 | `fast` |
+| `review` | the rubber duck after finalize | `frontier` |
+| `integration` | 3.3 integration review and the documenter | `standard` |
 
 The review rule is hard: `review` may not resolve to the same agent **and** model
 that produced the code it reviews. If nothing else is available, the PBI does not
 merge unreviewed.
+
+**The model floor is hard too (IDE-152).** `registry/models.json` classifies every
+known model as `fast`, `standard` or `frontier` and gives each role the floor in
+the table above: a mistake in an ADR or a plan multiplies into every PBI cut from
+it, and a reviewer weaker than the author reviews nothing. A profile that puts a
+model below its role's floor anywhere on that role's list refuses the run with
+exit 2 before any session starts; a fallback below the floor is never borrowed;
+a model the table does not know meets only `fast`. Classify a new model in the
+registry before it can design or review.
+
+The one way past it is deliberate: `executors.model_floor_override` maps a role to
+the reason. The run proceeds, and every session below the floor posts a
+`model-floor` comment on the Feature, lands in the design journal attached as the
+Feature's History, and is repeated in the comment that asks the human to approve
+the ADR.
+
+```json
+"executors": {
+  "roles": {"design": ["copilot:gemini-3.8-flash"]},
+  "model_floor_override": {"design": "trial run, no frontier seat on this machine"}
+}
+```
+
+**A witness that cannot parse is refused when the plan is cut.** Planning runs
+`sh -n` over every witness command and compiles every `python -c` argument in it,
+without executing anything; a Bug's witnesses get the same check before they are
+pinned. A plan with such a witness goes back to the planner as feedback instead of
+reaching a worker.
 
 ## Board model
 

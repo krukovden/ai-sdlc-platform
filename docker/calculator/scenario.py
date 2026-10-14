@@ -1344,10 +1344,10 @@ class ScenarioRunner:
                 "executors": {
                     "backend": "subprocess",
                     "roles": {
-                        "design": ["copilot:grok-4.7"],
-                        "worker": ["copilot:grok-4.7"],
-                        "review": ["copilot:grok-4.7"],
-                        "integration": ["copilot:grok-4.7"],
+                        "design": ["copilot:gpt-5.4"],
+                        "worker": ["copilot:gpt-5.4"],
+                        "review": ["copilot:gpt-5.4"],
+                        "integration": ["copilot:gpt-5.4"],
                     },
                     "parallel": {"copilot": 2},
                 }
@@ -1764,9 +1764,12 @@ class AdoScenarioRunner:
                 "timeout_seconds": ADO_SESSION_SECONDS,
                 "run_as": "agent",
                 "roles": {
-                    "design": ["copilot:gemini-3.8-flash"],
+                    # design and review meet the frontier floor (IDE-152): the
+                    # first live run planned on a flash model and stopped on its
+                    # unparseable witness.
+                    "design": ["copilot:gpt-5.4"],
                     "worker": ["copilot:gemini-3.8-flash"],
-                    "integration": ["copilot:gemini-3.8-flash"],
+                    "integration": ["copilot:gpt-5.4"],
                     "review": ["copilot:gpt-6-astra"],
                 },
                 "parallel": {"copilot": 2},

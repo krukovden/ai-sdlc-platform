@@ -29,6 +29,7 @@ EXIT = _sibling("exit_codes", "idp_exit_codes")
 tags = _sibling("tags", "idp_tags")
 lease = _sibling("lease", "idp_lease")
 memory = _sibling("memory", "idp_memory")
+witness_syntax = _sibling("witness_syntax", "idp_witness_syntax")
 
 
 # Infrastructure is retried with these waits, in seconds, and never counted as

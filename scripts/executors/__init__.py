@@ -39,7 +39,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import agents, environment, roles
+from . import agents, environment, roles, tiers
 from .roles import AGENTS, ROLES, Choice, ResolutionError, Resolver, parse_entry
 
 SCRIPTS = Path(__file__).resolve().parent.parent
@@ -210,6 +210,12 @@ class Executor:
                                   f"author '{author}', and the review rule never lets work "
                                   "review itself",
                                   "resolve the review role with the author named")
+        floors = getattr(self.resolver, "floors", None)
+        if floors is not None and not floors.allowed(role, choice):
+            raise ResolutionError(f"'{choice}' is below the '{floors.floor(role)}' floor of "
+                                  f"the role '{role}'",
+                                  f"resolve the role instead of naming '{choice}', or set "
+                                  f"executors.model_floor_override.{role} to the reason")
         return choice
 
     def run_role(self, role, card, worktree, prompt, context=None, author=None,
@@ -233,8 +239,14 @@ class Executor:
                             code=code, reason=(result or {}).get("reason") or why,
                             crashed=crashed, unsettled=unsettled, limit=limit,
                             returncode=returncode, last_message=last_message,
-                            launch_failed=launch_failed)
+                            launch_failed=launch_failed,
+                            floor_override=self.floor_override(role, choice))
         return code
+
+    def floor_override(self, role, choice):
+        """What this session overrode of the role's floor (IDE-152), or None."""
+        note = getattr(self.resolver, "floor_override", None)
+        return note(role, choice) if note is not None and choice is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -264,10 +276,16 @@ def probe(choice, environ=None, run=subprocess.run, timeout=agents.PROBE_TIMEOUT
 
 def default_resolver(executors=None, environ=None, which=shutil.which, run=subprocess.run,
                      run_as=None):
+    """The real resolver: this machine's agents, held to the registry's floors."""
+    try:
+        floors = tiers.Floors.load((executors or {}).get("model_floor_override"))
+    except tiers.FloorError as exc:
+        raise ResolutionError(exc.message, exc.fix)
     return Resolver(executors,
                     launchable=lambda agent: launchable(agent, which),
                     probe=lambda choice: probe(choice, environ, run,
-                                           run_as=run_as or (executors or {}).get("run_as")))
+                                           run_as=run_as or (executors or {}).get("run_as")),
+                    floors=floors)
 
 
 # ---------------------------------------------------------------------------
@@ -333,5 +351,5 @@ register_backend("orca", OrcaExecutor)
 
 __all__ = ["AGENTS", "ROLES", "BACKENDS", "Choice", "Executor", "ResolutionError",
            "OrcaExecutor", "Resolver", "Session", "SubprocessExecutor", "agents", "environment",
-           "parse_entry", "read_result", "register_backend", "roles", "select",
+           "parse_entry", "read_result", "register_backend", "roles", "select", "tiers",
            "write_result"]

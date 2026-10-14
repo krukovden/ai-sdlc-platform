@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0.0",
+  "_comment": [
+    "How capable each model is, and the least capable model each role may run",
+    "on (IDE-152). Data, not code: a new model is a row here, never a branch.",
+    "",
+    "The floor exists because a mistake in an ADR or a plan multiplies into",
+    "every PBI cut from it. The live ADO run of 2026-10-14 put a flash model on",
+    "`design`; it pinned a witness that did not parse, and a worker found out",
+    "forty-five minutes later. A model this table does not know is below every",
+    "floor above `fast`: a new model reaches design or review only after",
+    "somebody has classified it here.",
+    "",
+    "`models` is looked up first, by the exact `agent[:model]` entry; then",
+    "`patterns`, in order, first match wins (shell-style `*`). An entry without",
+    "a model is the agent's own default, and is classified only where that",
+    "default is known."
+  ],
+  "tiers": ["fast", "standard", "frontier"],
+  "floors": {
+    "design": "frontier",
+    "review": "frontier",
+    "integration": "standard",
+    "worker": "fast"
+  },
+  "models": {
+    "claude": "standard",
+    "codex": "frontier",
+    "copilot:gpt-6-astra": "frontier",
+    "copilot:gpt-5.4": "frontier",
+    "copilot:grok-4.7": "standard",
+    "copilot:auto": "standard"
+  },
+  "patterns": [
+    {"match": "*:*flash*", "tier": "fast"},
+    {"match": "*:*haiku*", "tier": "fast"},
+    {"match": "*:*mini*", "tier": "fast"},
+    {"match": "*:*nano*", "tier": "fast"},
+    {"match": "*:*lite*", "tier": "fast"},
+    {"match": "claude:*opus*", "tier": "frontier"},
+    {"match": "claude:*fable*", "tier": "frontier"},
+    {"match": "claude:*sonnet*", "tier": "standard"},
+    {"match": "copilot:claude-opus*", "tier": "frontier"},
+    {"match": "copilot:claude-sonnet*", "tier": "standard"},
+    {"match": "*:*-pro", "tier": "frontier"},
+    {"match": "*:*-pro-*", "tier": "frontier"},
+    {"match": "*:*-codex", "tier": "frontier"},
+    {"match": "*:gpt-5.4", "tier": "frontier"},
+    {"match": "*:gpt-6*", "tier": "frontier"},
+    {"match": "*:mai-code*", "tier": "standard"},
+    {"match": "*:grok*", "tier": "standard"}
+  ]
+}

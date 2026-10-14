@@ -759,11 +759,19 @@ class Development:
 
         self.pool.submit(pbi, work)
 
+    def record_floor_override(self, card):
+        """A session below its role's floor is written on the Feature (IDE-152)."""
+        record = getattr(self.runner, "record_floor_override", None)
+        if record is not None:
+            record(card, feature=self.feature)
+
     def session(self, role, card, worktree, prompt, context, **kwargs):
         executors = runner_executors()
         try:
-            return self.executor.run_role(role, card, worktree, prompt, context=context,
+            code = self.executor.run_role(role, card, worktree, prompt, context=context,
                                           **kwargs)
+            self.record_floor_override(card)
+            return code
         except executors.ResolutionError as exc:
             tags.release(self.board, self.feature, self.run_id)
             raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
@@ -1149,6 +1157,7 @@ class Development:
             code = self.executor.run_role("review", pbi, rwt.path, prompt,
                                           context=context_env,
                                           author=author, choice=reviewer)
+            self.record_floor_override(pbi)
             last = self.executor.last or {}
             while last.get("unsettled"):
                 stop = getattr(self.runner, "stopping", lambda card: None)(self.feature)

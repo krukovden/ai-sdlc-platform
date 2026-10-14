@@ -22,13 +22,16 @@ from urllib.parse import unquote, urlparse
 PROFILE_VERSION = 1
 DEFAULT_INVOKER = "idp setup"
 
+# Design and review must meet the `frontier` floor of registry/models.json
+# (IDE-152): an agent whose default is not classified there is left out of
+# those roles by derive_roles rather than written into a profile that refuses.
 AGENT_MODELS = {
     "claude": {"design": "claude:opus", "worker": "claude:sonnet",
                "review": "claude:opus", "integration": "claude:opus"},
     "codex": {"design": "codex", "worker": "codex",
               "review": "codex", "integration": "codex"},
-    "copilot": {"design": "copilot:gpt", "worker": "copilot:gpt",
-                "review": "copilot:gpt", "integration": "copilot:gpt"},
+    "copilot": {"design": "copilot:gpt-5.4", "worker": "copilot:gpt-5.4",
+                "review": "copilot:gpt-6-astra", "integration": "copilot:gpt-5.4"},
     "cursor": {"design": "cursor", "worker": "cursor",
                "review": "cursor", "integration": "cursor"},
     "opencode": {"design": "opencode", "worker": "opencode",
@@ -138,13 +141,29 @@ def binary(agent):
     }[agent]
 
 
-def derive_roles(available):
+def _floors():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "idp_tiers", Path(__file__).resolve().parent / "executors" / "tiers.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Floors.load()
+
+
+def derive_roles(available, floors=None):
+    """Each role's entries from the installed agents, held to the role's floor.
+
+    A role no installed agent meets is left out, so the run refuses naming the
+    floor instead of quietly running design on whatever is there.
+    """
+    floors = floors or _floors()
     roles = {}
     available = list(available)
     for role, order in ROLE_ORDER.items():
         entries = [AGENT_MODELS[agent][role] for agent in order if agent in available]
         if not entries and available:
             entries = [AGENT_MODELS[available[0]][role]]
+        entries = [entry for entry in entries if floors.meets(role, entry)]
         if entries:
             roles[role] = entries
     return roles

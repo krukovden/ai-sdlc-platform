@@ -179,6 +179,11 @@ def load_sections():
     return _load(SCRIPTS / "sections.py", "idp_sections")
 
 
+def load_witness_syntax():
+    """Witness commands that cannot parse are refused at the cut (IDE-152)."""
+    return _load(SCRIPTS / "witness_syntax.py", "idp_witness_syntax")
+
+
 def load_reviewer():
     """The JSON Schema subset validator, written once in the discovery skill.
 
@@ -692,6 +697,13 @@ def validate_plan(plan, session, adr_text):
                         f"Task {task['key']}: extend {reuse['path']} must be listed in existing"})
         for message in check_separation(pbi):
             problems.append({"code": 3, "message": message})
+        for criterion in pbi.get("acceptance_criteria") or []:
+            command = (criterion.get("witness") or {}).get("command")
+            for why in load_witness_syntax().problems(command):
+                problems.append({"code": 3, "message":
+                    f"PBI {pbi['key']}: the witness of {criterion.get('id')} can never "
+                    f"pass — {why}. Fix the command; a worker would otherwise build "
+                    "against it and stop"})
 
     return problems, graph, closure
 

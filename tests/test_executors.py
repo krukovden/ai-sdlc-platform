@@ -138,8 +138,12 @@ class UnverifiedAgentTests(ScriptTestCase):
 
     def test_the_real_resolver_always_probes(self):
         asked = []
+        # The real resolver holds the profile to the floors, so review names a
+        # model the tier table classifies (IDE-152).
+        spec = dict(SPEC_EXECUTORS, roles=dict(SPEC_EXECUTORS["roles"],
+                                               review=["copilot:gpt-6-astra", "codex"]))
         handle = executors.default_resolver(
-            SPEC_EXECUTORS, which=lambda binary: "/bin/" + binary,
+            spec, which=lambda binary: "/bin/" + binary,
             run=lambda argv, **kw: asked.append(argv[0]) or type(
                 "Answer", (), {"returncode": EXIT.NO})())
         self.assertFalse(handle.available(Choice("copilot", "gpt")))

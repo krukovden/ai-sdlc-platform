@@ -29,7 +29,7 @@ Neither is zero witnesses, which is a failure: the Bug is blocked as
 import json
 import re
 
-from .common import events_with_text, lease
+from .common import events_with_text, lease, witness_syntax
 from . import plan as plans
 
 BUG_PLAN = "bug-plan"
@@ -110,6 +110,12 @@ def entry(issue, settings):
                       "test from. FIX: add a `Witness:` line carrying a command and a timeout "
                       "under an acceptance criterion on the Bug, or set development.bug_witness "
                       "in the profile, then remove idp:blocked")
+    broken = [f"{c['id']}: {why}" for c in acceptance
+              for why in witness_syntax.problems((c.get("witness") or {}).get("command"))]
+    if broken:
+        return None, (f"Bug {bug} has a witness that can never pass — "
+                      f"{'; '.join(broken)}. FIX: correct the `Witness:` command on the Bug "
+                      "(or development.bug_witness in the profile), then remove idp:blocked")
     return {"key": bug, "kind": "bug", "title": issue.get("title") or bug,
             "result": what_is_wrong(issue), "acceptance_criteria": acceptance,
             "paths": [], "tasks": [], "regression_test": regression}, None
