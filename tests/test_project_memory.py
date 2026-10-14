@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from support import ScriptTestCase, load_script
 
@@ -234,6 +235,18 @@ class LintTests(Repo):
         problems = self.lint(features=root, base="HEAD", repo=self.repo)
         self.assertTrue(any("frozen" in p for p in problems))
 
+    def test_deleting_a_frozen_journal_is_caught(self):
+        features = self.repo / "docs" / "features" / "IDE-1-x"
+        features.mkdir(parents=True)
+        (features / "history.md").write_text(fj.freeze("# h\n- one\n"))
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "merge")
+        (features / "history.md").unlink()
+        features.rmdir()
+        problems = self.lint(features=self.repo / "docs" / "features", base="HEAD",
+                             repo=self.repo)
+        self.assertTrue(any("deleted from a frozen" in p for p in problems))
+
     def test_an_unfrozen_journal_may_change(self):
         features = self.repo / "docs" / "features" / "IDE-1-x"
         features.mkdir(parents=True)
@@ -277,13 +290,37 @@ class ReconcileTests(Repo):
         found = pm.backlog(self.repo, pm.parse_index(index.read_text()), [])
         self.assertEqual([c["subject"] for c in found], ["feat: b (#5)", "chore: direct"])
 
-    def test_the_watermark_only_moves_forward_and_replaces_the_legacy_sha(self):
-        text = "# x\n\nreconciled-sha: abc\n"
-        text = pm.set_reconciled_pr(text, 7)
+    def test_setting_the_watermark_replaces_the_legacy_sha(self):
+        text = pm.set_reconciled_pr("# x\n\nreconciled-sha: abc\n", 7)
         self.assertIn("reconciled-pr: 7", text)
         self.assertNotIn("reconciled-sha", text)
-        self.assertIn("reconciled-pr: 7", pm.set_reconciled_pr(text, 3))
-        self.assertIn("reconciled-pr: 9", pm.set_reconciled_pr(text, 9))
+
+    def test_the_watermark_moves_forward_in_merge_order_not_number_order(self):
+        commit(self.repo, "feat: b (#20)")
+        commit(self.repo, "feat: a, opened earlier, merged later (#15)")
+        commit(self.repo, "feat: c (#16)")
+        index = self.memory / "index.md"
+        pm.mark(self.repo, self.memory, 20)
+        found = pm.backlog(self.repo, pm.parse_index(index.read_text()), [])
+        self.assertEqual([c["pr"] for c in found], [15, 16])
+        pm.mark(self.repo, self.memory, 15)
+        self.assertEqual(pm.parse_index(index.read_text())["reconciled_pr"], 15)
+        with self.assertRaises(pm.MemoryProblem):
+            pm.mark(self.repo, self.memory, 20)
+        resolved = pm.resolve_index("# x\n<<<<<<< a\nreconciled-pr: 20\n=======\n"
+                                    "reconciled-pr: 16\n>>>>>>> b\n", repo=self.repo)
+        self.assertIn("reconciled-pr: 16", resolved)
+
+    def test_an_interrupted_add_is_finished_by_the_retry(self):
+        old, _ = self.add()
+        index = self.memory / "index.md"
+        with mock.patch.object(pm.Store, "generated_index", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                self.add(unit="sync", title="t", supersedes=old, source="J#s: x")
+        again, written = self.add(unit="sync", title="t", supersedes=old, source="J#s: x")
+        self.assertFalse(written)
+        self.assertIn("[[sync]]", index.read_text())
+        self.assertEqual(pm.lint(self.memory), [])
 
     def test_a_dangling_legacy_sha_says_what_to_do(self):
         index = {"reconciled_pr": None, "reconciled_sha": "0" * 40}

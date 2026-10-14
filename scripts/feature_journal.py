@@ -285,29 +285,38 @@ def _git(repo, *args):
 
 
 def lint_tree(features, base=None, repo=None):
-    """Every journal's decisions.md has the shape; a frozen journal is unchanged."""
+    """Every journal's decisions.md has the shape; a frozen journal is unchanged.
+
+    The journals checked for freezing are those on `base` as well as those in the
+    working tree, so deleting a whole frozen journal is caught too.
+    """
     root = Path(features)
     problems = []
-    if not root.is_dir():
-        return problems
-    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
-        decisions = folder / DECISIONS
+    folders = {p.name for p in root.iterdir() if p.is_dir()} if root.is_dir() else set()
+    for name in sorted(folders):
+        decisions = root / name / DECISIONS
         if decisions.exists():
             problems += decision_problems(decisions.read_text(encoding="utf-8"),
-                                          f"{folder.name}/{DECISIONS}")
-        if base and repo:
-            relative = folder.resolve().relative_to(Path(repo).resolve()).as_posix()
-            frozen = _git(repo, "show", f"{base}:{relative}/{HISTORY}")
-            if frozen is None or FROZEN_MARK not in frozen:
-                continue
-            for path in sorted(p for p in folder.rglob("*") if p.is_file()):
-                rel = path.resolve().relative_to(Path(repo).resolve()).as_posix()
-                was = _git(repo, "show", f"{base}:{rel}")
-                if was != path.read_text(encoding="utf-8"):
-                    problems.append(f"{rel}: the journal of a merged feature is frozen; "
-                                    "record a new decision in the unit memory instead")
-            listed = _git(repo, "ls-tree", "-r", "--name-only", base, relative) or ""
-            for rel in listed.splitlines():
-                if not (Path(repo) / rel).exists():
-                    problems.append(f"{rel}: deleted from a frozen feature journal")
+                                          f"{name}/{DECISIONS}")
+    if not (base and repo):
+        return problems
+    top = Path(repo).resolve()
+    prefix = root.resolve().relative_to(top).as_posix()
+    listed = _git(repo, "ls-tree", "--name-only", f"{base}:{prefix}") or ""
+    for name in sorted(folders | {n for n in listed.split() if n}):
+        relative = f"{prefix}/{name}"
+        frozen = _git(repo, "show", f"{base}:{relative}/{HISTORY}")
+        if frozen is None or FROZEN_MARK not in frozen:
+            continue
+        was_files = (_git(repo, "ls-tree", "-r", "--name-only", base, relative) or "").split()
+        now_files = sorted(p.resolve().relative_to(top).as_posix()
+                           for p in (root / name).rglob("*") if p.is_file()) \
+            if (root / name).is_dir() else []
+        for rel in now_files:
+            if _git(repo, "show", f"{base}:{rel}") != (top / rel).read_text(encoding="utf-8"):
+                problems.append(f"{rel}: the journal of a merged feature is frozen; "
+                                "record a new decision in the unit memory instead")
+        for rel in was_files:
+            if not (top / rel).exists():
+                problems.append(f"{rel}: deleted from a frozen feature journal")
     return problems

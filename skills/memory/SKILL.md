@@ -119,9 +119,13 @@ queue do it yourself: read each commit, apply the write test, write or skip, the
 python3 memory.py reconcile --memory <memory> --mark-pr <the last PR you read>
 ```
 
-The watermark only moves forward. If two branches change it, the merge conflict is
-settled by `python3 memory.py resolve --memory <memory>`: the higher number wins, the
-Units table is regenerated, and the rejections are kept from both sides.
+The watermark only moves forward — in merge order, which is not number order: a PR
+opened earlier can merge later, so `--mark-pr` refuses a PR merged before the one
+already marked. If two branches change it, the merge conflict is settled by
+`python3 memory.py resolve --memory <memory>`: the later-merged PR wins (the higher
+number only when history cannot tell), the Units table is regenerated, and the
+rejections are kept from both sides. The backlog walk stops at the marked PR's own
+merge commit, never at a lower number.
 
 For a long queue hand it to the `memory-writer` agent, with the path of this skill,
 `<memory>`, and the backlog if you listed it; it returns the entries written, the

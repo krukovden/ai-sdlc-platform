@@ -29,9 +29,10 @@ store: committed
 - <one line> (<entry-id>)
 ```
 
-- `reconciled-pr:` — the newest pull request memory has caught up with. It only moves
-  forward; `reconcile --mark-pr` keeps the higher of the old and new number, and
-  `resolve` keeps the higher one when a merge conflicts on it. The old
+- `reconciled-pr:` — the last-merged pull request memory has caught up with. It only
+  moves forward in merge order: `reconcile --mark-pr` refuses a PR merged before the
+  current one, and `resolve` keeps the later-merged one when a merge conflicts on it
+  (the higher number only when history cannot tell). The old
   `reconciled-sha:` line is still read, and is replaced by the first `--mark-pr`.
 - `## Units` — **generated**: one row per `units/<slug>.md`, sorted by slug, the second
   cell the unit's `summary:`. Edit the summary, never the row; `index` rewrites the

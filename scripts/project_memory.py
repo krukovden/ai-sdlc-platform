@@ -20,9 +20,9 @@ The script owns the bookkeeping, the model owns the text:
                         the load-bearing journal entries not yet lifted into memory
     project_memory.py reconcile --memory DIR [--json] [--mark-pr N [--through SHA]]
                         the commits memory has not caught up with; --mark-pr moves
-                        the forward-only `reconciled-pr` watermark
+                        the `reconciled-pr` watermark, forward only in merge order
     project_memory.py resolve --memory DIR
-                        settle a merge conflict in index.md: the higher watermark,
+                        settle a merge conflict in index.md: the later-merged watermark,
                         the union of rejections, the Units table regenerated
 
 Standard library only. Exit codes: 0 clean or done, 1 problems found, 2 usage.
@@ -112,9 +112,12 @@ def parse_index(text):
 
 
 def set_reconciled_pr(text, number):
-    """Forward only, and the legacy `reconciled-sha:` line becomes this one."""
-    current = parse_index(text)["reconciled_pr"]
-    number = max(int(number), current or 0)
+    """Set the watermark; the legacy `reconciled-sha:` line becomes this one.
+
+    Forward-only is enforced by `mark`, against history: PR numbers are minted
+    when a PR opens, not when it merges, so a lower number can be the newer merge.
+    """
+    number = int(number)
     if re.search(r"^reconciled-pr:.*$", text, re.M):
         text = re.sub(r"^reconciled-pr:.*$", f"reconciled-pr: {number}", text, count=1, flags=re.M)
         return re.sub(r"^reconciled-sha:.*\n", "", text, flags=re.M)
@@ -360,6 +363,9 @@ def add(memory, unit, title, body, status="active", evidence="inferred", pr=None
     if source:
         owner, existing = store.entry_with_source(source)
         if existing is not None:
+            # Already written — but a run interrupted after the entry and before
+            # the rest leaves the bookkeeping half done. Finish it, then answer.
+            repair(store, existing)
             return existing["id"], False
 
     path = store.unit_path(unit)
@@ -398,6 +404,20 @@ def add(memory, unit, title, body, status="active", evidence="inferred", pr=None
 
     store.index.write_text(store.generated_index(), encoding="utf-8")
     return entry_id, True
+
+
+def repair(store, entry):
+    """The reverse supersede link and the generated index, for an entry already on disk."""
+    old_id = entry.get("supersedes")
+    if old_id:
+        for unit in store.units():
+            for old in unit["entries"]:
+                if old["id"] == old_id and old.get("superseded-by") != entry["id"]:
+                    text = _set_field(unit["file"].read_text(encoding="utf-8"), old_id,
+                                      "superseded-by", entry["id"])
+                    unit["file"].write_text(_set_field(text, old_id, "status", "superseded"),
+                                            encoding="utf-8")
+    store.index.write_text(store.generated_index(), encoding="utf-8")
 
 
 def _set_field(text, entry_id, key, value):
@@ -550,8 +570,9 @@ def backlog(repo, index, pending, ref="HEAD"):
     """First-parent commits newer than the watermark, oldest first.
 
     `reconciled-pr` is a PR number, not a SHA, because a squash merge leaves a
-    branch SHA dangling. The walk stops at the newest commit whose PR number is
-    at or below the watermark. A store with only the legacy `reconciled-sha`
+    branch SHA dangling. The walk stops at the watermark PR's own merge
+    commit — never at a lower number, because PRs merge out of the order they
+    were opened. A store with only the legacy `reconciled-sha`
     still reads it, when the SHA is still reachable.
     """
     log = git(repo, "log", "--first-parent", "--format=%H%x00%as%x00%s", ref)
@@ -562,10 +583,14 @@ def backlog(repo, index, pending, ref="HEAD"):
     watermark = index.get("reconciled_pr")
     if watermark is not None:
         newer = []
+        found = any(c["pr"] == watermark for c in commits)
         for commit in commits:
-            if commit["pr"] is not None and commit["pr"] <= watermark:
+            if commit["pr"] == watermark:
                 break
-            newer.append(commit)
+            # The watermark's merge commit is the boundary. Without it in this
+            # history, a commit counts unless its PR is at or below the mark.
+            if found or commit["pr"] is None or commit["pr"] > watermark:
+                newer.append(commit)
     elif index.get("reconciled_sha"):
         try:
             shas = set(git(repo, "rev-list", f"{index['reconciled_sha']}..{ref}").split())
@@ -583,9 +608,37 @@ def backlog(repo, index, pending, ref="HEAD"):
     return list(reversed(newer))
 
 
+def pr_commit(repo, number, ref="HEAD"):
+    """The first-parent commit that merged PR `number`, or None."""
+    if number is None:
+        return None
+    for line in git(repo, "log", "--first-parent", "--format=%H%x00%s", ref).splitlines():
+        sha, _, subject = line.partition("\0")
+        if pr_number(subject) == int(number):
+            return sha
+    return None
+
+
+def newer_in_history(repo, a, b, ref="HEAD"):
+    """Of two PR numbers, the one merged later on `ref`; the higher when history cannot say."""
+    if a is None or b is None:
+        return a if b is None else b
+    ca, cb = pr_commit(repo, a, ref), pr_commit(repo, b, ref)
+    if ca and cb and ca != cb:
+        answer = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", ca, cb],
+                                capture_output=True, stdin=subprocess.DEVNULL)
+        return b if answer.returncode == 0 else a
+    return max(a, b)
+
+
 def mark(repo, memory, number, through="HEAD"):
+    """Move the watermark to `number` — forward only, in merge order."""
     store = Store(memory)
     text = store.index_text()
+    current = parse_index(text)["reconciled_pr"]
+    if current is not None and newer_in_history(repo, current, int(number)) != int(number):
+        raise MemoryProblem(f"PR {number} merged before PR {current}, which memory already "
+                            "covers; the watermark only moves forward")
     store.index.write_text(set_reconciled_pr(text, number), encoding="utf-8")
     pending = read_pending(store.pending)
     kept = []
@@ -605,8 +658,8 @@ def mark(repo, memory, number, through="HEAD"):
 # resolve: an index.md merge conflict
 # ---------------------------------------------------------------------------
 
-def resolve_index(text):
-    """Settle conflict hunks: keep the higher watermark, union the rest by line."""
+def resolve_index(text, repo=None):
+    """Settle conflict hunks: keep the later-merged watermark, union the rest by line."""
     out, ours, theirs, state = [], [], [], None
     for line in text.splitlines():
         if line.startswith("<<<<<<<"):
@@ -616,7 +669,7 @@ def resolve_index(text):
             state = "theirs"
             continue
         if line.startswith(">>>>>>>") and state == "theirs":
-            out += _merge_hunk(ours, theirs)
+            out += _merge_hunk(ours, theirs, repo)
             state = None
             continue
         (ours if state == "ours" else theirs if state == "theirs" else out).append(line)
@@ -625,7 +678,7 @@ def resolve_index(text):
     return "\n".join(out) + "\n"
 
 
-def _merge_hunk(ours, theirs):
+def _merge_hunk(ours, theirs, repo=None):
     numbers = [int(m.group(1)) for l in ours + theirs
                for m in [re.match(r"^reconciled-pr:\s*(\d+)", l)] if m]
     merged = []
@@ -633,9 +686,12 @@ def _merge_hunk(ours, theirs):
     for line in ours + theirs:
         if re.match(r"^reconciled-(pr|sha):", line):
             if not placed:
-                # The higher number wins; with no number on either side, the
+                # The later-merged PR wins; with no number on either side, the
                 # first watermark line is kept as it was, never dropped.
-                merged.append(f"reconciled-pr: {max(numbers)}" if numbers else line)
+                best = None
+                for n in numbers:
+                    best = newer_in_history(repo, best, n) if repo else max(best or n, n)
+                merged.append(f"reconciled-pr: {best}" if numbers else line)
                 placed = True
             continue
         if line not in merged or not line.strip():
@@ -769,10 +825,11 @@ def _dispatch(args):
         return 0
     if args.command == "resolve":
         store = Store(args.memory)
-        text = resolve_index(store.index_text())
+        text = resolve_index(store.index_text(), repo=Path(args.memory).resolve().parent)
         store.index.write_text(text, encoding="utf-8")
         store.index.write_text(store.generated_index(), encoding="utf-8")
-        print("index.md resolved: the higher watermark kept, the Units table regenerated.")
+        print("index.md resolved: the later-merged watermark kept, the Units table "
+              "regenerated.")
         return 0
     return 2
 

@@ -910,9 +910,13 @@ class Integration:
             target = wt.path / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
-        problems = project_memory.lint(memory_root, features=wt.path / journal_format.DIRECTORY) \
+        # Against main: a journal some earlier feature froze there stays as it is.
+        _, main_tip = self.main_sha()
+        features = wt.path / journal_format.DIRECTORY
+        problems = project_memory.lint(memory_root, features=features, base=main_tip,
+                                       repo=wt.path) \
             if (memory_root / "index.md").exists() else \
-            journal_format.lint_tree(wt.path / journal_format.DIRECTORY)
+            journal_format.lint_tree(features, base=main_tip, repo=wt.path)
         if problems:
             wt.reset_to(tip)
             return dev.block_feature("the finalize commit does not pass the memory lint: "
