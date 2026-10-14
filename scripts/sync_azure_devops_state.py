@@ -230,6 +230,7 @@ UNSAFE_LITERAL = re.compile(r"['\"\n\r]")
 # block are the same fact in two renderings; one expression reads both.
 CID_PATTERN = re.compile(r'"?\bcid"?\s*:\s*"?([A-Za-z0-9_.:@+-]+)"?')
 
+# Read-only since IDE-150: cards published earlier carry these; nothing writes them.
 TAG_FEATURE_PACKAGE = "sdlc:feature-package"
 TAG_CID_PREFIX = "sdlc:cid="
 
@@ -856,6 +857,40 @@ def read_cid(text):
     return None if value.casefold() in NOT_A_CID else value
 
 
+_FRONTMATTER = re.compile(r"\A\s*---\s*\n(?P<body>.*?)\n---\s*(\n|\Z)", re.S)
+_HEADER_CID = re.compile(r"^\s*cid\s*:\s*['\"]?(?P<cid>[A-Za-z0-9_.:@+-]+)['\"]?\s*$", re.M)
+
+
+def header_cid(text):
+    """The cid of an artifact's machine header — and only of the header.
+
+    Two headers exist: YAML frontmatter at the very top, and the fenced
+    `idp-meta` JSON block a published Feature ends with. A `cid:` anywhere
+    else — prose quoting another card, an example — is not this card's
+    identity (IDE-150 review). HTML entities from Azure DevOps's description
+    field are undone first.
+    """
+    text = html.unescape(text or "")
+    front = _FRONTMATTER.match(text)
+    if front:
+        found = _HEADER_CID.search(front.group("body"))
+        if found and found.group("cid").casefold() not in NOT_A_CID:
+            return found.group("cid")
+    marker = text.rfind("idp-meta")
+    if marker >= 0:
+        start = text.find("{", marker)
+        depth = 0
+        for end in range(start, len(text)) if start >= 0 else ():
+            depth += {"{": 1, "}": -1}.get(text[end], 0)
+            if depth == 0:
+                try:
+                    value = json.loads(text[start:end + 1]).get("cid")
+                except (ValueError, AttributeError):
+                    return None
+                return None if str(value).casefold() in NOT_A_CID else str(value)
+    return None
+
+
 def slugify(text, limit=48):
     slug = re.sub(r"[^a-z0-9]+", "-", (text or "").casefold()).strip("-")
     return slug[:limit].strip("-") or "work-item"
@@ -1159,20 +1194,36 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
     def find_by_correlation(self, correlation_id):
         """The idempotency check, and the reason re-publication is safe.
 
-        The tag is the identity, not the description: a description passes
-        through an HTML sanitiser on the way in and a tag does not, so the tag
-        is the one carrier that cannot be quietly reformatted out from under
-        the next run.
+        IDE-150: the identity is the `cid` in the description's machine header,
+        not a tag. A correlation id is `[a-z0-9_-]`, which the description's HTML
+        sanitiser leaves alone, so a CONTAINS on the description finds it. Cards
+        published before IDE-150 carry it as an `sdlc:cid=` tag; that is still
+        read, never written.
         """
         if not correlation_id:
             return None
+        cid = str(correlation_id)
         rows = self.query(
-            f"[System.Tags] CONTAINS {_literal(TAG_CID_PREFIX + str(correlation_id))}",
+            f"[System.TeamProject] = @project AND "
+            f"([System.Description] CONTAINS {_literal(cid)}"
+            f" OR [System.Tags] CONTAINS {_literal(TAG_CID_PREFIX + cid)})",
             columns=["System.Id", "System.Title"])
-        if not rows:
-            return None
-        return self.get_issue(str((rows[0].get("fields") or {}).get("System.Id")
-                                  or rows[0].get("id")))
+        # CONTAINS only finds candidates: a description that mentions this cid in
+        # prose, or carries a longer cid that starts with it, is not this card.
+        # The identity is the machine header's cid, or the whole legacy tag.
+        exact = []
+        for row in rows:
+            issue = self.get_issue(str((row.get("fields") or {}).get("System.Id")
+                                       or row.get("id")))
+            legacy = {str(t).strip() for t in issue.get("labels") or []}
+            if header_cid(issue.get("description") or "") == cid or TAG_CID_PREFIX + cid in legacy:
+                exact.append(issue)
+        if len(exact) > 1:
+            fail(EXIT.INVALID,
+                 f"{len(exact)} work items carry correlation id {cid}: "
+                 f"{', '.join(str(i['identifier']) for i in exact)}. Refusing to pick one.",
+                 fix="remove the duplicate work item, then re-run")
+        return exact[0] if exact else None
 
     def _brief(self, row, project=None):
         fields = row.get("fields") or {}
@@ -1202,16 +1253,11 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
         not among them: a card enters a phase through the transition table in
         scripts/tags.py, as one more fenced write, and nowhere else.
         """
-        tags = []
-        header_type = _header_type(body)
-        kind = header_type or ("pbi" if parent else "feature")
-        if kind == "feature":
-            tags.append(TAG_FEATURE_PACKAGE)
-
-        cid = read_cid(body)
-        if cid:
-            tags.append(TAG_CID_PREFIX + cid)
-        return tags
+        # IDE-150: nothing. The correlation id stays in the document's machine
+        # header, links between cards are the tracker's own Parent/Child, and an
+        # idp: tag already says the card is the platform's — so no sdlc:cid and
+        # no sdlc:feature-package tag is written any more.
+        return []
 
     def create_issue(self, title, body=None, parent=None, status=None, project_id=None,
                      kind=None):

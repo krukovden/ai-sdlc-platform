@@ -189,7 +189,7 @@ def locate(status, phases, labels=(), kind=None, prefer=()):
     planning, must be told about development.
     """
     carried = phase_tags(labels)
-    if len(carried) > 1:
+    if len(carried) > 1 or tags.ambiguous(labels):
         return None, CONFLICT
     owned = tags.owner_of(labels) is not None
 

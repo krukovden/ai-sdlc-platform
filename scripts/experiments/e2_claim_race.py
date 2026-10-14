@@ -98,7 +98,7 @@ def run_trials(board, identifier, base_run, n, claimants, stop_on_violation=True
             tally["http"].extend(a.get("http") or [])
 
         card = board.read_card(identifier)
-        owned = [t for t in card.get("tags") or [] if t.startswith(tags.OWNER_PREFIX)]
+        owned = [tags.OWNER_PREFIX + who for who in tags.owners(card.get("tags"))]
         problem = None
         if len(wins) != 1:
             problem = f"{len(wins)} claimants believe they won"

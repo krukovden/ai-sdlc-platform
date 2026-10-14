@@ -16,7 +16,7 @@ import os
 import unittest
 from unittest import mock
 
-from support import FakeLinear, ScriptTestCase, issue_node, linear, load_script, make_board
+from support import FakeLinear, ScriptTestCase, issue_node, linear, load_script, make_board, decoded
 
 RUN = {"IDP_RUN_ID": "run-a"}
 
@@ -96,7 +96,7 @@ class StartPhaseTests(ScriptTestCase):
         _, fake, result = self.run_start()
 
         self.assertTrue(result["changed"])
-        self.assertEqual(sorted(fake.label_names()), ["idp:design", "idp:owner:run-a"])
+        self.assertEqual(sorted(decoded(fake.label_names())), ["idp:design", "idp:owner:run-a"])
         self.assertEqual(len([d for d in fake.mutations if "issueUpdate" in d]), 1)
 
     def test_the_status_is_left_alone(self):
@@ -173,7 +173,7 @@ class FinishPhaseTests(ScriptTestCase):
 
     def test_blocked_is_a_modifier_and_the_phase_stays(self):
         fake, _ = self.finish(("idp:design", "idp:owner:run-a"), kind="blocked")
-        self.assertEqual(sorted(fake.label_names()),
+        self.assertEqual(sorted(decoded(fake.label_names())),
                          ["idp:blocked", "idp:design", "idp:owner:run-a"])
 
     def test_refuses_a_card_nobody_claimed_and_changes_nothing(self):
@@ -282,3 +282,27 @@ class CommentHistoryTests(ScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LabelPagingTests(ScriptTestCase):
+    """IDE-150's state labels carry a run id; a team outgrows one page of labels."""
+
+    def test_a_label_on_the_second_page_is_found_not_created_again(self):
+        board = linear.Board.__new__(linear.Board)
+        board.token, board._team, board._labels = "t", {"id": "team-1", "key": "IDE"}, None
+        pages = {None: ([{"id": f"L{i}", "name": f"idp:design:in-progress@run-{i}"}
+                         for i in range(100)], True, "c1"),
+                 "c1": ([{"id": "L100", "name": "idp:qa:in-progress@run-x"}], False, None)}
+        created = []
+
+        def fake_query(token, text, variables=None):
+            if "issueLabelCreate" in text:
+                created.append(variables)
+                return {"issueLabelCreate": {"success": True, "issueLabel": {"id": "NEW"}}}
+            nodes, more, cursor = pages[(variables or {}).get("after")]
+            return {"team": {"labels": {"nodes": nodes,
+                                        "pageInfo": {"hasNextPage": more, "endCursor": cursor}}}}
+
+        with mock.patch.object(linear, "query", side_effect=fake_query):
+            self.assertEqual(board.resolve_label("idp:qa:in-progress@run-x"), "L100")
+        self.assertEqual(created, [])

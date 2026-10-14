@@ -1910,12 +1910,13 @@ class AdoScenarioRunner:
 
     def human_move_feature(self, target, note):
         card = self.board.read_card(self.feature_id)
+        # A human moves the card to a new state: every state tag goes, whatever
+        # its spelling (bare phase, in-progress@run, paused@run, old owner tags);
+        # idp:blocked and labels outside idp: stay.
         tags_now = []
         for label in card.get("tags") or []:
             folded = str(label).strip().casefold()
-            if folded in {tags.DESIGN.casefold(), tags.DESIGN_REVIEW.casefold(),
-                          tags.DEVELOPMENT.casefold(), tags.QA.casefold(),
-                          tags.PR_REVIEW.casefold()}:
+            if folded.startswith(tags.TAG_PREFIX) and folded != tags.BLOCKED:
                 continue
             tags_now.append(label)
         tags_now.append(target)
@@ -1997,10 +1998,14 @@ class AdoScenarioRunner:
         self.results.append(item)
         self.log.write(f"step {name}: {detail}")
         for row in state:
-            for tag in row["tags"]:
-                if tag.startswith(tags.OWNER_PREFIX):
-                    self.problem(f"{name}: owner tag left behind",
-                                 [f"{row['id']} still carries {tag}."])
+            for who in tags.owners(row["tags"]):
+                self.problem(f"{name}: owner left behind",
+                             [f"{row['id']} is still held by {who}: {row['tags']}."])
+            state_tags = [t for t in row["tags"] if str(t).casefold().startswith("idp:")
+                          and str(t).casefold() != tags.BLOCKED]
+            if len(state_tags) > 1 or any(str(t).startswith("sdlc:") for t in row["tags"]):
+                self.problem(f"{name}: more than one state tag or an sdlc tag",
+                             [f"{row['id']} carries {row['tags']} (IDE-150: one state tag)."])
         self.write_report()
 
     def create_feature(self):

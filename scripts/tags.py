@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """The board model: phase tags, their modifiers, the transition table, the one writer.
 
-A Feature carries exactly one phase tag. Next to it may sit `idp:blocked`,
-`idp:stop`, and one of `idp:owner:<run>` or `idp:paused:<run>`. A PBI carries
-no phase tag, only an owner tag `idp:owner:<run>/w<N>` while a worker holds it.
-That is the whole vocabulary (IDE-147, *The board model*); it replaces the
-fourteen in-phase and ready-for-phase tags the adapters used to carry, and
-sub-phases are the owner's business, never the board's.
+**On the board a card carries one state tag** (IDE-150), and `idp:blocked`
+next to it when it is blocked:
+
+    idp:<phase>                         waiting for that phase
+    idp:<phase>:in-progress@<run>       a run holds it
+    idp:<phase>:paused@<run>            stopped on purpose; any run may take it
+    idp:in-progress@<run>/w<N>          a PBI a worker holds (no phase on PBIs)
+    idp:paused@<run>/w<N>               a PBI paused
+
+Inside this module the same facts are handled as the logical tags of IDE-147 —
+a phase tag, `idp:owner:<run>`, `idp:paused:<run>` — because every rule below
+(the claim, fencing, the hand-off, reap, takeover) was written and tested on
+them. `decode` turns what a board carries into that logical view, `encode`
+folds a logical decision back into the one state tag, and `_write` applies both
+around the single fenced write. The claim is therefore still one atomic tag
+write: the owner is part of the very tag the fence protects. Cards written
+before IDE-150 carry the logical tags themselves; they decode unchanged and are
+re-spelt on their next write.
 
 **Every tag change on every board goes through this module.** The adapters
 expose two primitives and nothing else that writes tags:
@@ -131,6 +143,12 @@ FEATURE_PHASES = {
     },
 }
 
+# How the logical tags are spelt on a board (IDE-150): one state tag.
+IN_PROGRESS = "in-progress"
+PAUSED = "paused"
+_STATE = re.compile(r"^idp:(?:(?P<phase>[a-z-]+):)?(?P<state>in-progress|paused)@(?P<who>.+)$",
+                    re.IGNORECASE)
+
 # A run id goes into a tag, so it is held to what a tag can safely carry.
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 WORKER_SUFFIX = re.compile(r"^(?P<run>[^/]+)/w(?P<n>[0-9]+)$")
@@ -146,6 +164,86 @@ def _fold(label):
     return str(label).strip().casefold()
 
 
+def decode(labels):
+    """What a board carries, as the logical tags every rule here reasons about.
+
+    `idp:development:in-progress@run-7` is `idp:development` + `idp:owner:run-7`;
+    `idp:paused@run-7/w2` is `idp:paused:run-7/w2`. Everything else — the phase
+    tags, `idp:blocked`, labels outside `idp:`, and the logical tags of a card
+    written before IDE-150 — passes through as it is.
+    """
+    out = []
+    for label in labels or ():
+        match = _STATE.match(str(label).strip())
+        phase = match and match.group("phase")
+        if match and (phase is None or TAG_PREFIX + phase.casefold() in PHASE_TAGS):
+            if phase:
+                out.append(TAG_PREFIX + phase.casefold())
+            state = match.group("state").casefold()
+            prefix = OWNER_PREFIX if state == IN_PROGRESS else PAUSED_PREFIX
+            out.append(prefix + match.group("who"))
+        else:
+            out.append(label)
+    return out
+
+
+def _fact(label):
+    """One logical tag as a fact: the grammar case-folded, a run identity verbatim.
+
+    Run ids are case-sensitive everywhere ownership is checked, so a no-op must
+    not fold `Run-A` into `run-a` and swallow a real change of owner.
+    """
+    text = str(label).strip()
+    for prefix in (OWNER_PREFIX, PAUSED_PREFIX):
+        if text.casefold().startswith(prefix):
+            return prefix + text[len(prefix):]
+    return text.casefold()
+
+
+def ambiguous(labels):
+    """Two holders, a holder and a pause, or one phase spelt twice: not one state."""
+    logical = decode(labels)
+    holders = [l for l in logical if _fold(l).startswith((OWNER_PREFIX, PAUSED_PREFIX))]
+    phases = [_fold(l) for l in logical if _fold(l) in PHASE_TAGS]
+    return (len(holders) > 1 or len(phases) != len(set(phases))
+            or (len(set(phases)) > 1 and bool(holders)))
+
+
+def encode(labels):
+    """A logical decision, spelt as one state tag (plus `idp:blocked`).
+
+    Only an unambiguous card is folded — at most one phase, and at most one of
+    owner/paused. Anything else is left in its logical spelling rather than
+    guessed at, so no ownership fact can be lost in translation; the resolver
+    reports such a card as a conflict.
+    """
+    labels = list(labels or ())
+    phases = [l for l in labels if _fold(l) in PHASE_TAGS]
+    held = [l for l in labels if _fold(l).startswith(OWNER_PREFIX)]
+    paused = [l for l in labels if _fold(l).startswith(PAUSED_PREFIX)]
+    if len(phases) > 1 or len(held) + len(paused) > 1:
+        return labels
+    if not held and not paused:
+        return labels
+    if held:
+        state, who, fact = IN_PROGRESS, str(held[0]).strip()[len(OWNER_PREFIX):], held[0]
+    else:
+        state, who, fact = PAUSED, str(paused[0]).strip()[len(PAUSED_PREFIX):], paused[0]
+    phase = _fold(phases[0])[len(TAG_PREFIX):] if phases else None
+    folded = f"{TAG_PREFIX}{phase}:{state}@{who}" if phase else f"{TAG_PREFIX}{state}@{who}"
+    out = []
+    for label in labels:
+        if label is fact:
+            continue
+        if phases and label is phases[0]:
+            out.append(folded)
+            continue
+        out.append(label)
+    if not phases:
+        out.append(folded)
+    return out
+
+
 def phase_tags(labels):
     """The phase tags on a card, canonical spelling, in the order given.
 
@@ -153,7 +251,7 @@ def phase_tags(labels):
     sits next to the phase tag and is never a second position.
     """
     found = []
-    for label in labels or ():
+    for label in decode(labels):
         for tag in PHASE_TAGS:
             if _fold(label) == tag and tag not in found:
                 found.append(tag)
@@ -167,7 +265,7 @@ def phase_of(labels):
 
 
 def owners(labels):
-    return [str(l).strip()[len(OWNER_PREFIX):] for l in labels or ()
+    return [str(l).strip()[len(OWNER_PREFIX):] for l in decode(labels)
             if _fold(l).startswith(OWNER_PREFIX)]
 
 
@@ -178,7 +276,7 @@ def owner_of(labels):
 
 
 def paused_of(labels):
-    found = [str(l).strip()[len(PAUSED_PREFIX):] for l in labels or ()
+    found = [str(l).strip()[len(PAUSED_PREFIX):] for l in decode(labels)
              if _fold(l).startswith(PAUSED_PREFIX)]
     return found[0] if found else None
 
@@ -300,7 +398,8 @@ def _write(board, identifier, decide):
     owner that wakes up after its lease was reaped re-reads, finds the owner
     tag is no longer its own, and aborts without writing.
     """
-    card = board.read_card(identifier)
+    raw = board.read_card(identifier)
+    card = dict(raw, tags=decode(raw.get("tags")))
     try:
         tags, status = decide(card)
     except _Refused as refusal:
@@ -308,10 +407,29 @@ def _write(board, identifier, decide):
     except _Conflict as conflict:
         return _result("conflict", card, message=conflict.message, fix=conflict.fix)
 
-    same_tags = [_fold(t) for t in tags] == [_fold(t) for t in card.get("tags") or []]
+    # Unchanged means the same facts, whatever the spelling: a card still in the
+    # pre-IDE-150 spelling is re-spelt on its next real change, not by a no-op.
+    same_tags = [_fact(t) for t in tags] == [_fact(t) for t in card.get("tags") or []]
+    if ambiguous(raw.get("tags")):
+        # Rival holders are a human's to sort out. The one write allowed is the
+        # flag that says so: idp:blocked on top of the card's tags exactly as
+        # they are, so no ownership fact is regrouped or lost.
+        before = sorted(_fact(t) for t in card.get("tags") or [] if _fold(t) != BLOCKED)
+        after = sorted(_fact(t) for t in tags if _fold(t) != BLOCKED)
+        same_state = status is None or _fold(status) == _fold(card.get("status") or "")
+        if before != after or not is_blocked(tags) or not same_state:
+            return _result("refused", raw,
+                           message=f"{identifier} carries conflicting state tags "
+                                   f"({', '.join(raw.get('tags') or [])}); nothing was changed.",
+                           fix="leave one state tag on the card, then re-run")
+        tags = list(raw.get("tags") or [])
+        if not is_blocked(tags):
+            tags.append(BLOCKED)
+    else:
+        tags = encode(tags)
     same_status = status is None or _fold(status) == _fold(card.get("status") or "")
     if same_tags and same_status:
-        return _result("unchanged", card)
+        return _result("unchanged", raw)
 
     answer = board.write_card(identifier, card.get("rev"), tags,
                               status=None if same_status else status)
