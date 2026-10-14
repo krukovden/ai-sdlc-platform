@@ -857,6 +857,40 @@ def read_cid(text):
     return None if value.casefold() in NOT_A_CID else value
 
 
+_FRONTMATTER = re.compile(r"\A\s*---\s*\n(?P<body>.*?)\n---\s*(\n|\Z)", re.S)
+_HEADER_CID = re.compile(r"^\s*cid\s*:\s*['\"]?(?P<cid>[A-Za-z0-9_.:@+-]+)['\"]?\s*$", re.M)
+
+
+def header_cid(text):
+    """The cid of an artifact's machine header — and only of the header.
+
+    Two headers exist: YAML frontmatter at the very top, and the fenced
+    `idp-meta` JSON block a published Feature ends with. A `cid:` anywhere
+    else — prose quoting another card, an example — is not this card's
+    identity (IDE-150 review). HTML entities from Azure DevOps's description
+    field are undone first.
+    """
+    text = html.unescape(text or "")
+    front = _FRONTMATTER.match(text)
+    if front:
+        found = _HEADER_CID.search(front.group("body"))
+        if found and found.group("cid").casefold() not in NOT_A_CID:
+            return found.group("cid")
+    marker = text.rfind("idp-meta")
+    if marker >= 0:
+        start = text.find("{", marker)
+        depth = 0
+        for end in range(start, len(text)) if start >= 0 else ():
+            depth += {"{": 1, "}": -1}.get(text[end], 0)
+            if depth == 0:
+                try:
+                    value = json.loads(text[start:end + 1]).get("cid")
+                except (ValueError, AttributeError):
+                    return None
+                return None if str(value).casefold() in NOT_A_CID else str(value)
+    return None
+
+
 def slugify(text, limit=48):
     slug = re.sub(r"[^a-z0-9]+", "-", (text or "").casefold()).strip("-")
     return slug[:limit].strip("-") or "work-item"
@@ -1170,6 +1204,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             return None
         cid = str(correlation_id)
         rows = self.query(
+            f"[System.TeamProject] = @project AND "
             f"([System.Description] CONTAINS {_literal(cid)}"
             f" OR [System.Tags] CONTAINS {_literal(TAG_CID_PREFIX + cid)})",
             columns=["System.Id", "System.Title"])
@@ -1181,7 +1216,7 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
             issue = self.get_issue(str((row.get("fields") or {}).get("System.Id")
                                        or row.get("id")))
             legacy = {str(t).strip() for t in issue.get("labels") or []}
-            if read_cid(issue.get("description") or "") == cid or TAG_CID_PREFIX + cid in legacy:
+            if header_cid(issue.get("description") or "") == cid or TAG_CID_PREFIX + cid in legacy:
                 exact.append(issue)
         if len(exact) > 1:
             fail(EXIT.INVALID,

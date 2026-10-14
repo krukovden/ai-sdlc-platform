@@ -205,7 +205,8 @@ def ambiguous(labels):
     logical = decode(labels)
     holders = [l for l in logical if _fold(l).startswith((OWNER_PREFIX, PAUSED_PREFIX))]
     phases = [_fold(l) for l in logical if _fold(l) in PHASE_TAGS]
-    return len(holders) > 1 or len(phases) != len(set(phases))
+    return (len(holders) > 1 or len(phases) != len(set(phases))
+            or (len(set(phases)) > 1 and bool(holders)))
 
 
 def encode(labels):
@@ -415,7 +416,8 @@ def _write(board, identifier, decide):
         # they are, so no ownership fact is regrouped or lost.
         before = sorted(_fact(t) for t in card.get("tags") or [] if _fold(t) != BLOCKED)
         after = sorted(_fact(t) for t in tags if _fold(t) != BLOCKED)
-        if before != after or not is_blocked(tags):
+        same_state = status is None or _fold(status) == _fold(card.get("status") or "")
+        if before != after or not is_blocked(tags) or not same_state:
             return _result("refused", raw,
                            message=f"{identifier} carries conflicting state tags "
                                    f"({', '.join(raw.get('tags') or [])}); nothing was changed.",

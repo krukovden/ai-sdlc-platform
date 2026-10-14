@@ -1009,6 +1009,10 @@ class GuardTests(ScriptTestCase):
 class ExactCorrelationTests(ScriptTestCase):
     """A CONTAINS hit is a candidate; the machine header's cid is the identity (IDE-150 review)."""
 
+    @staticmethod
+    def meta(cid, prose=""):
+        return f'{prose}\n\n```idp-meta\n{{\n  "type": "feature",\n  "cid": "{cid}"\n}}\n```'
+
     def find(self, *items, cid="fp_abc123"):
         merged = {}
         for item in items:
@@ -1017,14 +1021,23 @@ class ExactCorrelationTests(ScriptTestCase):
         with stub(fake):
             return azure.Board(None, PROFILE).find_by_correlation(cid)
 
-    def test_a_prose_mention_of_the_cid_is_not_the_card(self):
-        mention = work_item("41", description='```sdlc-meta\n{"cid": "fp_other"}\n```\nsee fp_abc123')
-        self.assertIsNone(self.find(mention))
+    def test_prose_quoting_the_cid_is_not_the_card(self):
+        quoted = work_item("41", description=self.meta("fp_other", "Previous example: cid: fp_abc123"))
+        bare = work_item("43", description="Notes: cid: fp_abc123, see above")
+        self.assertIsNone(self.find(quoted, bare))
 
     def test_a_longer_cid_that_starts_with_this_one_is_not_the_card(self):
-        longer = work_item("41", description='{"cid": "fp_abc123_extra"}')
-        real = work_item("42", description='{"cid": "fp_abc123"}')
+        longer = work_item("41", description=self.meta("fp_abc123_extra"))
+        real = work_item("42", description=self.meta("fp_abc123"))
         self.assertEqual(self.find(longer, real)["identifier"], "42")
+
+    def test_html_entities_from_the_description_field_are_undone(self):
+        html = work_item("42", description='<pre>idp-meta\n{&quot;cid&quot;: &quot;fp_abc123&quot;}</pre>')
+        self.assertEqual(self.find(html)["identifier"], "42")
+
+    def test_frontmatter_is_a_header_too(self):
+        front = work_item("42", description="---\ntype: pbi\ncid: fp_abc123\n---\n\nbody")
+        self.assertEqual(self.find(front)["identifier"], "42")
 
     def test_a_card_published_before_ide_150_is_found_by_its_whole_tag(self):
         legacy = work_item("42", tags="sdlc:cid=fp_abc123")
@@ -1032,10 +1045,17 @@ class ExactCorrelationTests(ScriptTestCase):
         self.assertEqual(self.find(prefix, legacy)["identifier"], "42")
 
     def test_two_cards_with_the_same_cid_are_refused_not_guessed(self):
-        one = work_item("41", description='{"cid": "fp_abc123"}')
-        two = work_item("42", description='{"cid": "fp_abc123"}')
+        one = work_item("41", description=self.meta("fp_abc123"))
+        two = work_item("42", description=self.meta("fp_abc123"))
         with self.assertRaises(SystemExit):
             self.find(one, two)
+
+    def test_the_lookup_is_scoped_to_the_project(self):
+        fake = FakeAz(work_item("42", description=self.meta("fp_abc123")))
+        with stub(fake):
+            azure.Board(None, PROFILE).find_by_correlation("fp_abc123")
+        self.assertIn("[System.TeamProject] = @project",
+                      fake.flag(fake.matching("boards", "query")[0], "--wiql"))
 
 
 class CorrelationTests(ScriptTestCase):

@@ -127,6 +127,22 @@ class OneStateTagReviewTests(ScriptTestCase):
         self.assertTrue(tags.ambiguous(["idp:design:in-progress@run-a", "idp:design:paused@run-b"]))
         self.assertFalse(tags.ambiguous(["idp:design:in-progress@run-a", "idp:blocked"]))
 
+    def test_two_phases_with_a_holder_are_a_conflict_too(self):
+        board = FakeBoard()
+        mixed = ["idp:design:in-progress@run-a", "idp:qa"]
+        feature(board, "1", *mixed)
+        self.assertTrue(tags.ambiguous(mixed))
+        self.assertEqual(tags.set_blocked(board, "1", A)["outcome"], "written")
+        self.assertEqual(board.cards["1"]["tags"], mixed + ["idp:blocked"])
+
+    def test_a_blocked_conflict_cannot_change_status(self):
+        board = FakeBoard()
+        rivals = ["idp:in-progress@run-a/w1", "idp:in-progress@run-b/w1", "idp:blocked"]
+        board.add_card("2", rivals, kind="pbi", parent="1")
+        moved = tags.move_status(board, "2", board.cards["2"]["status"], "Done")
+        self.assertEqual(moved["outcome"], "refused")
+        self.assertEqual(board.cards["2"]["tags"], rivals)
+
     def test_a_takeover_that_only_changes_the_case_of_the_run_id_is_written(self):
         board = FakeBoard()
         feature(board, "1", "idp:design:in-progress@Run-A")

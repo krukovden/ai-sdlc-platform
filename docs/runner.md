@@ -116,8 +116,10 @@ the worker: any of that run's workers, or any run, may take it).
 
 Limits of this spelling: on Linear each run id becomes a label in the team, and
 labels are not deleted when they leave a card — a team accumulates them (reads
-page through up to 5000). Case: the grammar is case-insensitive, run ids are
-not.
+page through up to 5000, beyond which a label may be created twice; no cleanup
+yet). Case: the grammar is case-insensitive and run ids are verbatim, except on
+Linear, whose label names compare case-insensitively — run ids are generated in
+lower case, so this only matters for a hand-written id.
 
 To stop one Feature, use `run.py stop` or the local stop file; `idp:stop` is no
 longer part of the vocabulary (a card that still carries it is honoured).

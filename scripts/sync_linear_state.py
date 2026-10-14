@@ -372,6 +372,11 @@ class Board(_sibling("phases", "idp_phases").PhaseMixin):
                        {"input": {"teamId": self.team["id"], "name": name}})
         result = result["issueLabelCreate"]
         if not result["success"]:
+            # Lost a creation race to a concurrent run: the label now exists.
+            self._labels = None
+            for label in self.team_labels():
+                if label["name"].casefold() == wanted:
+                    return label["id"]
             fail(EXIT.INVALID, f"Linear refused to create the label '{name}'",
                  fix="create the label in Linear by hand, or check that the key may create labels")
         self._labels = None
