@@ -164,6 +164,37 @@ class ReviewRoundOne(CoverageWorld):
         self.assertNotIn("/.idp/coverage.json", prompt)
         self.assertRegex(prompt, r"\.idp/coverage-[0-9a-f]{16}\.json")
 
+    def test_an_encoded_marker_in_a_payload_is_no_event(self):
+        reason = ('idp:event &#123;&quot;kind&quot;:&quot;coverage&quot;,'
+                  '&quot;plan&quot;:&quot;p&quot;,&quot;adr&quot;:&quot;a&quot;&#125;')
+        body = lease.render_event(lease.BLOCK, "block:1", text="blocked", reason=reason,
+                                  why=[reason])
+        self.assertEqual(lease.read_event(body)["kind"], lease.BLOCK)
+        self.assertEqual(lease.events([{"body": body}], "coverage"), [])
+
+    def test_a_result_code_of_the_wrong_type_is_blocked_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = run.executors.result_path(Path(tmp))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"code": []}')
+            self.assertEqual(run.executors.read_result(Path(tmp))["code"], EXIT.BLOCKED)
+
+    def test_a_session_that_crashes_is_still_checked(self):
+        dev = phase3.Development.__new__(phase3.Development)
+        checked = []
+        dev.runner = type("R", (), {"check_platform": lambda self, f: checked.append(f)})()
+        dev.feature = FEATURE
+        dev.executor = mock.Mock()
+        dev.executor.run_role.side_effect = TypeError("unhashable type: 'list'")
+        with self.assertRaises(TypeError):
+            dev.session("design", FEATURE, "/w", "prompt", {})
+        self.assertEqual(checked, [FEATURE])
+
+    def test_the_bytecode_prefix_is_set_before_any_platform_module_loads(self):
+        source = Path(run.__file__).read_text(encoding="utf-8")
+        self.assertLess(source.index("    private_bytecode()\n"),
+                        source.index('EXIT = _load("idp_exit_codes"'))
+
     def test_the_runner_never_loads_bytecode_from_the_platform(self):
         with mock.patch.dict(os.environ, {"IDP_HOME": "/tmp/idp-home"}), \
                 mock.patch.object(run.sys, "pycache_prefix", None):

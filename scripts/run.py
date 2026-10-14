@@ -68,6 +68,23 @@ import threading
 import time
 from pathlib import Path
 
+
+def private_bytecode():
+    """Bytecode this process loads comes from its own cache, never the platform's (IDE-153).
+
+    platform_digest skips `__pycache__`, and Python would load a timestamp-valid
+    `.pyc` an agent planted there in place of the source the digest checked.
+    With a prefix the in-tree caches are never read; the prefix lives in the
+    runner's own home.
+    """
+    home = Path(os.environ.get("IDP_HOME", Path.home() / ".idp"))
+    sys.pycache_prefix = str(home / "pycache")
+
+
+# Before the first platform module is loaded, or a planted cache is read with it.
+if __name__ == "__main__":
+    private_bytecode()
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DESIGN_SKILL = REPO_ROOT / "skills" / "design"
@@ -715,12 +732,14 @@ class Runner:
         try:
             code = reconnect("design", feature, worktree, prompt,
                              context={"IDP_CONTEXT_DIR": str(context)})
-            self.check_platform(feature)
             self.record_floor_override(feature)
             return code
         except executors.ResolutionError as exc:
             tags.release(self.board, feature, self.run_id)
             raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
+        finally:
+            # On every way out, a crash included (IDE-153).
+            self.check_platform(feature)
 
     def design_session(self, feature, base, feedback):
         worktree = Path(self.worktree_for(feature, "design", base))
@@ -733,7 +752,6 @@ class Runner:
         try:
             code = self.executor.run_role("design", feature, worktree, prompt,
                                           context={"IDP_CONTEXT_DIR": str(context)})
-            self.check_platform(feature)
             self.record_floor_override(feature)
             return code
         except executors.ResolutionError as exc:
@@ -741,6 +759,9 @@ class Runner:
             # the card is released rather than blocked.
             tags.release(self.board, feature, self.run_id)
             raise RunnerError(EXIT.BLOCKED, exc.message, exc.fix)
+        finally:
+            # On every way out, a crash included (IDE-153).
+            self.check_platform(feature)
 
     def check_platform(self, feature):
         """Stop the run when a session changed the platform it is run from (IDE-153).
@@ -1272,18 +1293,6 @@ def build_parser():
     return parser
 
 
-def private_bytecode():
-    """Bytecode this process loads comes from its own cache, never the platform's (IDE-153).
-
-    platform_digest skips `__pycache__`, and Python would load a timestamp-valid
-    `.pyc` an agent planted there in place of the source the digest checked.
-    With a prefix the in-tree caches are never read; the prefix lives in the
-    runner's own home.
-    """
-    home = Path(os.environ.get("IDP_HOME", Path.home() / ".idp"))
-    sys.pycache_prefix = str(home / "pycache")
-
-
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--agent":
@@ -1295,5 +1304,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    private_bytecode()
     main()

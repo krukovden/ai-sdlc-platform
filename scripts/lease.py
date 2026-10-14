@@ -99,7 +99,7 @@ def parse_time(value):
 
 def render_event(kind, key, text="", **payload):
     """One event comment: a line for humans, the marker for the runner."""
-    data = dict(payload)
+    data = {k: defuse_value(v) for k, v in payload.items()}
     data["kind"] = kind
     data["key"] = key
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -123,6 +123,25 @@ def defuse(text):
     while EVENT_MARK in text:
         text = text.replace(EVENT_MARK, "idp-event")
     return text
+
+
+def defuse_value(value):
+    """A payload value with no event marker anywhere in it (IDE-153, review round 2).
+
+    read_event unescapes the whole comment, so a session's reason carrying an
+    HTML-encoded marker inside a payload string would otherwise surface as an
+    event of its own.
+    """
+    if isinstance(value, str):
+        defused = defuse(value)
+        # A defused marker is unescaped, and a brace in a payload would end the
+        # marker's own JSON early: braces go, as phase3's flat() drops them.
+        return re.sub(r"[{}]", "", defused) if defused != value else value
+    if isinstance(value, list):
+        return [defuse_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: defuse_value(v) for k, v in value.items()}
+    return value
 
 
 def read_event(body):

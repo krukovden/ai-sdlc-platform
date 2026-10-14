@@ -578,6 +578,8 @@ class Development:
                 self.block_feature(f"the plan's coverage reviewer could not be started, so "
                                    f"the plan is not pinned unreviewed: {exc.message}")
                 return None
+            finally:
+                self.platform_intact()
             self.record_floor_override(feature)
             last = self.executor.last or {}
             while last.get("unsettled"):
@@ -957,8 +959,13 @@ class Development:
         except executors.ResolutionError as exc:
             tags.release(self.board, self.feature, self.run_id)
             raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
+        finally:
+            # On every way out, a crash included: a session must not be able to
+            # change the platform and then fail so the check never runs.
+            self.platform_intact()
 
     def route(self, pbi, answer, error):
+        self.platform_intact()
         job = self.running.pop(pbi)
         agent = job["choice"].agent
         self.busy[agent] = max(0, self.busy.get(agent, 0) - 1)
@@ -970,7 +977,6 @@ class Development:
                 tags.release(self.board, self.feature, self.run_id)
                 raise self.runner.error(EXIT.BLOCKED, error.message, error.fix)
             raise error
-        self.platform_intact()
         code, last = answer
         last = last or {}
         item, claim, wt = job["item"], job["claim"], job["wt"]
@@ -1037,6 +1043,8 @@ class Development:
         except runner_executors().ResolutionError as exc:
             tags.release(self.board, self.feature, self.run_id)
             raise self.runner.error(EXIT.BLOCKED, exc.message, exc.fix)
+        finally:
+            self.platform_intact()
 
     def launch_failed(self, item, claim, wt, last):
         """The agent never started: infrastructure, not the work. Never an attempt.

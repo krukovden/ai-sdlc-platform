@@ -111,7 +111,7 @@ def read_result(worktree):
         code = data.get("code")
     except (OSError, json.JSONDecodeError, AttributeError) as exc:
         return {"code": EXIT.BLOCKED, "reason": f"unreadable result file: {exc}"}
-    if isinstance(code, bool) or code not in EXIT.RUNNER:
+    if isinstance(code, bool) or not isinstance(code, int) or code not in EXIT.RUNNER:
         return {"code": EXIT.BLOCKED, "reason": f"the session reported code {code!r}, "
                                                 "which the runner's table does not have"}
     return {"code": code, "reason": str(data.get("reason") or "")}

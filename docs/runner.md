@@ -548,7 +548,10 @@ and re-pointed `registry/providers.json` at it. Run the platform from a copy the
 agent's user cannot write; a Docker Desktop bind mount ignores permissions, so
 copy it into the container rather than mounting it. The runner also loads bytecode only from
 its own `$IDP_HOME/pycache`, so a planted `.pyc` beside the hashed sources is
-never read.
+never read. The check runs on every way out of a session, a crash included.
+Its baseline is taken when the runner starts, so a change that survives to the
+next start is that run's baseline: the read-only copy is the guarantee, the hash
+the alarm.
 
 By default this is still a process boundary, not an OS boundary. A model running
 as the same user can still open files that user can read directly, including token
