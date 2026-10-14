@@ -1333,15 +1333,32 @@ QUANTIFIER = re.compile(
 LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
 
 
+# Sections that record how the design was made, not what is built: no PBI can
+# deliver "Storage model | skipped" or a rejected alternative. On the live runs
+# of 2026-10-14 their rows were forced into the floor and burned every planning
+# attempt (IDE-153). The reviewer may still extract from them; the floor does not.
+PROCESS_SECTIONS = ("reviewed", "cost", "alternatives", "tried-and-rejected",
+                    "not-in-scope", "not-doing", "open-questions")
+
+
+def process_headings():
+    """Every wording of a process section, in every language, case-folded."""
+    sections = load_sections()
+    return {sections.text(section, language).casefold()
+            for section in PROCESS_SECTIONS for language in sections.languages()}
+
+
 def deterministic_constraints(adr_text):
     """The floor under the model's extraction: ADR lines that cannot be skipped.
 
     Every table body row, every list item and every line carrying a quantifier
-    or modal must be quoted by some extracted constraint. The model may add to
+    or modal must be quoted by some extracted constraint — outside the sections
+    that record the design's process (PROCESS_SECTIONS). The model may add to
     this list; it may not subtract from it, so a constraint it silently left
     out is caught by a regex and not by trusting the model twice.
     """
     floor, fenced, table_row = [], False, 0
+    skipped, skip_level = process_headings(), None
     lines = adr_text.splitlines()
     start = 0
     if lines and lines[0].strip() == "---":
@@ -1354,7 +1371,14 @@ def deterministic_constraints(adr_text):
         if stripped.startswith("```"):
             fenced = not fenced
             continue
-        if fenced or not stripped or stripped.startswith("#"):
+        heading = re.match(r"(#+)\s+(.*?)\s*#*$", stripped) if not fenced else None
+        if heading:
+            level = len(heading.group(1))
+            if skip_level is not None and level <= skip_level:
+                skip_level = None
+            if skip_level is None and heading.group(2).casefold() in skipped:
+                skip_level = level
+        if fenced or not stripped or stripped.startswith("#") or skip_level is not None:
             table_row = 0
             continue
         if stripped.startswith("|"):
@@ -1384,7 +1408,10 @@ def coverage_prompt(plan, adr_text):
         "quantifiers, enumerations and each table row. Give each a stable id, exact "
         "source quote and source line. Then map each constraint to PBIs that actually "
         "deliver it; a section reference alone is not coverage. Leave missing constraints "
-        "out of coverage. Never omit a constraint because no PBI covers it.\nADR:\n"
+        "out of coverage. Never omit a constraint because no PBI covers it. The sections "
+        + ", ".join(f'"{h}"' for h in sorted(process_headings()))
+        + " record how the design was made, not what is built: nothing in them is a "
+        "constraint a PBI delivers.\nADR:\n"
         + "\nThese ADR lines are mandatory constraints (add others, drop none): "
         + ", ".join(map(str, floor))
         + "\nADR:\n" + adr_text + "\nPBIs:\n" + canonical_json(plan))

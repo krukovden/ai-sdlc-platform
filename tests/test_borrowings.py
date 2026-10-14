@@ -117,6 +117,19 @@ class PlanBorrowings(unittest.TestCase):
         problems, _, _ = planning.validate_plan(payload, {}, ADR)
         self.assertTrue(any("can never pass" in p["message"] for p in problems), problems)
 
+    def test_the_floor_leaves_out_the_sections_that_record_the_process(self):
+        # IDE-153: "Storage model | skipped" in What was reviewed was forced into
+        # the floor on three live runs, and no PBI can deliver it.
+        adr = ("---\ntype: adr\n---\n\n## What we build\n\n- a parser\n\n"
+               "## What was reviewed\n\n| Artifact | Status |\n| -- | -- |\n"
+               "| Storage model | skipped |\n\n## What it costs us\n\nEvery future "
+               "operator must keep the contract.\n\n## Чем платим\n\n- всегда\n\n"
+               "## Decision registry\n\n| id | d |\n| -- | -- |\n| D-1 | hand parser |\n")
+        lines = adr.splitlines()
+        floor = [lines[n - 1] for n in planning.deterministic_constraints(adr)]
+        self.assertEqual(floor, ["- a parser", "| D-1 | hand parser |"])
+        self.assertIn('"what was reviewed"', planning.coverage_prompt({"pbis": []}, adr))
+
     def test_a_pbi_with_no_command_witness_is_refused_at_the_cut(self):
         payload = self.payload()
         for criterion in payload["pbis"][0]["acceptance_criteria"]:
