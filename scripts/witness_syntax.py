@@ -17,14 +17,11 @@ reviewer's and the witness run's to find.
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 
 PYTHON = re.compile(r"^python(\d+(\.\d+)?)?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-SEPARATORS = (";", "&&", "||", "|", "(", "!", "then", "do", "else", "time", "env",
-              "exec", "timeout")
 SHELL_TIMEOUT = 10
 
 
@@ -43,36 +40,117 @@ def shell_problem(command, which=shutil.which, run=subprocess.run):
     return None
 
 
+class Ambiguous(Exception):
+    """The command uses shell syntax this reader does not follow; judge nothing."""
+
+
+def simple_commands(command):
+    """[[(word, static)]] per simple command, quoting kept; raises Ambiguous.
+
+    `static` is False when the word holds an expansion the shell would perform
+    (`$` or a backquote outside single quotes). Operators split commands; a
+    heredoc, a subshell substitution spanning words, or quoting that does not
+    close is Ambiguous — the shell layer judges those, this one does not guess.
+    """
+    commands, words = [], []
+    word, static, quoted, i = None, True, False, 0
+
+    def end_word():
+        nonlocal word, static, quoted
+        if word is not None:
+            words.append((word, static))
+        word, static, quoted = None, True, False
+
+    def end_command():
+        end_word()
+        if words:
+            commands.append(list(words))
+            words.clear()
+
+    while i < len(command):
+        c = command[i]
+        if c in " \t":
+            end_word()
+        elif c == "\n" or c in ";&|()":
+            if command.startswith("<<", i):
+                raise Ambiguous()
+            end_command()
+        elif c == "<" and command.startswith("<<", i):
+            raise Ambiguous()
+        elif c == "#" and word is None:
+            while i < len(command) and command[i] != "\n":
+                i += 1
+            continue
+        elif c == "'":
+            close = command.find("'", i + 1)
+            if close < 0:
+                raise Ambiguous()
+            word = (word or "") + command[i + 1:close]
+            i = close
+        elif c == '"':
+            j, text = i + 1, []
+            while j < len(command) and command[j] != '"':
+                if command[j] == "\\" and j + 1 < len(command):
+                    nxt = command[j + 1]
+                    text.append(nxt if nxt in '$`"\\\n' else "\\" + nxt)
+                    j += 2
+                    continue
+                if command[j] in "$`":
+                    static = False
+                text.append(command[j])
+                j += 1
+            if j >= len(command):
+                raise Ambiguous()
+            word = (word or "") + "".join(text)
+            i = j
+        elif c == "\\":
+            if i + 1 < len(command):
+                word = (word or "") + command[i + 1]
+                i += 1
+        else:
+            if c in "$`":
+                static = False
+            word = (word or "") + c
+        i += 1
+    end_command()
+    return commands
+
+
+WRAPPERS = ("env", "time", "exec", "nohup", "command")
+
+
 def python_problems(command):
     """Compile the `python -c` code a shell would pass verbatim, and nothing else.
 
-    Only what can be read statically is judged. Quoting that does not close is
-    the shell layer's verdict, not this one's; a heredoc is data, not commands;
-    and code that depends on an expansion (`$X`, a backquote) is not the code
-    the shell would hand Python, so it is left alone rather than refused.
+    Only a word in command position counts — after the leading assignments and
+    a plain wrapper — and only a code argument with no expansion in it. What
+    this reader cannot follow is left to the shell layer, never refused here.
     """
-    if "<<" in command:
-        return []
     try:
-        words = shlex.split(command, comments=True, posix=True)
-    except ValueError:
+        commands = simple_commands(command)
+    except Ambiguous:
         return []
     problems = []
-    for n, word in enumerate(words[:-2]):
-        starts = n == 0 or words[n - 1] in SEPARATORS or \
-            words[n - 1].endswith((";", "&&", "||", "|")) or ASSIGNMENT.match(words[n - 1])
-        if not (starts and PYTHON.match(os.path.basename(word)) and words[n + 1] == "-c"):
+    for words in commands:
+        n = 0
+        while n < len(words) and ASSIGNMENT.match(words[n][0]):
+            n += 1
+        while n < len(words) and words[n][0] in WRAPPERS:
+            n += 1
+            while n < len(words) and ASSIGNMENT.match(words[n][0]):
+                n += 1
+        if len(words) < n + 3:
             continue
-        code = words[n + 2]
-        if "$" in code or "`" in code:
+        (program, _), (flag, _), (code, static) = words[n:n + 3]
+        if not (PYTHON.match(os.path.basename(program)) and flag == "-c" and static):
             continue
         try:
             compile(code, "<witness>", "exec")
         except SyntaxError as exc:
-            problems.append(f"its `{word} -c` code does not compile: {exc.msg} "
+            problems.append(f"its `{program} -c` code does not compile: {exc.msg} "
                             f"(line {exc.lineno}, column {exc.offset})")
         except ValueError as exc:
-            problems.append(f"its `{word} -c` code does not compile: {exc}")
+            problems.append(f"its `{program} -c` code does not compile: {exc}")
     return problems
 
 

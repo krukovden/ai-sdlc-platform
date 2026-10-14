@@ -99,6 +99,12 @@ class ProfileFloorTests(unittest.TestCase):
         with self.assertRaises(ResolutionError):
             resolver({"roles": {"review": ["copilot:gpt-6-astra", FLASH]}}, {"copilot"})
 
+    def test_integration_needs_standard_and_takes_it(self):
+        with self.assertRaises(ResolutionError):
+            resolver({"roles": {"integration": [FLASH]}}, {"copilot"})
+        handle = resolver({"roles": {"integration": ["copilot:grok-4.7"]}}, {"copilot"})
+        self.assertEqual(str(handle.resolve("integration")), "copilot:grok-4.7")
+
     def test_a_cheap_worker_is_fine(self):
         handle = resolver({"roles": {"worker": [FLASH], "design": ["copilot:gpt-5.4"]}},
                           {"copilot"})
@@ -240,8 +246,18 @@ class WitnessSyntaxTests(ScriptTestCase):
             self.assertEqual(witness_syntax.problems(command), [], command)
 
     def test_python_after_a_separator_or_an_assignment_is_compiled(self):
-        for command in ("cd x && python3 -c 'print(('", "FOO=1 python3 -c 'x(('"):
+        for command in ("cd x && python3 -c 'print(('", "FOO=1 python3 -c 'x(('",
+                        "env A=1 python3 -c 'x(('"):
             self.assertTrue(witness_syntax.problems(command), command)
+
+    def test_an_argument_that_looks_like_a_command_is_not_compiled(self):
+        command = "python3 -c 'print(1)' MODE=test python3 -c 'not python code'"
+        self.assertEqual(witness_syntax.problems(command), [])
+
+    def test_single_quotes_keep_python_static_and_it_is_judged(self):
+        # No shell expansion happens inside single quotes, and `<<` there is Python.
+        self.assertTrue(witness_syntax.problems("python3 -c 'x = $UNEXPANDED'"))
+        self.assertTrue(witness_syntax.problems("python3 -c 'x = (1 <<'"))
 
     def test_a_command_the_shell_cannot_read_is_refused(self):
         self.assertTrue(witness_syntax.problems("grep -q 'unterminated README.md"))
