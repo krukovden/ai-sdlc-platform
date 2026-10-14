@@ -55,7 +55,7 @@ from .common import EXIT, INFRA_BACKOFF, _sibling, flat, lease, memory, planning
 from . import merge as merges
 from . import plan as plans
 from . import shape
-from .finalize import Finalizer
+from .finalize import Finalizer, protected_stem
 from .gitops import GitError, local_excludes, mention as mention_of
 
 ROUND = "integration"
@@ -91,7 +91,9 @@ What to read, all in {context}:
   diff.patch  the feature branch against main (`git diff {base} {head}`)
   feature.md  the Feature's requirements and acceptance criteria
   adr.md      the approved ADR (the verdict on the bug route; absent on a small feature)
-  plan.json   how the work was cut into PBIs
+  plan.json   how the work was cut into PBIs — the same plan the runner pinned at
+              {plan_path} on the branch. Both are the runner's record, not product
+              code: never a finding, and no fix may touch them.
   checks.md   what the deterministic build and the full test suite said
   journal.md  the feature journal so far
 
@@ -212,6 +214,17 @@ def read_fix(raw, what):
                                               f"{what}.criteria[{n}].text"),
                                 "witness": {"command": command.strip(), "timeout": timeout}})
     return fix
+
+
+def runner_paths(findings, plan_path):
+    """Findings that would have a worker change the runner's own record (IDE-154).
+
+    Live Feature 105110: integration read the pinned plan as a duplicate of its
+    context copy, and the fix PBI it became could only be refused.
+    """
+    stem = protected_stem(plan_path)
+    return [f["title"] for f in findings
+            if any(p.removeprefix("./").startswith((stem, ".idp/")) for p in f["paths"])]
 
 
 def read_findings(path):
@@ -754,6 +767,7 @@ class Integration:
         def prompt(feedback):
             return INTEGRATION_PROMPT.format(
                 feature=self.feature, branch=self.branch, context=context, base=base,
+                plan_path=plans.plan_path(self.feature),
                 head=head, findings=answer_path, run_py=self.runner.run_py,
                 feedback=f"\nThe last attempt was refused: {feedback}\nFix exactly that."
                 if feedback else "")
@@ -761,6 +775,12 @@ class Integration:
         def read():
             try:
                 answer = read_findings(answer_path)
+                touched = runner_paths(answer["findings"], plans.plan_path(self.feature))
+                if touched:
+                    raise IntegrationError(
+                        "these findings would change the runner's own record — the pinned "
+                        f"plan or .idp/ — which is never product code: {'; '.join(touched)}. "
+                        "Drop them", outcome="malformed")
             except IntegrationError:
                 # Judged and refused: not a cache for the next attempt or the next
                 # cycle. A crash before this read is what leaves the file behind.

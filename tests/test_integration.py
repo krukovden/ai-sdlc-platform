@@ -267,6 +267,20 @@ class RoundTests(IntegrationTestCase):
         self.assertIn(fixes[0], self.qa_meta(world)["depends_on"])
         self.assertEqual(self.feature_tags(world), [tags.QA])
 
+    def test_a_finding_on_the_runners_own_record_is_refused_and_asked_again(self):
+        # Live Feature 105110: the pinned plan read as a duplicate of its context
+        # copy, and the PBI it became could only be refused by the worker.
+        world = self.world()
+        plan_finding = dict(integration_finding("plan"),
+                            paths=[phase3.plan.plan_path(FEATURE)])
+        world.integration = [[plan_finding], []]
+        self.assertEqual(world.runner().run_feature(FEATURE), EXIT.DONE)
+        self.assertEqual([k for k in world.items() if k.startswith("integration-r")], [])
+        self.assertEqual(integration.runner_paths(
+            [plan_finding, dict(integration_finding("x"), paths=[".idp/context/plan.json"]),
+             integration_finding("ok")], phase3.plan.plan_path(FEATURE)),
+            ["duplicate plan", "duplicate x"])
+
     def test_an_integration_task_starts_in_the_tasks_own_todo_state(self):
         # Live Feature 105110: a Task created by 3.3 got the PBI's `New`, which an
         # Azure DevOps Task does not have; the create landed and the move failed.
