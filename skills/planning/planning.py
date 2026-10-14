@@ -1412,7 +1412,13 @@ def verify_coverage(report, plan, adr_text):
                            "line " + ", ".join(dropped))
     missing = coverage_difference(report, plan["pbis"])
     if missing:
-        raise CoverageGap(3, "ADR constraints missing from PBIs: " + ", ".join(missing))
+        # The ids alone are the reviewer's names; the planner needs the ADR's
+        # words and line to find what it left out (IDE-153: two of three
+        # attempts went on guessing on the live runs).
+        quoted = {c["id"]: c for c in report["constraints"]}
+        raise CoverageGap(3, "ADR constraints missing from PBIs: " + "; ".join(
+            f'{name} (ADR line {quoted[name]["line"]}: "{quoted[name]["quote"]}")'
+            for name in missing))
 
 
 def check_coverage(plan, adr_text, planner_model, providers=None, runner=None):

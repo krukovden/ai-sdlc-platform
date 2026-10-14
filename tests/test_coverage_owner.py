@@ -70,6 +70,7 @@ class RunnerRunsTheReview(CoverageWorld):
         planned = self.calls(world, "You are the planning session")
         self.assertEqual(len(planned), orchestrator.MAX_ATTEMPTS)
         self.assertIn("ADR constraints missing from PBIs", planned[1]["prompt"])
+        self.assertRegex(planned[1]["prompt"], r'C\d+ \(ADR line \d+: ".+"\)')
 
     def test_an_untrustworthy_report_is_retried_then_blocks_unpinned(self):
         world = self.world()
