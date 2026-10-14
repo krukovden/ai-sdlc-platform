@@ -1757,6 +1757,8 @@ class AdoScenarioRunner:
             "area_path": ADO_AREA_PATH,
             "iteration_path": ADO_ITERATION_PATH,
             "approvers": [ADO_APPROVER],
+            **({"pace_seconds": float(os.environ["IDP_PACE_SECONDS"])}
+               if os.environ.get("IDP_PACE_SECONDS") else {}),
             "executors": {
                 "backend": "subprocess",
                 "timeout_seconds": ADO_SESSION_SECONDS,
@@ -1907,6 +1909,23 @@ class AdoScenarioRunner:
                 "parent": item.get("parent") or "—",
             })
         return states
+
+    def wait_at_gate(self, gate):
+        """IDP_GATE_WAIT=1: stop before a human step until `<out>/GO` appears.
+
+        So a person watching the board sees each gate as it is, and says when
+        the simulated human may act. The file is removed when it is taken.
+        """
+        if os.environ.get("IDP_GATE_WAIT") != "1":
+            return
+        go = self.out / "GO"
+        self.log.write(f"waiting at gate: {gate} — create {go} to continue")
+        (self.out / "WAITING").write_text(gate + "\n", encoding="utf-8")
+        while not go.exists():
+            time.sleep(5)
+        go.unlink()
+        (self.out / "WAITING").unlink(missing_ok=True)
+        self.log.write(f"gate released: {gate}")
 
     def human_move_feature(self, target, note):
         card = self.board.read_card(self.feature_id)
@@ -2151,6 +2170,7 @@ class AdoScenarioRunner:
                 raise AdoScenarioFailure("feature did not reach idp:design-review after the design run")
             self.record_step("B", "Runner attached the ADR and moved the feature to `idp:design-review`.", first)
 
+            self.wait_at_gate("design review: ADR is on the Feature — approve?")
             self.human_move_feature(tags.DEVELOPMENT,
                                     "Human approved the ADR and moved the feature to development.")
             self.record_step("C", "Human approved the ADR and set `idp:development`.")
@@ -2170,6 +2190,7 @@ class AdoScenarioRunner:
                              [json.dumps(item, ensure_ascii=False) for item in failures])
             self.record_step("E", detail)
 
+            self.wait_at_gate("QA: feature is with the human — reject with a Bug?")
             gap_title, gap_body, expect_modulo = self.gap_bug(failures)
             bug = self.board.create_issue(title=gap_title, body=gap_body,
                                           parent=self.feature_id, kind="bug")
@@ -2187,6 +2208,7 @@ class AdoScenarioRunner:
                 raise AdoScenarioFailure(final_failures[0]["detail"])
             self.record_step("F", "Human filed a bug, returned the feature to development, and the runner brought it back to QA.", third)
 
+            self.wait_at_gate("QA again: the Bug is fixed — accept and close QA Testing?")
             self.close_qa()
             qa_done = self.profile["state_map"][self.profile["work_item_types"]["pbi"]]["done"]
             if self.board.get_issue(self.qa_pbi_id())["status"] != qa_done:
