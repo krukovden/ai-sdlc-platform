@@ -72,6 +72,15 @@ MAX_CYCLES = 20
 DEFAULT_TIMEOUT = 1200
 VERDICT_MAX_WORDS = 600
 DIRECTORY = "docs/blueprint"
+MEMORY_DIR = "memory"
+LIFTED = "memory-lifted"
+LIFT_MARK = "idp-memory:"
+LIFT_FILE = "lift.json"
+
+journal_format = _sibling("feature_journal", "idp_feature_journal")
+project_memory = _sibling("project_memory", "idp_project_memory")
+# What a commit after a green round may touch without making integration run again.
+RECORD_PATHS = (DIRECTORY + "/", journal_format.DIRECTORY + "/", MEMORY_DIR + "/")
 
 GREEN, FINDINGS, BLOCKED = "green", "findings", "blocked"
 AUTO_PR, BRANCH_ONLY = "auto", "branch-only"
@@ -95,7 +104,7 @@ What to read, all in {context}:
               {plan_path} on the branch. Both are the runner's record, not product
               code: never a finding, and no fix may touch them.
   checks.md   what the deterministic build and the full test suite said
-  journal.md  the feature journal so far
+  journal.md  the feature journal so far, and decisions.md the decisions made on the way
 
 Look for exactly four things, across the whole diff:
 1. duplicate     two PBIs that built the same thing twice: a second helper, schema, path
@@ -130,6 +139,25 @@ feature touched — current truth only, links to the code and the tests that sat
 at most 3,000 words per area. Change nothing outside docs/blueprint/ and commit nothing:
 the runner checks your files with `python3 {blueprint_py} check --root .`, then commits them.
 Then finish with: python3 {run_py} report --code 0 --reason "blueprints written"
+{feedback}"""
+
+LIFT_PROMPT = """You are memory-writer for Feature {feature}, started by run.py (IDE-155) at finalize.
+Follow the memory-writer instructions exactly, in their *lift* mode: {agent}
+You hold no board credential and need none. This worktree is the feature branch at `{head}`.
+
+{context}/candidates.json lists the load-bearing decisions of this feature's journal that no
+memory entry carries yet; {context}/decisions.md is the whole journal. For each candidate decide:
+lift it only if it is still true and load-bearing after the merge AND it is hard to reverse,
+not obvious without context, and the result of a real trade-off. Its `alternative` is a
+candidate rejection for `## Rejected at project level` when it applies to the whole project.
+
+Write every lifted entry with
+  python3 {memory_py} add --memory memory --unit <slug> --title "<title>" \\
+      --body-file <file> --source "<the candidate's source, verbatim>" --evidence confirmed
+(add --summary "<one line>" for a new unit). Change nothing outside memory/ and commit nothing.
+Then write {answer} as JSON and nothing else:
+  {{"lifted": [{{"source": "...", "id": "e-..."}}], "skipped": [{{"source": "...", "why": "..."}}]}}
+and finish with: python3 {run_py} report --code 0 --reason "memory lifted"
 {feedback}"""
 
 VERDICT_PROMPT = """You are the architect's verdict for bug {feature}, started by run.py (IDE-147, the bug route).
@@ -223,8 +251,10 @@ def runner_paths(findings, plan_path):
     context copy, and the fix PBI it became could only be refused.
     """
     stem = protected_stem(plan_path)
+    journal = f"{journal_format.DIRECTORY}/{stem.rstrip('.').rsplit('/', 1)[-1]}-"
     return [f["title"] for f in findings
-            if any(p.removeprefix("./").startswith((stem, ".idp/")) for p in f["paths"])]
+            if any(p.removeprefix("./").startswith((stem, ".idp/", journal))
+                   for p in f["paths"])]
 
 
 def read_findings(path):
@@ -306,6 +336,7 @@ class Integration:
         self.runner = dev.runner
         self.git = dev.git
         self.profile = dev.profile
+        self.lifted = []
         # The full build and suite run as finalize runs a witness: the same
         # allowlisted environment, no board token, no model key.
         self.commands = Finalizer({"run_as": getattr(dev.finalizer, "run_as", None)},
@@ -631,7 +662,8 @@ class Integration:
 
     def green(self, head):
         """The round that already passed for this head — or for the head the documenter
-        then committed on top of, which changed nothing but blueprints."""
+        and the finalize commit then made on top of, which changed nothing but the
+        runner's records: blueprints, the feature journal and project memory."""
         for record in reversed(self.rounds()):
             if record.get("verdict") != GREEN:
                 continue
@@ -640,7 +672,7 @@ class Integration:
                 return record
             try:
                 if self.git.is_ancestor(seen, head) and all(
-                        p.startswith(DIRECTORY + "/")
+                        p.startswith(RECORD_PATHS)
                         for p in self.git.changed_files(seen, head)):
                     return record
             except GitError:
@@ -678,7 +710,8 @@ class Integration:
 
         findings = red + answer["findings"]
         if not findings:
-            dev.journal.upload()
+            # Not committed here: the documenter works on exactly this head. The
+            # line rides in the finalize commit before the hand-off.
             lease.post_event(self.board, self.feature, ROUND, f"{ROUND}:{n}:{head}",
                              text=(f"Integration round {n} is green on `{head[:12]}`: the "
                                    "full build and test suite passed and the review found "
@@ -705,7 +738,6 @@ class Integration:
             self.amend(entries, record)
         except IntegrationError as exc:
             return dev.block_feature(f"integration's findings cannot join the plan: {exc}")
-        dev.journal.upload()
         return REBUILD
 
     def block_third(self, n, head):
@@ -759,7 +791,8 @@ class Integration:
         base = self.git.run("merge-base", base_tip, head) if base_tip else head
         (context / "diff.patch").write_text(self.git.diff(base, head), encoding="utf-8")
         self.write_common(context)
-        (context / "journal.md").write_text(dev.journal.text(), encoding="utf-8")
+        (context / "journal.md").write_text(dev.journal.text(head), encoding="utf-8")
+        (context / "decisions.md").write_text(dev.journal.decisions(head), encoding="utf-8")
         # One file per round: a cache for a crash between the session and the
         # round's record, never an answer reused by the next round on this head.
         answer_path = wt.path / ".idp" / FINDINGS_FILE.format(round=n)
@@ -804,11 +837,111 @@ class Integration:
     # -- the documenter, then the hand-off ------------------------------------
 
     def finish(self, head, tip=None):
-        """The documenter, then the hand-off — of exactly the commit it validated."""
+        """The documenter, the memory lift, then the hand-off — of exactly that commit."""
         code, candidate = self.document(head, tip if tip is not None else head)
         if code != EXIT.DONE:
             return code
+        code, candidate = self.lift(head, candidate)
+        if code != EXIT.DONE:
+            return code
         return self.hand_off(candidate)
+
+    # -- finalize: the journal and project memory, on the branch ----------------
+
+    def lift(self, head, tip):
+        """The finalize commit: the frozen journal and what memory takes from it (IDE-155).
+
+        The runner offers memory-writer the journal's load-bearing decisions that
+        no memory entry carries yet (`project_memory.py candidates`); the model
+        applies the durability and three-part tests and writes each lifted entry
+        with `project_memory.py add`, nothing else. The runner checks the diff and
+        the lint, then commits the memory change together with the journal, on the
+        feature branch — so both ship in the same PR as the code, and the human
+        reviews them at the merge. Idempotent: an entry's `source:` is never
+        offered twice, and identical files are no commit.
+
+        Returns (code, candidate): the commit the hand-off may hand to QA.
+        """
+        dev = self.dev
+        journal = dev.journal
+        directory = journal.path(tip)
+        name = directory.rsplit("/", 1)[-1]
+        wt, context = self.worktree("memory", tip)
+        memory_root = wt.path / MEMORY_DIR
+        offered = []
+        if (memory_root / "index.md").exists():
+            decisions = journal.decisions(tip)
+            offered = project_memory.candidates(decisions, memory_root, name)
+        else:
+            journal.add("No project memory in this repository (`memory/index.md`), so "
+                        "nothing was lifted; `/idp-setup` creates it.")
+        if offered:
+            (context / "decisions.md").write_text(journal.decisions(tip), encoding="utf-8")
+            (context / "candidates.json").write_text(
+                json.dumps(offered, ensure_ascii=False, indent=2), encoding="utf-8")
+            answer_path = wt.path / ".idp" / LIFT_FILE
+            agent = self.runner.repo_root / "agents" / "memory-writer.md"
+            memory_py = self.runner.repo_root / "scripts" / "project_memory.py"
+
+            def prompt(feedback):
+                return LIFT_PROMPT.format(
+                    feature=self.feature, agent=agent, context=context, head=tip,
+                    memory_py=memory_py, answer=answer_path, run_py=self.runner.run_py,
+                    feedback=f"\nThe runner's checks refused the last attempt:\n{feedback}\n"
+                             "Fix exactly that." if feedback else "")
+
+            def read():
+                problems = lift_problems(wt, tip, offered, answer_path)
+                if problems:
+                    wt.reset_to(tip)
+                    answer_path.unlink(missing_ok=True)
+                    raise IntegrationError("\n".join(problems))
+                return True
+
+            code, _ = self.session("integration", f"memory-{head[:12]}", wt.path, prompt,
+                                   context, read)
+            if code != EXIT.DONE:
+                return code, None
+        lifted = lifted_entries(memory_root, name)
+        journal.add(f"Ready for QA at `{head[:12]}`: the journal is frozen for the merge"
+                    + (f"; memory carries {len(lifted)} entr{'y' if len(lifted) == 1 else 'ies'}"
+                       " from it." if lifted else "."))
+        for path, text in journal.files(tip, freeze=True).items():
+            target = wt.path / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        # Against main: a journal some earlier feature froze there stays as it is.
+        _, main_tip = self.main_sha()
+        features = wt.path / journal_format.DIRECTORY
+        problems = project_memory.lint(memory_root, features=features, base=main_tip,
+                                       repo=wt.path) \
+            if (memory_root / "index.md").exists() else \
+            journal_format.lint_tree(features, base=main_tip, repo=wt.path)
+        if problems:
+            wt.reset_to(tip)
+            return dev.block_feature("the finalize commit does not pass the memory lint: "
+                                     + "; ".join(problems[:5])), None
+        sha = wt.commit_all(f"docs(memory): the journal and memory of {mention_of(self.feature)}"
+                            f"\n\n{LIFT_MARK} {self.feature}@{head}\n",
+                            [directory] + ([MEMORY_DIR] if memory_root.exists() else []))
+        if sha and not self.git.push(sha, self.branch, expect=tip):
+            # Somebody pushed after the documenter: 3.3 runs again on the new head,
+            # exactly as the hand-off does when the branch moved under it.
+            wt.reset_to(tip)
+            return self.rerun(tip, self.git.remote_sha(self.branch) or "?"), None
+        candidate = sha or tip
+        self.lifted = lifted
+        if lifted:
+            lease.post_event(
+                self.board, self.feature, LIFTED,
+                f"{LIFTED}:{self.feature}:{','.join(sorted(e['id'] for e in lifted))}",
+                text=("The feature's pull request carries these project memory entries into "
+                      "`main`, distilled from its decision journal (`" + directory
+                      + "/decisions.md`):\n" + "\n".join(
+                          f"- `{e['id']}` {e['title']} (`memory/units/{e['unit']}.md`)"
+                          for e in lifted)),
+                head=candidate, entries=",".join(e["id"] for e in lifted))
+        return EXIT.DONE, candidate
 
     def documented_record(self, head):
         """The documented event for this integrated head, repaired from git if a crash ate it."""
@@ -1113,7 +1246,8 @@ class Integration:
                 title = self.board.get_issue(self.feature).get("title") or self.feature
                 opened = merger.open(self.branch, main, title,
                                      f"{mention_of(self.feature)} — phase 3 is done; the human "
-                                     "tests it through the QA Testing PBI and merges this.",
+                                     "tests it through the QA Testing PBI and merges this."
+                                     + confirmation_section(self.lifted),
                                      self.feature)
                 if not opened.get("url"):
                     fix = opened.get("fix") or (
@@ -1146,10 +1280,9 @@ class Integration:
         moved = self.moved_from(candidate, remote=True)
         if moved:
             return self.rerun(candidate, moved)
-        dev.journal.add(f"Handed to QA at `{head[:12]}`: "
-                        f"{self.hand_off_text(pr, self.branch, main)} and the QA Testing PBI "
-                        f"{qa['id']} is with the human.")
-        dev.journal.upload()
+        # No journal line here: the finalize commit already carries the journal,
+        # and a line written now would change it again on a resumed run. The
+        # hand-off's record is the event below.
         merge_how = ("merge the feature branch by hand into "
                      if pr.get("mode") == BRANCH_ONLY else "merge the pull request into ")
         lease.post_event(self.board, self.feature, HANDED, f"{HANDED}:{self.feature}:{head}",
@@ -1194,6 +1327,73 @@ class Integration:
                          who=who)
         return who
 
+
+
+def lifted_entries(memory_root, journal_name):
+    """Every memory entry distilled from this feature's journal, in file order."""
+    found = []
+    if not (Path(memory_root) / "index.md").exists():
+        return found
+    for unit in project_memory.Store(memory_root).units():
+        for entry in unit["entries"]:
+            if str(entry.get("source") or "").startswith(f"{journal_name}#"):
+                found.append({"id": entry["id"], "title": entry["title"], "unit": unit["name"],
+                              "source": entry["source"]})
+    return found
+
+
+def confirmation_section(lifted):
+    """The feature PR's "Decisions needing confirmation": what memory takes from it."""
+    if not lifted:
+        return ""
+    return ("\n\n## Decisions needing confirmation\n\nThis pull request writes these "
+            "decisions into project memory. Merging it confirms them; change or drop an "
+            "entry under `memory/` before merging if it is wrong.\n\n"
+            + "\n".join(f"- `{e['id']}` {e['title']} — `memory/units/{e['unit']}.md`"
+                        for e in lifted))
+
+
+def lift_problems(wt, tip, offered, answer_path):
+    """What is wrong with a memory-writer session's work, as the runner sees it."""
+    problems = []
+    changed = documenter_changed(wt, tip)
+    outside = [p for p in changed if not p.startswith(MEMORY_DIR + "/")]
+    if outside:
+        problems.append("changed outside memory/: " + ", ".join(outside)
+                        + ". FIX: the lift writes only memory/**, through "
+                          "project_memory.py add; the journal is the runner's")
+    if wt.head() != tip:
+        problems.append("the session committed; FIX: commit nothing, the runner commits")
+    try:
+        answer = json.loads(Path(answer_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return problems + [f"{answer_path.name} is missing or not JSON: "
+                           '{"lifted": [{"source", "id"}], "skipped": [{"source", "why"}]}']
+    if not isinstance(answer, dict) or not all(
+            isinstance(answer.get(kind, []), list) for kind in ("lifted", "skipped")):
+        return problems + [f"{answer_path.name} must be an object whose `lifted` and `skipped` "
+                           "are lists"]
+    decided = {}
+    for kind in ("lifted", "skipped"):
+        for item in answer.get(kind) or []:
+            if isinstance(item, dict) and item.get("source"):
+                decided[item["source"]] = (kind, item)
+    memory_root = wt.path / MEMORY_DIR
+    store = project_memory.Store(memory_root)
+    for candidate in offered:
+        kind, item = decided.get(candidate["source"], (None, None))
+        if kind is None:
+            problems.append(f"no decision on `{candidate['source']}`: lift it or skip it "
+                            "with a reason")
+        elif kind == "skipped" and not str(item.get("why") or "").strip():
+            problems.append(f"`{candidate['source']}` is skipped without a reason")
+        elif kind == "lifted" and store.entry_with_source(candidate["source"])[1] is None:
+            problems.append(f"`{candidate['source']}` is reported lifted, and no memory entry "
+                            "carries it as its source: write it with project_memory.py add "
+                            f"--source \"{candidate['source']}\"")
+    if (memory_root / "index.md").exists():
+        problems += project_memory.lint(memory_root)
+    return problems
 
 
 def documenter_changed(wt, head):

@@ -16,8 +16,8 @@ Three layers answer three questions, and you write only the third:
 
 | Layer | Answers | Not yours because |
 | -- | -- | -- |
-| `memory/` | **Why** it is this way, what was rejected | engineering-catalog's memory-writer moves decisions there after the merge |
-| ADR, on the Feature | **How** this feature is built | written once, before development |
+| `memory/` | **Why** it is this way, what was rejected | the platform's memory-writer lifts decisions there at finalize, after you |
+| ADR, `docs/features/<id>-<slug>/adr.md` | **How** this feature is built | written once, before development |
 | **Area blueprint** | **What** this area does now, and what it must do | — |
 
 ## Hard rules

@@ -150,13 +150,30 @@ class EndToEndTests(RunnerTestCase):
         self.assertIn("run.py", call["prompt"])
         self.assertIn("report --code 0", call["prompt"])
 
-    def test_the_design_journal_travels_with_the_adr(self):
+    def test_the_board_carries_only_the_adr_and_the_design_journal_stays_local(self):
+        """IDE-155: the tracker holds work, git holds knowledge. What lasts of the
+        design is in the ADR, which development commits to docs/features/."""
         board = new_board()
         self.runner(board).run_feature(FEATURE)
-        title = run.memory.feature_file(FEATURE, "history")
-        journals = [d for d in board.attachments[FEATURE] if d["title"] == title]
-        self.assertEqual(len(journals), 1)
-        self.assertIn('"event":"integrate"', journals[0]["content"])
+        titles = [d["title"] for d in board.attachments[FEATURE]]
+        self.assertEqual(titles, [run.memory.feature_file(FEATURE, "adr")])
+        journal = design.session_dir(FEATURE) / "journal.jsonl"
+        self.assertIn('"event":"integrate"', journal.read_text(encoding="utf-8"))
+
+    def test_the_design_session_reads_project_memory_without_a_checkout(self):
+        board = new_board()
+        runner = self.runner(board)
+        worktree = self.worktree_for(FEATURE, "design", "abc123")
+        (worktree / "memory").mkdir(parents=True, exist_ok=True)
+        (worktree / "memory" / "index.md").write_text(
+            "# p — memory index\n\n## Rejected at project level\n- No ORM (e-1)\n",
+            encoding="utf-8")
+        context = runner.write_context(FEATURE, worktree)
+        self.assertIn("No ORM", (context / "memory-index.md").read_text(encoding="utf-8"))
+        (worktree / "memory" / "index.md").unlink()
+        with mock.patch.object(run, "memory_index", return_value=None):
+            context = runner.write_context(FEATURE, worktree)
+        self.assertFalse((context / "memory-index.md").exists())
 
     def test_running_the_phase_twice_changes_nothing_the_second_time(self):
         board = new_board()
@@ -277,9 +294,8 @@ class RedesignTests(RunnerTestCase):
         self.assertEqual([r["sha256"] for r in reviews(board)],
                          [run.sha256(first), run.sha256(second)])
         self.assertTrue(run.check_adr(board, FEATURE)[0])
-        journals = [d for d in board.attachments[FEATURE]
-                    if d["title"] == run.memory.feature_file(FEATURE, "history")]
-        self.assertEqual(len(journals), 1)
+        self.assertEqual([d["title"] for d in board.attachments[FEATURE]],
+                         [run.memory.feature_file(FEATURE, "adr")])
 
     def test_the_redesign_session_sees_the_adr_and_why_it_came_back(self):
         board = new_board()

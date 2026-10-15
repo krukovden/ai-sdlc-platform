@@ -328,7 +328,12 @@ async function run(argv, context = {}) {
         }
       }
       for (const skill of catalog.skills) links[path.join(base, prefix, 'skills', skill.name)] = path.join(payload, skill.path);
-      for (const agent of catalog.agents || []) links[path.join(base, prefix, 'agents', path.basename(agent.path))] = path.join(payload, agent.path);
+      // Copilot reads an agent only as `<name>.agent.md`; Claude as `<name>.md`. The Orca
+      // target is a shared skills directory and has no agents.
+      if (target !== 'orca') for (const agent of catalog.agents || []) {
+        const file = target === 'copilot' ? `${agent.name}.agent.md` : path.basename(agent.path);
+        links[path.join(base, prefix, 'agents', file)] = path.join(payload, agent.path);
+      }
     }
     links[path.join(base, '.local/bin/idp')] = path.join(payload, 'scripts/board.py');
     links[stableHooks(state).statusline] = path.join(payload, 'scripts/hooks/statusline.py');

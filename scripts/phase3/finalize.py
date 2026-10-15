@@ -87,6 +87,12 @@ class Outcome:
         return f"Outcome({self.kind or 'pass'}, {self.detail!r})"
 
 
+def journal_prefix(stem):
+    """`docs/features/IDE-88-` for the stem `docs/plans/IDE-88.`: the Feature's journal."""
+    feature = stem.rstrip(".").rsplit("/", 1)[-1]
+    return f"docs/features/{feature}-"
+
+
 def protected_stem(path):
     """`docs/plans/IDE-88.` for `docs/plans/IDE-88.plan.json` or `….bug-7.json`."""
     head, _, name = str(path).rpartition("/")
@@ -202,10 +208,16 @@ class Finalizer:
         except plans.PlanError as exc:
             return Outcome(MALFORMED, f"the pinned plan cannot be read: {exc}"), []
         stem = protected_stem(pinned["path"])
-        touched = [p for p in self.changed(wt, feature_sha, merged) if p.startswith(stem)]
+        changed = self.changed(wt, feature_sha, merged)
+        touched = [p for p in changed if p.startswith(stem)]
         if touched:
             return Outcome(DEFECT, f"the diff touches {', '.join(touched)}: the pinned plan "
                                    "files finalize reads witnesses from; revert that change"), []
+        journal = journal_prefix(stem)
+        touched = [p for p in changed if p.startswith(journal)]
+        if touched:
+            return Outcome(DEFECT, f"the diff touches {', '.join(touched)}: the feature journal "
+                                   "has one writer, the runner (IDE-155); revert that change"), []
         entry = plans.entry(plan, key)
         if entry is None:
             return Outcome(MALFORMED, f"the pinned plan has no PBI with key '{key}', so it "

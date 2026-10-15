@@ -14,6 +14,7 @@ function sync(version, directory = root) {
     author: {name: 'krukovden'}, repository: catalog.source,
     skills: catalog.skills.map(s => './' + s.path),
     commands: (catalog.commands || []).map(c => './' + c.path),
+    ...((catalog.agents || []).length ? {agents: catalog.agents.map(a => './' + a.path)} : {}),
     hooks: './hooks/hooks.json'};
   write('.claude-plugin/plugin.json', plugin);
   for (const file of ['.claude-plugin/marketplace.json', '.github/plugin/marketplace.json']) {

@@ -23,6 +23,10 @@ say it is done. Finalize proves it again, from a plan you cannot edit.
   already in `.idp/context/`.
 - **Never touch the plan file** named in your prompt. A diff that touches it is
   refused at finalize.
+- **Never touch the feature journal** in `docs/features/<id>-<slug>/`, and do not
+  write `memory/` entries: the runner is the journal's only writer, and memory is
+  lifted from it once, at finalize. A diff that touches the journal is refused
+  at finalize.
 - **Never merge into the feature branch or `main`**, and never push anywhere but
   your own branch.
 

@@ -141,9 +141,9 @@ word. Where the model is unsure it asks rather than guesses. The chosen route is
 written into the artifact's machine header, because it decides how many gates the
 state resolver has to check.
 
-**The feature's files live on the board, not in the repository.** The ADR, the feature history and the feature's Tried & Rejected are attachments on the feature card in Linear or Azure DevOps; the project's Tried & Rejected is an attachment on the epic, and the feature registry is the product repository's `memory/index.md`. There is no directory here for them and there will not be one — the board is the synchronisation point, and an agent working from another machine or inside a different product repository has to find them without git access.
+**The tracker holds work; git holds knowledge (IDE-155).** A Feature's own files live in the product repository, in `docs/features/<id>-<slug>/` on its feature branch, and merge into `main` with the code they explain: `history.md` (progress), `decisions.md` (one structured entry per decision — Context, Decision, Rationale, Alternative, Load-bearing, Source; every `Alternative` is a rejected option, so this is the feature's Tried & Rejected) and `adr.md` (the approved ADR). The runner is their only writer (`scripts/feature_journal.py`, `scripts/phase3/journal.py`); parallel PBI branches never touch them, and finalize refuses a PBI diff that does. A Feature spanning repositories keeps its journal in the profile's primary — first — repository. The project's knowledge is the product repository's committed `memory/` (`index.md` + `units/`), owned by this platform: the `memory` and `memory-init` skills, the `memory-writer` agent and `scripts/project_memory.py`. Its `## Rejected at project level` replaced the epic's Tried & Rejected; nothing is mirrored to the board. At finalize, still on the feature branch, memory-writer lifts the journal's load-bearing decisions into `memory/`, so the memory change ships in the feature PR under *Decisions needing confirmation*, and the Feature gets one comment naming the entries. The design-phase session, which reads no checkout, gets `memory/index.md` in `.idp/context/`.
 
-**Their names follow one rule, so nobody has to think about names when opening an epic or a feature:** `[<IDE-nn> · ]<NN> · <Role> — <hint>`, with the identifier present at feature level and absent at epic level. The only thing worth memorising is that **`02` is always Tried & Rejected**, on both levels. The table of names is defined in one place — the memory contract, IDE-76 — and lives in code as `EPIC_FILES` and `FEATURE_FILES` in `scripts/memory.py`. The epic's `01 · Feature Registry` is gone (IDE-147, *Memory*): the product repository's `memory/index.md` is the registry, filled after a merge into `main` by engineering-catalog's memory-writer, and `board.py memory core` / `memory init` refuse with a FIX that says so.
+**On the board stays only what a human gate needs:** the ADR attachment, `<IDE-nn> · 00 · ADR — <hint>`, whose approval hash is the design gate. The name lives in code as `FEATURE_FILES` in `scripts/memory.py`. The epic's `01 · Feature Registry` (IDE-147) and `02 · Tried & Rejected` and a Feature's `01 · History` / `02 · Tried & Rejected` (IDE-155) are gone, and `board.py memory core` / `init` / `record` refuse with a FIX that says where their content lives now.
 
 The architecture is organised around **capabilities and artifacts**, not around a fixed set of deployed agents. A capability may start as a local skill, gain deterministic scripts, and later become an autonomous service — all without changing its external contract.
 
@@ -213,6 +213,9 @@ runner and the scripts around it:
 - **Phase 3 orchestration** — `scripts/phase3/plan.py`, `shape.py`, `states.py`,
   `bugs.py`, `review.py`, `finalize.py`, `merge.py`, `integration.py`,
   `journal.py`, `gitops.py`, `orchestrator.py`
+- **Project memory and the feature journal in git** (IDE-155) —
+  `scripts/project_memory.py`, `scripts/memory_init.py`, `scripts/feature_journal.py`,
+  `skills/memory/`, `skills/memory-init/`, `agents/memory-writer.md`
 - **Executors, handoff and hooks** — `scripts/executors/`, `scripts/handoff.py`,
   `scripts/hooks/`
 - **Worker and documenter skills** — `skills/development/SKILL.md`,
@@ -243,6 +246,8 @@ scripts/       run.py, phases.py, exit_codes.py, lease.py, tags.py, handoff.py  
                experiments/ (e2, e3, e4, e7 live probes)                                ✅
 skills/        feature-discovery/, design/, planning/, establish-project/               ✅
                development/, documenter/, platform-freshness/                            ✅
+               memory/, memory-init/ (project memory, IDE-155)                           ✅
+agents/        memory-writer.md                                                          ✅
 docs/          project-state.md (generated), runner.md, install.md                       ✅
                experiments/ (pre-registered live checks)                                 ✅
 docker/        install smoke and package e2e harness                                     ✅
@@ -261,8 +266,8 @@ The profile now carries runner settings rather than attribution hacks:
 Azure DevOps' `state_map` and `documents_item`, plus `repositories` for drift and
 documentation. The per-agent token map is gone — claims are fenced writes now —
 and the old epic feature registry is gone with it: the only registry is the
-product repository's `memory/index.md`, filled after a merge by
-engineering-catalog's `memory-writer`. `memory_doc` remains only so older profiles
+product repository's `memory/index.md`, filled at finalize on the feature branch by
+the platform's own `memory-writer` (IDE-155). `memory_doc` remains only so older profiles
 still validate; IDE-147 does not read it.
 
 Skills are developed here and symlinked into `~/.claude/skills/` for local use — a link, never a copy, so an edit here is live everywhere immediately:
@@ -286,7 +291,7 @@ The deeper spine is the `correlation_id` defined in the IDE-68 design: it ties a
 
 A fourth thread runs through the board itself: **status history**. Every transition carries a server timestamp, a source state, a target state and an actor — which is how parallel agents agree on who claimed what without talking to each other, and how a human override is distinguishable from an agent's move.
 
-Reconstructing past work therefore uses three sources together: **the board** for what and when, the **feature's own files** — its ADR, its history, its Tried & Rejected — for why and what was rejected, and **git** for the actual change.
+Reconstructing past work therefore uses three sources together: **the board** for what and when, the **feature's own files** in `docs/features/<id>-<slug>/` — its ADR, its history, its decisions and their rejected alternatives — together with `memory/` for why and what was rejected, and **git** for the actual change.
 
 ## Conventions
 
@@ -317,4 +322,4 @@ Reconstructing past work therefore uses three sources together: **the board** fo
 - **The clean-session check on the establish documentation has not been run.** [IDE-122](https://linear.app/krukov-idea-hub/issue/IDE-122/work-item-ide-109-documentation-constitution-reference-architecture) requires that a session given only the documentation describes `/idp-establish` correctly without reading the milestone's issues. Until it runs, the documentation is written but unverified.
 - **This file is a hand-maintained summary, and it has drifted before.** Two entries here described a repository that no longer existed, and a session that read them cold went hunting a credential bug that had already been fixed ([IDE-131](https://linear.app/krukov-idea-hub/issue/IDE-131/claudemd-known-gaps-lists-two-gaps-that-are-closed)). `board.py memory check` now warns when this file is older than the last commit touching `scripts/`, `skills/`, `schemas/`, `templates/`, `lint/` or `registry/`. It is a warning and not a refusal, because most of those commits change nothing this file claims — which is also why the drift is invisible one commit at a time. When it warns, read the claims against the commits it lists.
 
-Closed since the last revision, kept here only so a reader who remembers them stops looking: **`publish_planning.hand_on` no longer compares a phase position as a string** — it asks `finish_phase`, which is idempotent on every board, instead of calling `.casefold()` on what has been a tag marker since IDE-147; its tests run on `tests/fakeboard.py`, which inherits the real phase surface, because the stub they used still spoke statuses and hid the crash. **`read_token` is board-aware** — `scripts/board.py` carries a `CREDENTIALS` map keyed by board, `azure-devops` resolves to `AZURE_DEVOPS_EXT_PAT`, and IDE-130 gave that board a `token_path` too. **The content validator runs before publication** — `skills/feature-discovery/publish_linear.py` calls `validate_text(...)` on the package before it ever reaches the board, which was IDE-111. **The per-agent token map is retired** — a claim is a fenced write, not an actor read back from history, so neither `agents` nor `System.Tags` attribution in revision history matter any more. **The epic feature registry is retired** — the only registry is `memory/index.md` in the product repository, filled after merge by engineering-catalog's `memory-writer`. IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `design · ready` — since IDE-147 the `idp:design` tag on every board, put there by the transition table's task-formation row — rather than `Todo` with a `stage:*` label.
+Closed since the last revision, kept here only so a reader who remembers them stops looking: **`publish_planning.hand_on` no longer compares a phase position as a string** — it asks `finish_phase`, which is idempotent on every board, instead of calling `.casefold()` on what has been a tag marker since IDE-147; its tests run on `tests/fakeboard.py`, which inherits the real phase surface, because the stub they used still spoke statuses and hid the crash. **`read_token` is board-aware** — `scripts/board.py` carries a `CREDENTIALS` map keyed by board, `azure-devops` resolves to `AZURE_DEVOPS_EXT_PAT`, and IDE-130 gave that board a `token_path` too. **The content validator runs before publication** — `skills/feature-discovery/publish_linear.py` calls `validate_text(...)` on the package before it ever reaches the board, which was IDE-111. **The per-agent token map is retired** — a claim is a fenced write, not an actor read back from history, so neither `agents` nor `System.Tags` attribution in revision history matter any more. **The epic feature registry is retired** — the only registry is `memory/index.md` in the product repository, filled at finalize by the platform's own `memory-writer` (IDE-155). IDE-68 §8.1 is no longer provisional; it was reconciled against the approved IDE-71 contract, and a feature is created in `design · ready` — since IDE-147 the `idp:design` tag on every board, put there by the transition table's task-formation row — rather than `Todo` with a `stage:*` label.

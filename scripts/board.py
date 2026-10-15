@@ -693,9 +693,34 @@ def cmd_setup(args):
     root = defaults.repository_root(os.getcwd())
     target = root / PROFILE_DIR / PROFILE_NAME
     if target.exists() and not args.force:
-        fail(EXIT.CONFIG, f"{target} already exists; pass --force to overwrite",
-             fix="pass --force to overwrite it, or edit it by hand")
+        # Setup is run once per project and resumable: an existing profile is
+        # kept, and the steps after it still run.
+        print(f"Kept {target} (pass --force to derive it again)")
+    else:
+        write_derived_profile(args, defaults, root, target)
+    if not getattr(args, "no_memory", False):
+        setup_memory(root)
 
+
+def setup_memory(root):
+    """Step two of `/idp-setup`: project memory, committed in the repository (IDE-155)."""
+    init = load_sibling("memory_init", "idp_memory_init")
+    result = init.initialise(root)
+    print(f"memory dir: {result['memory']}")
+    for step in result["steps"]:
+        print(f"  {step['name']:<10} {step['state']:<8} {step['detail']}")
+    if any(s["state"] == "error" for s in result["steps"]):
+        fail(EXIT.CONFIG, "project memory could not be initialised",
+             fix="fix what the failing step names, then run setup again; every step that "
+                 "is in place is kept")
+    if init.needs_filling(result["memory"]):
+        print("NEXT: memory/index.md is a skeleton. Fill it from the code as the memory-init "
+              "skill's Step 2 says — what the project is, its architecture, one unit per "
+              "coherent piece of functionality, every claim graded `inferred` — then run "
+              "`project_memory.py lint --memory memory` and commit memory/ and the pointers.")
+
+
+def write_derived_profile(args, defaults, root, target):
     team_key = args.team_key
     if not team_key and sys.stdin.isatty():
         remote = defaults.parse_board_from_remote(defaults.remote_url(root))
@@ -904,17 +929,21 @@ def cmd_version(args):
 
 
 def cmd_memory(args):
-    """The feature's files on the board, and the drift detector.
+    """Where a feature's files are, and the drift detector.
 
     The epic's registry is removed (IDE-147, *Memory*): `core` and `init` read and
     wrote it, and now refuse with the fix — `memory/index.md` in the product
-    repository is the registry. A feature's journal and Tried & Rejected stay
-    attachments on the Feature while it is in flight.
+    repository is the registry. A feature's journal is in git since IDE-155, so
+    `record`, which appended to a History attachment, refuses too.
     """
     if args.action in ("core", "init"):
         message, fix = memory.registry_removed()
         fail(EXIT.INVALID, f"`memory {args.action}` read the feature registry on the epic, "
                            f"and {message}", fix=fix)
+    if args.action == "record":
+        message, fix = memory.journal_removed()
+        fail(EXIT.INVALID, f"`memory record` appended to a History attachment, and "
+                           f"{message}", fix=fix)
     profile, _, board = open_board()
     try:
         if args.action == "why":
@@ -922,22 +951,6 @@ def cmd_memory(args):
                 fail(EXIT.INVALID, "memory why needs an issue: board.py memory why IDE-42",
                      fix="name the issue: board.py memory why IDE-42")
             print(explain(board, args.id))
-        elif args.action == "record":
-            if not args.id or not args.entry:
-                fail(EXIT.INVALID, "memory record needs an issue and --entry",
-                     fix="pass the issue and --entry \"what the merge changed\"")
-            title = memory.history_title(args.id)
-            existing = None
-            for doc in board.list_documents(project_id_from(profile, None)):
-                if doc["title"] == title:
-                    existing = board.get_document(doc["slugId"])
-                    break
-            body = memory.append_entry(existing["content"] if existing else None,
-                                       args.entry, now(), pbi=args.pbi)
-            if existing and body == existing["content"]:
-                print(f"{title}: already recorded, nothing appended")
-                return
-            print(board.attach_document(title, body, identifier=args.id)["url"])
         elif args.action == "check":
             issues = board.list_project(project_id_from(profile, None))
             findings = memory.check_drift(issues, profile, do_fetch=not args.no_fetch)
@@ -959,19 +972,22 @@ def cmd_memory(args):
 
 
 def explain(board, identifier):
-    """Why this feature is the way it is: its own files, then where memory lives."""
+    """Why this feature is the way it is: its journal in git, then where memory lives."""
     issue = board.get_issue(identifier)
     lines = [f"{identifier}  {issue['title']}", f"status: {issue['status']}", "",
-             "While it is in flight, the feature's own files — its ADR, its history, its "
-             "Tried & Rejected — are attachments on the card:",
+             "The feature's journal is in git (IDE-155): "
+             f"{memory.FEATURES_DIRECTORY}/{identifier}-<slug>/ — history.md, decisions.md "
+             "(every Alternative is a rejection) and adr.md — on its feature branch "
+             f"`{issue.get('branch') or '?'}` while in flight, on main once merged.",
+             "On the card stays only what the design gate approves:",
              f"  {issue['url']}"]
     titles = {memory.feature_file(identifier, role) for role in memory.FEATURE_FILES}
     for document in board.list_attachments(identifier) if hasattr(board, "list_attachments") \
             else []:
         if document.get("title") in titles:
             lines.append(f"  - {document['title']}")
-    lines += ["", f"Once it merged into main, its lasting decisions and rejections are in "
-                  f"{memory.MEMORY_INDEX} in the product repository."]
+    lines += ["", f"Its lasting decisions and rejections are in {memory.MEMORY_INDEX} in the "
+                  "product repository, lifted at finalize and merged with the code."]
     return "\n".join(lines)
 
 
@@ -1030,6 +1046,8 @@ def main():
     p = sub.add_parser("setup", help="derive and write .idp/profile.json for editing")
     p.add_argument("--team-key", help="Linear team key when git alone cannot derive the board")
     p.add_argument("--force", action="store_true", help="overwrite an existing profile")
+    p.add_argument("--no-memory", action="store_true",
+                   help="skip initialising project memory in the repository")
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("writing", help="how this project's artifacts are written")

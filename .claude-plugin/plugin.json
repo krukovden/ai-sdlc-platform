@@ -19,7 +19,9 @@
     "./skills/development",
     "./skills/documenter",
     "./skills/establish-project",
-    "./skills/platform-freshness"
+    "./skills/platform-freshness",
+    "./skills/memory",
+    "./skills/memory-init"
   ],
   "commands": [
     "./commands/idp.md",
@@ -28,6 +30,9 @@
     "./commands/idp-qa.md",
     "./commands/idp-setup.md",
     "./commands/idp-status.md"
+  ],
+  "agents": [
+    "./agents/memory-writer.md"
   ],
   "hooks": "./hooks/hooks.json"
 }

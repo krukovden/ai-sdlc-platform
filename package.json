@@ -18,6 +18,7 @@
     "catalog.json",
     "commands",
     "skills",
+    "agents",
     "scripts",
     "registry",
     "schemas",

@@ -22,6 +22,16 @@ for (const target of ['claude', 'copilot', 'orca']) {
     const explicit = path.join(ctx.home, folder, 'skills/idp');
     assert.ok(fs.existsSync(path.join(explicit, 'SKILL.md')));
     if (target === 'claude') assert.ok(fs.existsSync(path.join(ctx.home, '.claude/commands/idp.md')));
+    // Project memory is the platform's own since IDE-155: the skills, their scripts, and the
+    // agent under the name each host reads (`<name>.agent.md` on Copilot); Orca has no agents.
+    assert.ok(fs.existsSync(path.join(ctx.home, folder, 'skills/memory/SKILL.md')));
+    assert.ok(fs.existsSync(path.join(ctx.home, folder, 'skills/memory-init/SKILL.md')));
+    // The skill reaches its script as `<SKILL_DIR>/../../scripts`, resolved through the link.
+    const viaSkill = path.join(ctx.home, folder, 'skills/memory') + '/../../scripts/project_memory.py';
+    assert.match(execFileSync('python3', [viaSkill, '--help'], {cwd: ctx.cwd, encoding: 'utf8'}), /project_memory.py/);
+    const agent = {claude: '.claude/agents/memory-writer.md', copilot: '.copilot/agents/memory-writer.agent.md'}[target];
+    if (agent) assert.match(fs.readFileSync(path.join(ctx.home, agent), 'utf8'), /name: memory-writer/);
+    else assert.equal(fs.existsSync(path.join(ctx.home, folder, 'agents')), false);
     assert.match(execFileSync('python3', [path.join(ctx.home, '.local/bin/idp'), '--help'], {cwd: ctx.cwd, env: {...process.env, HOME: ctx.home}, encoding: 'utf8'}), /board.py/);
     assert.match(cli('status'), new RegExp(CURRENT.replace(/\./g, '\\.')));
     const receipt = json(path.join(ctx.home, '.idp/platform/receipt.json'));

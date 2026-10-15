@@ -457,7 +457,7 @@ Three layers answer three different questions, and none of them replaces another
 
 | Layer | Answers | Written |
 | -- | -- | -- |
-| Memory (`memory/`, engineering-catalog) | **Why** it is this way, and what was rejected | When a decision is hard to reverse |
+| Memory (`memory/`, this platform since IDE-155) | **Why** it is this way, and what was rejected | When a decision is hard to reverse |
 | ADR (on the Feature) | **How** this feature is built | Once, before development |
 | **Area blueprint** | **What** this area of the product does now, and what it must do | Every time a feature touching the area merges |
 
@@ -487,8 +487,10 @@ An agent starting work in an area reads its blueprint before the code, which is 
 
 ## Memory
 
-- **While the Feature is in flight**, its journal and its Tried & Rejected are attachments on the Feature, so every agent sees them without the repository.
-- **When the feature merges into `main`**, engineering-catalog's `memory-writer` moves the decisions that will outlive the feature, and the rejections, into the repository's `memory/`. A developer fixing a bug a year later, outside any phase, has to find them there.
+*Revised by IDE-155 — the original two bullets kept the journal on the board; see the superseding entry under "Alternatives considered and rejected".*
+
+- **While the Feature is in flight**, its journal — `history.md`, `decisions.md` (structured entries, every `Alternative` a rejected option) and a copy of the approved ADR — is in `docs/features/<id>-<slug>/` on the feature branch, written only by the runner. An agent without a checkout gets `memory/index.md` in `.idp/context/`.
+- **At finalize, on the feature branch**, the platform's `memory-writer` lifts the journal's load-bearing decisions that pass the durability and three-part tests into the repository's `memory/`, so the memory change ships in the feature PR (*Decisions needing confirmation*) and merges with the code. A developer fixing a bug a year later, outside any phase, finds them there.
 - **The registry on the epic (`memory.py`'s epic files) is removed.** The repository's `memory/index.md` is the registry. Two registries need a rule for which one wins, and that rule is where drift starts.
 
 ## Routes
@@ -518,6 +520,7 @@ The routes from IDE-90 stay, re-expressed as phases.
 - **Azure DevOps Pipelines from day one.** The local mode is needed anyway, and a pipeline calling `run.py` later is a small change. Building the pipeline first would leave the runner untested on a human's machine.
 - **Git as the coordination point instead of the board.** This becomes the fallback only if the claim experiment below fails. The board is where humans already look, and it lets design and QA work without a checkout.
 - **Memory only on the board, or only in the repository.** Board-only loses everything to a developer working outside the platform. Repository-only hides rejections from an agent that has no checkout yet.
+  - **Superseded 2026-10-14 (IDE-155): memory and the feature journal live only in the repository.** The repository half of this rejection is overturned. Two stores needed a rule for which one wins, and the board copy had no structured writer: the journal was runner narrative, Tried & Rejected had a name and no writer, and memory-writer could only read commits one at a time, so a squashed feature reached memory as one opaque commit. The reason the rejection gave — an agent without a checkout cannot see rejections — is answered directly instead: the runner places `memory/index.md` into that session's `.idp/context/`. A Feature's journal is now `docs/features/<id>-<slug>/` on its feature branch, written by the runner alone, and merges with the code; memory is the committed `memory/` folder, owned by this platform; the board keeps only the ADR attachment the design gate approves.
 
 ## Before implementation
 

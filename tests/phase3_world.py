@@ -35,6 +35,8 @@ from fakeboard import FakeBoard
 from scripted import ScriptedExecutor
 
 run = load_script("run")
+memory_init = load_script("memory_init")
+project_memory = load_script("project_memory")
 design = run.load_design()
 tags = run.tags
 lease = run.lease
@@ -168,7 +170,7 @@ class World:
     """One remote, one clone, one board, one home: everything a run touches."""
 
     def __init__(self, root, route="feature", plan=None, approve=True, comment_bumps=False,
-                 planning_cache=None, profile=None):
+                 planning_cache=None, profile=None, memory=False):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.remote = self.root / "remote.git"
@@ -178,6 +180,10 @@ class World:
         (seed / "README.md").write_text("product\n", encoding="utf-8")
         (seed / "src").mkdir()
         (seed / "src" / "__init__.py").write_text("", encoding="utf-8")
+        if memory:
+            # The product repository has project memory: what /idp-setup creates.
+            with contextlib.redirect_stdout(io.StringIO()):
+                memory_init.initialise(seed, name="product")
         git(seed, "add", "-A")
         git(seed, "commit", "-q", "-m", "seed")
         git(seed, "push", "-q", str(self.remote), "main")
@@ -201,6 +207,7 @@ class World:
         self.coverage_answer = None
         self.coverage_requests = []
         self.documenter = write_blueprint
+        self.memory_writer = lift_all
         self.verdict = VERDICT
         self.profile = profile or PROFILE
         self.board = FakeBoard(profile=self.profile, comment_bumps_rev=comment_bumps)
@@ -227,6 +234,8 @@ class World:
             role = "verdict"
         elif prompt.startswith("You are the independent coverage reviewer"):
             role = "coverage"
+        elif prompt.startswith("You are memory-writer"):
+            role = "memory-writer"
         self.sessions.setdefault(role, []).append(card)
         if role == "design":
             return self.plan_session(card, worktree, context)
@@ -238,6 +247,8 @@ class World:
             return self.documenter(self, Path(worktree)) if self.documenter else EXIT.DONE
         if role == "coverage":
             return self.coverage_session(worktree, prompt)
+        if role == "memory-writer":
+            return self.memory_writer(self, Path(worktree), prompt)
         if role == "verdict":
             (Path(worktree) / ".idp" / "verdict.md").write_text(self.verdict, encoding="utf-8")
             return EXIT.DONE
@@ -393,6 +404,24 @@ class World:
 # ---------------------------------------------------------------------------
 # Worker behaviours: each is one session
 # ---------------------------------------------------------------------------
+
+def lift_all(world, worktree, prompt):
+    """memory-writer at finalize: lift every candidate, through the script, nothing else."""
+    context = worktree / ".idp" / "context"
+    answer = Path(prompt.split("Then write ", 1)[1].split(" as JSON", 1)[0])
+    lifted = []
+    for n, candidate in enumerate(json.loads((context / "candidates.json").read_text(
+            encoding="utf-8"))):
+        entry_id, _ = project_memory.add(
+            worktree / "memory", "modules", candidate["summary"],
+            f"{candidate['decision']}. {candidate['rationale']}. Rejected: "
+            f"{candidate['alternative']}.", evidence="confirmed", source=candidate["source"],
+            summary="Every value in its own module", on="2026-10-12", token=f"{n:04x}",
+            sha="0" * 40)
+        lifted.append({"source": candidate["source"], "id": entry_id})
+    answer.write_text(json.dumps({"lifted": lifted, "skipped": []}), encoding="utf-8")
+    return EXIT.DONE
+
 
 def commit_push(worktree, branch, message, files):
     for path, text in files.items():

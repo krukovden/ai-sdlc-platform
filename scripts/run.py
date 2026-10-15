@@ -140,7 +140,7 @@ def fail(code, message, fix=None):
     sys.exit(code)
 
 
-PLATFORM_PARTS = ("scripts", "skills", "registry", "schemas", "templates", "lint")
+PLATFORM_PARTS = ("scripts", "skills", "agents", "registry", "schemas", "templates", "lint")
 
 
 def platform_digest(root=REPO_ROOT):
@@ -204,6 +204,15 @@ def git(repo, *args):
                                         f"{answer.stderr.strip()}",
                           "run the runner from inside the product repository's clone")
     return answer.stdout.strip()
+
+
+def memory_index(repo, worktree=None):
+    """The product repository's `memory/index.md`: the worktree's copy, else HEAD's."""
+    if worktree is not None and (Path(worktree) / "memory" / "index.md").is_file():
+        return (Path(worktree) / "memory" / "index.md").read_text(encoding="utf-8")
+    answer = subprocess.run(["git", "-C", str(repo), "show", "HEAD:memory/index.md"],
+                            capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    return answer.stdout if answer.returncode == EXIT.OK else None
 
 
 def head_sha(repo):
@@ -336,6 +345,8 @@ Follow the design skill exactly: {skill}
 What you need is already here, and you hold no board credential and need none:
 {context}/card.json is the card, feature.md its text, comments.md what people said
 on it, and adr.md — when there is one — the ADR a human sent back for a redesign.
+memory-index.md, when the product repository has one, is its project memory: read it
+first, and propose nothing listed under "Rejected at project level".
 
 Drive the process with `python3 {design_py}` and nothing else:
   1. `init {feature} --resume`
@@ -838,6 +849,15 @@ class Runner:
             previous.write_text(content or "", encoding="utf-8")
         elif previous.exists():
             previous.unlink()
+        # Project memory, for a session that reads no checkout: the index is what
+        # every session loads first, and its rejections are what a design must not
+        # propose again (IDE-155).
+        index = memory_index(self.repo, worktree)
+        target = context / "memory-index.md"
+        if index:
+            target.write_text(index, encoding="utf-8")
+        elif target.exists():
+            target.unlink()
         return context
 
     def finalize_design(self, feature, title, text):
@@ -871,14 +891,10 @@ class Runner:
         if content != text:
             return ["the ADR read back from the board differs from what was uploaded"]
 
-        journal = self.design.session_dir(feature) / "journal.jsonl"
-        if journal.exists():
-            # The design's journal travels with the ADR and is replaced with it.
-            self.board.attach_document(
-                memory.feature_file(feature, "history"),
-                "# Design journal\n\n```jsonl\n"
-                + journal.read_text(encoding="utf-8") + "```\n",
-                identifier=feature)
+        # The design's own session journal stays in its local cache. What lasts —
+        # the hard-to-reverse decisions and the overruled objections — is in the
+        # ADR itself, and the runner commits it, with entries for each, to
+        # docs/features/ on the feature branch when development starts (IDE-155).
         # What the runner itself checked and uploaded, by hash. A hand-off that
         # lands before its review comment is completed later only for these
         # bytes, never for an ADR somebody replaced on the card by hand.
