@@ -1,5 +1,12 @@
 # AI SDLC Platform
 
+> **Moved to Azure DevOps.** This repository is archived and gets no further releases.
+> The platform now lives in Azure DevOps: **HAL-TSS / TSS-Orion / `bulka_salo`** —
+> https://dev.azure.com/HAL-TSS/TSS-Orion/_git/bulka_salo
+>
+> Existing installations: `npx git+https://dev.azure.com/HAL-TSS/TSS-Orion/_git/bulka_salo update`
+> (plugin installs: remove the `ai-sdlc-platform` marketplace and add the new URL). See `docs/install.md` there, section "Moved from GitHub".
+
 Implementation repository for the AI SDLC Platform — a reusable AI platform that carries a raw idea through research, an approved feature, technical design, an implementation plan, delivered code with tests, a pull request and synchronised documentation.
 
 **The board is the source of truth for what this project is and what state it is in.** This repository holds the implementation.
