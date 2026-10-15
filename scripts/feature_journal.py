@@ -74,7 +74,7 @@ def locate(names, feature, title):
     """
     prefix = f"{feature}-"
     for name in sorted(names or []):
-        if name.startswith(prefix):
+        if name.startswith(prefix) and len(name) > len(prefix):
             return f"{DIRECTORY}/{name}"
     return f"{DIRECTORY}/{directory_name(feature, title)}"
 

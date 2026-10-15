@@ -79,6 +79,7 @@ class FormatTests(ScriptTestCase):
                          "docs/features/IDE-7-old-title")
         # Always `<id>-<slug>`: the prefix finalize protects is `docs/features/<id>-`.
         self.assertEqual(fj.locate(["IDE-7"], "IDE-7", "Title"), "docs/features/IDE-7-title")
+        self.assertEqual(fj.locate(["IDE-7-"], "IDE-7", "Title"), "docs/features/IDE-7-title")
         self.assertEqual(fj.locate([], "IDE-7", "Offline search!"),
                          "docs/features/IDE-7-offline-search")
 
